@@ -43,8 +43,12 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
     // Every slot of the pool belongs to this space for the cache's lifetime: the mapping names
     // slots, so nothing else may allocate, lend or release one.
     const std::uint32_t slot_count = cache.page_pool().capacity_pages();
-    if (slot_count != kv_stream_pool_pages(split_, layers_)) {
-        throw std::invalid_argument("A streamed KV pool must hold exactly its split's slots");
+    // The capacity resolution grants a slot count the split rounds down: `layers` slots at most
+    // stay unaddressed at the end of the pool, and they cost one page each.
+    if (slot_count < kv_stream_pool_pages(split_, layers_)) {
+        throw std::invalid_argument(
+            "A streamed KV pool is smaller than its split: slots=" + std::to_string(slot_count) +
+            " needs=" + std::to_string(kv_stream_pool_pages(split_, layers_)));
     }
     if (ring_base_ + split_.ring_pages < pages_per_layer_) {
         throw std::invalid_argument("A streamed KV ring cannot hold one layer's streamed pages");

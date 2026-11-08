@@ -1862,7 +1862,8 @@ ProgramImpl::advance_prefill_batch(std::span<const std::uint32_t> lanes,
                 const HostKVPageLayout layout = plan_host_kv_page_layout(pool.geometry());
                 HostKVArena scratch(layout.page_stride * 4,
                                     std::span<const HostKVPageLayout>(&layout, 1));
-                auto records = scratch.allocate(layout, 4);
+                auto records      = scratch.allocate(layout, 4);
+                auto records_view = scratch.writable_view(*records);
                 const std::uint32_t streamed = text_stream_space->window_start();
                 const std::uint32_t layers   = static_cast<std::uint32_t>(decoder->text_kv.layers());
                 std::uint32_t checked = 0, bad = 0;
@@ -1870,11 +1871,11 @@ ProgramImpl::advance_prefill_batch(std::span<const std::uint32_t> lanes,
                     for (std::uint32_t page : {0U, streamed / 2, streamed - 1U}) {
                         const std::int32_t slot =
                             kv_stream_ring_slot(page, text_stream_space->split(), layers);
-                        pool.copy_to_host_pages(slot, 1, records->subview(checked % 4U, 1U),
+                        pool.copy_to_host_pages(slot, 1, records_view.subview(checked % 4U, 1U),
                                                 compute_streams);
                         CUDA_CHECK(cudaStreamSynchronize(compute_streams[0]));
                         const std::byte* got =
-                            records->subview(checked % 4U, 1U).data();
+                            records_view.subview(checked % 4U, 1U).data();
                         const std::byte* want =
                             text_stream_space->host_pages().subview(page, 1U).data();
                         std::size_t diff = 0;

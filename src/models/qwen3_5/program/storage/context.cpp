@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -1775,6 +1777,43 @@ void ProgramImpl::commit_sequence_kv(SequenceState& sequence, std::uint32_t main
     text_kv_addresses->commit_frontier(sequence.kv->text, main_tokens);
     if (sequence.kv->backend) {
         backend_kv_addresses->commit_frontier(*sequence.kv->backend, backend_tokens);
+    }
+    // TEMPORARY DIAGNOSTIC (streamed KV): does the ring hold the authority's bytes?
+    if (text_stream_space && std::getenv("NINFER_KVSTREAM_CHECK") != nullptr) {
+        static bool checked           = false;
+        const std::uint32_t streamed  = text_stream_space->window_start();
+        if (!checked && streamed >= 8) {
+            checked                  = true;
+            auto& pool               = decoder->text_kv.page_pool();
+            const HostKVPageLayout layout = plan_host_kv_page_layout(pool.geometry());
+            HostKVArena scratch(layout.page_stride * 4,
+                                std::span<const HostKVPageLayout>(&layout, 1));
+            auto records      = scratch.allocate(layout, 4);
+            auto records_view = scratch.writable_view(*records);
+            const std::uint32_t layers = static_cast<std::uint32_t>(decoder->text_kv.layers());
+            std::uint32_t checked_pages = 0, bad = 0;
+            for (const std::uint32_t layer : {0U, layers / 2, layers - 1U}) {
+                for (const std::uint32_t page : {0U, streamed / 2, streamed - 1U}) {
+                    const std::int32_t slot =
+                        kv_stream_ring_slot(page, text_stream_space->split(), layers);
+                    pool.copy_to_host_pages(slot, 1, records_view.subview(checked_pages % 4U, 1U),
+                                            compute_streams);
+                    CUDA_CHECK(cudaStreamSynchronize(compute_streams[0]));
+                    const std::byte* got  = records_view.subview(checked_pages % 4U, 1U).data();
+                    const std::byte* want = text_stream_space->host_pages().subview(page, 1U).data();
+                    std::size_t diff      = 0;
+                    while (diff < layout.page_stride && got[diff] == want[diff]) { ++diff; }
+                    ++checked_pages;
+                    if (diff != layout.page_stride) { ++bad; }
+                    std::fprintf(stderr,
+                                 "KVSTREAM-CHECK layer=%u page=%u slot=%d %s first_diff=%zu\n",
+                                 layer, page, slot,
+                                 diff == layout.page_stride ? "ok" : "BAD", diff);
+                }
+            }
+            std::fprintf(stderr, "KVSTREAM-CHECK done pages=%u bad=%u streamed=%u\n", checked_pages,
+                         bad, streamed);
+        }
     }
     if (hybrid_) { hybrid_publish_blocks(sequence); }
 }

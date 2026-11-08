@@ -411,11 +411,11 @@ RequestBasePlan ProgramImpl::plan_request(const PreparedPromptData& prompt,
     base->summary.publish_continuation =
         options.allow_prefix_reuse && prompt.identity.reusable && context_cache.enabled;
     if (text_stream_space != nullptr) {
-        // A streamed sequence's KV lives in the cache's own mapping, which already owns the pool's
-        // slots, so its entitlement is one page group: enough for the address space's row and
-        // activation arithmetic, and small enough that admission keeps placing requests. The
-        // context it may reach is bounded by max_context, not by this number.
-        base->text_kv_page_entitlement    = 1;
+        // A streamed sequence's KV lives in the cache's own mapping, which owns the pool's slots
+        // outright, so the sequence itself claims no main page: admission reserves nothing, and the
+        // owner-resource check compares zero against zero. The context it may reach is bounded by
+        // max_context, not by this number.
+        base->text_kv_page_entitlement    = 0;
         base->backend_kv_page_entitlement = 0;
         if (speculative_backend == SpeculativeBackend::Mtp) {
             base->backend_kv_page_entitlement =

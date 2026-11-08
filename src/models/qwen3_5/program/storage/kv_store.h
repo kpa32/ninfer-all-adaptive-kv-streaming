@@ -957,18 +957,23 @@ public:
                        std::int32_t execution_row,
                        std::optional<std::uint32_t> activation_frontier = std::nullopt) {
         Address& address = require(handle);
-        if (address.active || address.row || address.reservation.valid() || entitlement == 0 ||
+        if (address.active || address.row || address.reservation.valid() ||
             entitlement > page_capacity_ ||
             (activation_frontier && *activation_frontier > address.committed_frontier)) {
             throw std::logic_error("KV address space is not reservable for activation");
         }
         if (stream_space_ != nullptr) {
             // A streaming cache has nothing to reserve: the space owns every slot and the address
-            // keeps only the row its layers' tables are read through.
+            // keeps only the row its layers' tables are read through. Its entitlement is zero - a
+            // streamed sequence claims no pool page at all - so it is checked before the guard
+            // that an ordinary address needs at least one.
             KVExecutionRowLease row = tables_->acquire(execution_row);
             return KVActivationReservation(*this, handle, entitlement, activation_frontier,
                                            pages_->physical_pool().make_empty_reservation(),
                                            std::move(row));
+        }
+        if (entitlement == 0) {
+            throw std::logic_error("KV address space is not reservable for activation");
         }
         const std::uint32_t required_pages =
             activation_frontier ? pages_for_tokens(*activation_frontier) : address.page_count;

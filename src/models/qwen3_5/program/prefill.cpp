@@ -17,6 +17,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <span>
@@ -1853,6 +1855,48 @@ ProgramImpl::advance_prefill_batch(std::span<const std::uint32_t> lanes,
             staged.cursor          = staged.prompt_tokens;
             sequence.text_kv_valid = staged.cursor;
             commit_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence));
+            // TEMPORARY DIAGNOSTIC (streamed KV): does the ring hold the authority's bytes?
+            if (text_stream_space && std::getenv("NINFER_KVSTREAM_CHECK") != nullptr &&
+                text_stream_space->window_start() != 0) {
+                auto& pool                    = decoder->text_kv.page_pool();
+                const HostKVPageLayout layout = plan_host_kv_page_layout(pool.geometry());
+                HostKVArena scratch(layout.page_stride * 4,
+                                    std::span<const HostKVPageLayout>(&layout, 1));
+                auto records = scratch.allocate(layout, 4);
+                const std::uint32_t streamed = text_stream_space->window_start();
+                const std::uint32_t layers   = static_cast<std::uint32_t>(decoder->text_kv.layers());
+                std::uint32_t checked = 0, bad = 0;
+                for (std::uint32_t layer : {0U, layers / 2, layers - 1U}) {
+                    for (std::uint32_t page : {0U, streamed / 2, streamed - 1U}) {
+                        const std::int32_t slot =
+                            kv_stream_ring_slot(page, text_stream_space->split(), layers);
+                        pool.copy_to_host_pages(slot, 1, records->subview(checked % 4U, 1U),
+                                                compute_streams);
+                        CUDA_CHECK(cudaStreamSynchronize(compute_streams[0]));
+                        const std::byte* got =
+                            records->subview(checked % 4U, 1U).data();
+                        const std::byte* want =
+                            text_stream_space->host_pages().subview(page, 1U).data();
+                        std::size_t diff = 0;
+                        for (; diff < layout.page_stride; ++diff) {
+                            if (got[diff] != want[diff]) { break; }
+                        }
+                        ++checked;
+                        if (diff != layout.page_stride) {
+                            ++bad;
+                            std::fprintf(stderr,
+                                         "KVSTREAM-CHECK MISMATCH layer=%u page=%u slot=%d "
+                                         "first_byte=%zu\n",
+                                         layer, page, slot, diff);
+                        }
+                        std::fprintf(stderr,
+                                     "KVSTREAM-CHECK layer=%u page=%u slot=%d %s\n", layer,
+                                     page, slot, diff == layout.page_stride ? "ok" : "bad");
+                    }
+                }
+                std::fprintf(stderr, "KVSTREAM-CHECK done checked=%u bad=%u streamed=%u\n", checked,
+                             bad, streamed);
+            }
             settle_state_fork(sequence);
             const Tensor last = prefill_hidden.slice(1, pass.prompt_end - 1, 1);
             copy_tail(sequence, last);

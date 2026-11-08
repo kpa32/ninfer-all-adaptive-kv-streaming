@@ -6,6 +6,7 @@
 #include "models/qwen3_5/state/decoder_state.h"
 
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -25,10 +26,9 @@ namespace ninfer::models::qwen3_5 {
 // to move a page and which layer to fill next are the caller's.
 class StreamedKVSpace {
 public:
-    // Takes every slot of `cache`'s pool and allocates `pages_per_layer` host pages from `arena`.
-    // The cache must have been planned with this split (`PagedKVCache::stream_split`), and the
-    // arena must support its geometry.
-    StreamedKVSpace(PagedKVCache& cache, HostKVArena& arena);
+    // Takes every slot of `cache`'s pool and allocates the host authority for the whole context.
+    // The cache must have been planned with this split (`PagedKVCache::stream_split`).
+    explicit StreamedKVSpace(PagedKVCache& cache);
     ~StreamedKVSpace();
 
     StreamedKVSpace(const StreamedKVSpace&)            = delete;
@@ -101,7 +101,9 @@ private:
                       RankStreams streams);
 
     PagedKVCache* cache_               = nullptr;
-    HostKVArena* arena_                = nullptr;
+    // The host authority's pages, allocated for this cache alone: the retention arena belongs to a
+    // cache that checkpoints, which a streaming cache refuses to be.
+    std::unique_ptr<HostKVArena> arena_;
     KVStreamSplit split_;
     std::uint32_t layers_              = 0;
     std::uint32_t pages_per_layer_     = 0;

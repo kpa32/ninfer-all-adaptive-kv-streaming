@@ -25,8 +25,8 @@ void destroy_events(std::vector<cudaEvent_t>& events) noexcept {
 
 } // namespace
 
-StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, HostKVArena& arena)
-    : cache_(&cache), arena_(&arena), split_(cache.stream_split()), layers_(cache.layers()) {
+StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
+    : cache_(&cache), split_(cache.stream_split()), layers_(cache.layers()) {
     if (!cache.flat_slots()) {
         throw std::invalid_argument("A streamed KV space needs a cache planned with a flat pool");
     }
@@ -44,16 +44,14 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, HostKVArena& arena)
     if (ring_base_ + split_.ring_pages < pages_per_layer_) {
         throw std::invalid_argument("A streamed KV ring cannot hold one layer's streamed pages");
     }
-    const HostKVPageLayout* host_layout = arena.layout_for(cache.page_pool().geometry());
-    if (host_layout == nullptr) {
-        throw std::invalid_argument("The host KV arena does not support this cache's page layout");
-    }
-    host_layout_ = *host_layout;
+    host_layout_ = plan_host_kv_page_layout(cache.page_pool().geometry());
     page_bytes_  = host_layout_.page_stride;
     // The authority: every page of every streaming layer, for the whole context. A streamed page
     // is read from here on every round, so this allocation is what lets the context exceed the
     // device pool.
-    auto host = arena.allocate(host_layout_, pages_per_layer_);
+    arena_ = std::make_unique<HostKVArena>(page_bytes_ * pages_per_layer_,
+                                           std::span<const HostKVPageLayout>(&host_layout_, 1));
+    auto host = arena_->allocate(host_layout_, pages_per_layer_);
     if (!host) {
         throw std::invalid_argument("The host KV arena is too small for this cache's context");
     }
@@ -88,7 +86,6 @@ HostKVAllocationView StreamedKVSpace::host_pages() noexcept { return arena_->wri
 HostKVAllocationConstView StreamedKVSpace::host_pages() const noexcept {
     return arena_->view(host_);
 }
-
 cudaEvent_t StreamedKVSpace::ready_event(std::uint32_t layer) const {
     if (layer >= ready_.size()) { throw std::out_of_range("Streamed KV layer is out of range"); }
     return ready_[layer];

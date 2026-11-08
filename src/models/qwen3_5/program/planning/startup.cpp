@@ -1491,7 +1491,7 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->mtp_attention_window = inputs.mtp_attention_window;
     impl->features            = inputs.features;
     impl->expert_cache_bytes  = inputs.expert_cache_bytes;
-    impl->use_cuda_graph      = inputs.use_cuda_graph;
+    impl->use_cuda_graph      = inputs.use_cuda_graph && !inputs.features.kv_stream;
     impl->causal_scoring      = inputs.causal_scoring;
     impl->structured_output   = inputs.structured_output;
     impl->device              = inputs.device;

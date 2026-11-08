@@ -12,6 +12,7 @@
 #include "ninfer/ops/sampling.h"
 #include "ninfer/ops/softmax_attention.h"
 #include "ninfer/ops/sparse_moe.h"
+#include "models/qwen3_5/program/storage/kv_stream_space.h"
 #include "models/qwen3_5/state/decoder_state.h"
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 #include "models/qwen3_5/program/round_buffers.h"
@@ -277,6 +278,18 @@ private:
     void run_layers(Tensor& x, Phase phase);
     template <class Tap>
     void run_layers(Tensor& x, Phase phase, Tap& tap);
+    // A streaming text cache: the space whose per-layer pages stream, and the stream that carries
+    // them. Null when every page is resident, which is every configuration but --kv-stream.
+    void set_kv_stream(StreamedKVSpace* space, cudaStream_t copy) noexcept {
+        kv_stream_space_ = space;
+        kv_stream_copy_  = copy;
+    }
+
+    // Issues one round's per-layer uploads, each ordered against the previous layer's consumption.
+    // A streaming round does not run from a captured graph, so the waits and records below are
+    // ordinary stream ordering.
+    void issue_kv_stream_uploads();
+
     // The layers one stage owns, on the device that stage's context is currently bound to.
     template <class Tap>
     void run_stage_layers(std::size_t stage, Tensor& x, Phase phase, Tap& tap);
@@ -400,6 +413,8 @@ private:
     qwen3_5::PagedKVCacheView kv_;
     qwen3_5::PagedKVCacheView mtp_kv_;
     const qwen3_5::PagedKVCache* batch_text_kv_ = nullptr;
+    StreamedKVSpace* kv_stream_space_           = nullptr;
+    cudaStream_t kv_stream_copy_                = nullptr;
     const qwen3_5::PagedKVCache* batch_mtp_kv_  = nullptr;
     LinearAttentionStatePool& state_;
     qwen3_5::RoundState& io_;

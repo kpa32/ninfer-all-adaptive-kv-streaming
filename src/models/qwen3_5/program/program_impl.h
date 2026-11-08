@@ -996,6 +996,8 @@ public:
     // Present when the text cache streams: it owns the pool's slots, the host authority and the
     // per-layer tables, and the address space above derives its mapping from it.
     std::unique_ptr<StreamedKVSpace> text_stream_space;
+    // The stream a streaming round's page copies run on, created with the space.
+    cudaStream_t text_stream_copy_stream = nullptr;
     std::unique_ptr<LogicalKVPageStore> backend_kv_pages;
     std::unique_ptr<KVAddressSpaceStore> backend_kv_addresses;
     std::unique_ptr<HostKVExtentStore> host_kv_extents;

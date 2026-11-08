@@ -1795,6 +1795,15 @@ ProgramImpl::advance_prefill_batch(std::span<const std::uint32_t> lanes,
                                     state_images->linear(0), io, prefill_hidden, prefill_chunk,
                                     pass_segments.front().begin, qwen3_5::PagedKVCacheView{},
                                     &decoder->text_kv, nullptr);
+        if (text_stream_space) {
+            // A streamed cache needs a second stream for its page copies: they run outside the
+            // compute stream and the round orders them with the per-layer events.
+            if (text_stream_copy_stream == nullptr) {
+                CUDA_CHECK(cudaStreamCreateWithFlags(&text_stream_copy_stream,
+                                                     cudaStreamNonBlocking));
+            }
+            card.set_kv_stream(text_stream_space.get(), text_stream_copy_stream);
+        }
         card.set_expert_runtime(experts.get());
         card.set_steering(steering.get());
         card.set_rope_yarn(rope_yarn);

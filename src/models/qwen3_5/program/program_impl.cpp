@@ -857,6 +857,11 @@ ProgramImpl::~ProgramImpl() noexcept {
         (void)ninfer::wait_for_stream(transfer_streams[rank]);
         (void)ninfer::wait_for_stream(compute_streams[rank]);
     }
+    if (text_stream_copy_stream != nullptr) {
+        (void)ninfer::wait_for_stream(text_stream_copy_stream);
+        (void)cudaStreamDestroy(text_stream_copy_stream);
+        text_stream_copy_stream = nullptr;
+    }
 }
 
 std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,

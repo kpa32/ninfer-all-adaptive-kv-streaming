@@ -2044,7 +2044,19 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                     full ? nvtx::Category::Attention : nvtx::Category::Gdn, layer);
                 auto scope = work_.scope();
                 if (full) {
+                    if (kv_stream_space_ != nullptr) {
+                        CUDA_CHECK(cudaStreamWaitEvent(
+                            ctx_.stream,
+                            kv_stream_space_->ready_event(static_cast<std::uint32_t>(compact)),
+                            0));
+                    }
                     attn_mix(block, x, compact, ph);
+                    if (kv_stream_space_ != nullptr) {
+                        CUDA_CHECK(cudaEventRecord(
+                            kv_stream_space_->consumed_event(
+                                static_cast<std::uint32_t>(compact)),
+                            ctx_.stream));
+                    }
                 } else {
                     gdn_mix(block, x, compact, ph);
                 }
@@ -2694,7 +2706,21 @@ void TextContext::run_tensor_parallel(Tensor& x, Phase ph, Tap& tap) {
 }
 
 template <class Tap>
+void TextContext::issue_kv_stream_uploads() {
+    if (kv_stream_space_ == nullptr) { return; }
+    const std::uint32_t layers = batch_text_kv_->layers();
+    for (std::uint32_t layer = 0; layer < layers; ++layer) {
+        // The ring holds one layer's streamed pages: layer 0 waits for the previous round's last
+        // layer to finish reading it, and every later layer for its predecessor.
+        const std::uint32_t previous = layer == 0 ? layers - 1U : layer - 1U;
+        CUDA_CHECK(cudaStreamWaitEvent(kv_stream_copy_,
+                                       kv_stream_space_->consumed_event(previous), 0));
+        kv_stream_space_->upload(layer, kv_stream_copy_);
+    }
+}
+
 void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
+    issue_kv_stream_uploads();
     if (!parameters_.text.split_execution()) {
         run_stage_layers(0, x, ph, tap);
         return;

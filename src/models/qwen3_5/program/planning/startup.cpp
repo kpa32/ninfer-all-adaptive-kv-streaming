@@ -1473,8 +1473,16 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->parameters          = inputs.parameters;
     impl->capacity            = inputs.capacity;
     impl->main_page_groups    = main_page_groups;
+    // A streaming pool's page axis counts slots, so the capacity the plan reports is the context
+    // it serves rather than the tokens its slots would name; the two sides of the final check
+    // (resolution.resolved_tokens) then agree by construction.
+    const std::uint64_t capacity_pages =
+        inputs.features.kv_stream
+            ? static_cast<std::uint64_t>(1U + (inputs.capacity - 1U) /
+                                                  static_cast<std::uint32_t>(kPagedKVPageSize))
+            : static_cast<std::uint64_t>(main_page_groups);
     impl->kv_capacity         = static_cast<std::uint32_t>(checked_i32(
-        static_cast<std::uint64_t>(main_page_groups) * static_cast<std::uint32_t>(kPagedKVPageSize),
+        capacity_pages * static_cast<std::uint32_t>(kPagedKVPageSize),
         "resolved Paged KV capacity exceeds int32"));
     impl->max_concurrency     = inputs.max_concurrency;
     impl->prefill_chunk       = inputs.prefill_chunk;

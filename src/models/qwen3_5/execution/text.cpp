@@ -2025,6 +2025,15 @@ GdnReplayRecordLayer TextContext::replay_layer(std::uint32_t layer, std::int32_t
 template <class Tap>
 void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& tap) {
     const bool prefill      = ph == Phase::Prefill;
+    // TEMPORARY DIAGNOSTIC (streamed KV): which phases run, and do they carry the space?
+    if (std::getenv("NINFER_KVSTREAM_CHECK") != nullptr) {
+        static int calls = 0;
+        if (calls < 12) {
+            std::fprintf(stderr, "KVSTREAM-PHASE call=%d phase=%d columns=%d space=%d\n", calls,
+                         static_cast<int>(ph), x.ne[1], kv_stream_space_ != nullptr ? 1 : 0);
+            ++calls;
+        }
+    }
     const std::uint32_t end = parameters_.text.stage_end(stage);
     // The adapters' measures start from the residual the stage receives.
     steer(ops::SteerResidualStep::Measure, 0, -1, x);

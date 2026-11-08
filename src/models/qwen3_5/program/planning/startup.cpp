@@ -151,7 +151,11 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
             : std::nullopt;
     if (plan.features.kv_stream && !text_stream) {
         throw std::invalid_argument(
-            "--kv-stream needs a KV pool of at least one layer's pages; lower --max-context");
+            "--kv-stream needs a KV pool of at least one layer's pages and a window over them: "
+            "the pool has " +
+            std::to_string(physical_pages) + " page groups for " + std::to_string(logical_pages) +
+            " pages of context over " + std::to_string(config.full_attention_layers) +
+            " layers. Lower --max-context or free device memory");
     }
     // The MTP cache holds its own whole context and never streams, so it keeps the logical page
     // count rather than the streaming text pool's slot count.

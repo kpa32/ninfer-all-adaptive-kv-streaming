@@ -216,7 +216,10 @@ std::string usage_text(const char* argv0) {
            "  --kv-headroom-mib N           memory --kv-capacity auto leaves free (default\n"
            "                                " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
-           "); alias --vram-headroom-mib\n"
+           ", or " +
+           std::to_string(ninfer::kDefaultKvStreamHeadroomBytes / (1024ULL * 1024ULL)) +
+           " with\n"
+           "                                --kv-stream); alias --vram-headroom-mib\n"
            "  --kv-dtype T                  bf16 (default), int8, fp8, rk8v4, rk4v4,\n"
            "                                rk4v4-e8, rk2v4-e8, nvfp4 or k8v4\n" +
            std::string(product::kKvResidentHelp) +
@@ -693,6 +696,11 @@ Options parse_options(int argc, char** argv) {
             throw std::invalid_argument("--kv-headroom-mib requires --kv-capacity auto");
         }
         options.kv_capacity = KvCapacityPolicy::automatic(*kv_headroom_mib << 20);
+    } else if (options.kv_stream && options.kv_capacity.mode == KvCapacityMode::Automatic) {
+        // Streaming trades the idle gigabyte for window depth: the pool it leaves behind is a
+        // window over every full-attention layer plus one ring, and every page the window gains
+        // is a page no round has to copy.
+        options.kv_capacity = KvCapacityPolicy::automatic(ninfer::kDefaultKvStreamHeadroomBytes);
     }
 
     const bool has_prompt   = !options.prompt.empty();

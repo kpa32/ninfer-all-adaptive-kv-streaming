@@ -56,6 +56,15 @@ inline constexpr std::size_t kDefaultHybridHostCacheBytes = 8ULL << 30;
 
 inline constexpr std::size_t kDefaultKvCapacityHeadroomBytes = 1024ULL * 1024ULL * 1024ULL;
 
+// Headroom `--kv-capacity auto` leaves free when `--kv-stream` sizes the pool. Streaming serves one
+// sequence on one device with CUDA Graphs off, and its workspace arena is reserved separately from
+// this margin, so a gigabyte of idle VRAM buys nothing: at 262144 with rk8v4 every 128 MiB of it is
+// worth about 1280 slots, and the pool grew from 21945 to 30941 page groups between this value and
+// the default above, which is the window growing from 76K to 114K tokens of context
+// (docs/maintainer/kv-streaming-design.md, 5.5). 256 MiB keeps 2.5x the largest measured workspace
+// peak (103 MiB) in reserve while still leaving the pool most of what the earlier default withheld.
+inline constexpr std::size_t kDefaultKvStreamHeadroomBytes = 256ULL * 1024ULL * 1024ULL;
+
 // Flash-Next's default for EngineOptions::kv_resident_positions with host or disk experts.
 inline constexpr std::uint32_t kDefaultKvResidentPositions = 32768;
 

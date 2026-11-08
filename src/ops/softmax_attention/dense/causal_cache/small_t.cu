@@ -280,8 +280,15 @@ CausalAttentionFramePlan causal_attention_frame_plan(
         if (splits < fewest) { splits = fewest; }
     }
     const std::int32_t frames = (active - 1) / splits + 1;
-    const std::int32_t pages  = 1 + (window_tokens - 1) / kPagedKVPageSize;
-    return {frames, (pages - 1) / frames + 1, splits};
+    // The keys one split reads: the geometry's own tile count per split, rounded up, because a
+    // split covers `ceil(tiles / active)` whole tiles and the tiles past the window's end belong to
+    // no split. A frame is `splits` such spans, and the caller copies that many pages plus one on
+    // each side, which also covers a split that begins mid-page.
+    const std::int32_t tiles  = 1 + (window_tokens - 1) / kCausalSmallTK8v4TileKeys;
+    const std::int32_t units  = (tiles - 1) / active + 1;
+    const std::int32_t keys   = splits * units * kCausalSmallTK8v4TileKeys;
+    const std::int32_t pages  = 1 + (keys - 1) / kPagedKVPageSize + 1;
+    return {frames, pages, splits};
 }
 
 std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t tokens,

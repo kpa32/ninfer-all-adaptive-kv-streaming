@@ -390,7 +390,8 @@ bool launch_chunked_small_t(const Tensor& q, const Tensor& k, const Tensor& v,
         detail::causal_attention_small_t_launch(q, k, v, positions, valid_columns, table_rows,
                                                 scale, cache, envelope, begin, count, partial.acc,
                                                 partial.m, partial.l, out, stream, nullptr,
-                                                partial_out, {}, frames);
+                                                partial_out, {},
+                                                begin == 0 ? frames : nullptr);
     }
     return false;
 }

@@ -22,6 +22,10 @@ enum class CausalAttentionRoute { SmallT, ChunkedSmallT, Prompt };
 // block divides it.
 inline constexpr std::int32_t kPromptWaveRows = 128;
 
+// Keys of one K tile in the asymmetric FP8-K/NVFP4-V small-T route: the launch bakes this block
+// into its kernel, and the frame plan below reads a split's keys through it, so both name it here.
+inline constexpr std::int32_t kCausalSmallTK8v4TileKeys = 32;
+
 // Shared memory of the standard INT8-family prompt kernel's tile (prompt_i8.cuh), and whether the
 // blocks of a shape set hold it (ops/common/device_tier.h). Turing's 64 KiB do not: there every
 // INT8-family prompt runs on the fast kernel, and the "attn_pack_gqa" and "attn_prompt_fast"

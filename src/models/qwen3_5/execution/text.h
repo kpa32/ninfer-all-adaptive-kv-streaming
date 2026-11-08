@@ -179,7 +179,7 @@ public:
 
     // A streaming text cache: the space whose per-layer pages stream, and the stream that carries
     // them. Null when every page is resident, which is every configuration but --kv-stream.
-    void set_kv_stream(StreamedKVSpace* space, cudaStream_t copy) noexcept {
+    void set_kv_stream(StreamedKVSpace* space, cudaStream_t copy) {
         kv_stream_space_ = space;
         kv_stream_copy_  = copy;
         stream_feeds_.assign(space == nullptr ? 0U : space->layers(), StreamFrameFeed{});

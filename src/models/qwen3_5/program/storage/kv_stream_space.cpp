@@ -472,8 +472,11 @@ std::uint32_t StreamedKVSpace::upload_frame(std::uint32_t layer, std::uint32_t f
 void StreamedKVSpace::seal_frame(std::uint32_t layer, std::uint32_t frame, cudaStream_t copy) {
     const std::size_t index = static_cast<std::size_t>(layer) * kFrameSlots + frame;
     if (report_) {
-        CUDA_CHECK(cudaEventRecord(frame_copy_end_[index], copy));
-        frame_copy_pending_[index] = 1;
+        // A frame that moved nothing has no begin to pair with, and an event that was never
+        // recorded has no time to read: only a frame whose copy began is timed.
+        if (frame_copy_pending_[index]) {
+            CUDA_CHECK(cudaEventRecord(frame_copy_end_[index], copy));
+        }
     }
     CUDA_CHECK(cudaEventRecord(ready_frame_[index], copy));
 }

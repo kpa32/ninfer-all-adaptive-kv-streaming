@@ -1335,11 +1335,11 @@ void KVExecutionTablePool::publish(KVExecutionRowHandle row_handle, std::uint32_
     }
     const std::vector<cudaStream_t> resolved = resolve_streams(streams);
     std::int32_t* shadow =
-        writable_shadow(row_handle, logical_begin, page_leases.size(), resolved);
+        writable_shadow(row_handle.row_, logical_begin, page_leases.size(), resolved);
     for (std::size_t index = 0; index < page_leases.size(); ++index) {
         shadow[index] = pages_->physical_index(page_leases[index].handle());
     }
-    publish_indices(row_handle, logical_begin,
+    publish_indices(row_handle.row_, logical_begin,
                     std::span<const std::int32_t>(shadow, page_leases.size()), resolved);
 }
 
@@ -1351,9 +1351,9 @@ void KVExecutionTablePool::publish_repeated(KVExecutionRowHandle row_handle,
     }
     const std::int32_t physical              = pages_->physical_index(page);
     const std::vector<cudaStream_t> resolved = resolve_streams(streams);
-    std::int32_t* shadow                     = writable_shadow(row_handle, 0, count, resolved);
+    std::int32_t* shadow                     = writable_shadow(row_handle.row_, 0, count, resolved);
     std::fill_n(shadow, count, physical);
-    publish_indices(row_handle, 0, std::span<const std::int32_t>(shadow, count), resolved);
+    publish_indices(row_handle.row_, 0, std::span<const std::int32_t>(shadow, count), resolved);
 }
 
 std::vector<cudaStream_t> KVExecutionTablePool::resolve_streams(RankStreams streams) const {

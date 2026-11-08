@@ -185,7 +185,9 @@ CASES: dict[str, Case] = {
         ),
         kind="perf",
         target_tokens=8000,
-        capacity=8192,
+        # The prompt itself stays 8 K, but the case must have room for its 512 output tokens:
+        # an 8 192-token capacity answers 245 of them and reports context-capacity.
+        capacity=16384,
         max_new=512,
         variants=("resident",),
         oracle="self",

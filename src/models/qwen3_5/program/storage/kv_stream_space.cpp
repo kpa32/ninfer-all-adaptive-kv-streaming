@@ -1,6 +1,7 @@
 #include "models/qwen3_5/program/storage/kv_stream_space.h"
 
 #include <stdexcept>
+#include <cstdlib>
 
 namespace ninfer::models::qwen3_5 {
 namespace {
@@ -82,6 +83,8 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
         }
         slot_handles_[static_cast<std::size_t>(slot)] = handle;
     }
+    // EXPERIMENT (temporary): drop the leases and see whether admission then places the request.
+    if (std::getenv("NINFER_KVSTREAM_EXPERIMENT") != nullptr) { slot_leases_.clear(); }
     create_events(ready_, layers_);
     create_events(consumed_, layers_);
 }

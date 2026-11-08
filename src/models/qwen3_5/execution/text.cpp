@@ -2045,10 +2045,20 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                 auto scope = work_.scope();
                 if (full) {
                     if (kv_stream_space_ != nullptr) {
+                        // The ring is one buffer for every layer, so a layer's pages are copied
+                        // just before that layer's attention reads them and not before: a round
+                        // that filled them all first would let each layer overwrite the previous
+                        // one's pages before anything read them.
+                        const std::uint32_t compact_layer = static_cast<std::uint32_t>(compact);
+                        const std::uint32_t previous =
+                            compact_layer == 0 ? kv_stream_space_->layers() - 1U
+                                               : compact_layer - 1U;
+                        CUDA_CHECK(cudaStreamWaitEvent(kv_stream_copy_,
+                                                       kv_stream_space_->consumed_event(previous),
+                                                       0));
+                        kv_stream_space_->upload(compact_layer, kv_stream_copy_);
                         CUDA_CHECK(cudaStreamWaitEvent(
-                            ctx_.stream,
-                            kv_stream_space_->ready_event(static_cast<std::uint32_t>(compact)),
-                            0));
+                            ctx_.stream, kv_stream_space_->ready_event(compact_layer), 0));
                     }
                     attn_mix(block, x, compact, ph);
                     if (kv_stream_space_ != nullptr) {
@@ -2705,34 +2715,8 @@ void TextContext::run_tensor_parallel(Tensor& x, Phase ph, Tap& tap) {
     layer_ready_ = {};
 }
 
-void TextContext::issue_kv_stream_uploads() {
-    if (kv_stream_space_ == nullptr) { return; }
-    const std::uint32_t layers = batch_text_kv_->layers();
-    // TEMPORARY DIAGNOSTIC (streamed KV): what the first rounds that need the ring move.
-    {
-        static int printed = 0;
-        if (kv_stream_space_->window_start() != 0 && printed < 10) {
-            std::fprintf(stderr,
-                         "KVSTREAM-DEBUG ring round %d active=%u window_start=%u upload_mib=%.1f\n",
-                         printed, kv_stream_space_->active_pages(),
-                         kv_stream_space_->window_start(),
-                         static_cast<double>(kv_stream_space_->uploaded_bytes()) / (1024.0 * 1024.0));
-            ++printed;
-        }
-    }
-    for (std::uint32_t layer = 0; layer < layers; ++layer) {
-        // The ring holds one layer's streamed pages: layer 0 waits for the previous round's last
-        // layer to finish reading it, and every later layer for its predecessor.
-        const std::uint32_t previous = layer == 0 ? layers - 1U : layer - 1U;
-        CUDA_CHECK(cudaStreamWaitEvent(kv_stream_copy_,
-                                       kv_stream_space_->consumed_event(previous), 0));
-        kv_stream_space_->upload(layer, kv_stream_copy_);
-    }
-}
-
 template <class Tap>
 void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
-    issue_kv_stream_uploads();
     if (!parameters_.text.split_execution()) {
         run_stage_layers(0, x, ph, tap);
         return;

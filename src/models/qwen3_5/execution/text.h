@@ -288,7 +288,6 @@ private:
     // Issues one round's per-layer uploads, each ordered against the previous layer's consumption.
     // A streaming round does not run from a captured graph, so its waits and records are ordinary
     // stream ordering.
-    void issue_kv_stream_uploads();
 
     // The layers one stage owns, on the device that stage's context is currently bound to.
     template <class Tap>

@@ -259,4 +259,26 @@ kv_capacity_spare(const KvCapacityPolicy& policy, const SequenceCapacityCurve& c
     return out;
 }
 
+KvCapacityResolution shrink_kv_capacity(const KvCapacityResolution& resolution,
+                                       const SequenceCapacityCurve& curve,
+                                       std::uint32_t main_page_groups) {
+    KvCapacityResolution out = resolution;
+    if (resolution.mode != KvCapacityMode::Automatic) { return out; }
+    out.main_page_groups = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(
+        main_page_groups, curve.minimum_main_page_groups,
+        std::min(curve.maximum_main_page_groups, resolution.maximum_main_page_groups)));
+    out.resolved_tokens           = curve.resolved_tokens(out.main_page_groups);
+    out.runtime_reservation_bytes = curve.reservation_bytes(out.main_page_groups);
+    out.extra_rank_reservation_bytes.clear();
+    for (std::size_t rank = 0; rank < resolution.extra_rank_reservation_bytes.size(); ++rank) {
+        out.extra_rank_reservation_bytes.push_back(
+            curve.extra_rank_reservation_bytes(rank, out.main_page_groups));
+    }
+    out.planned_slack_bytes = out.available_after_weights_bytes > out.runtime_reservation_bytes
+                                  ? out.available_after_weights_bytes -
+                                        out.runtime_reservation_bytes
+                                  : 0;
+    return out;
+}
+
 } // namespace ninfer::runtime

@@ -43,6 +43,11 @@ using Clock = std::chrono::steady_clock;
 
 constexpr std::uint32_t kMaximumDecodeRoundsPerPrefill = 4096;
 
+// An automatic KV plan that the Program could not get memory for gives back this much a try, and
+// startup gives up after this many tries (kv_capacity.h shrink_kv_capacity).
+constexpr std::size_t kKvPoolRetryStepBytes     = 64ULL * 1024ULL * 1024ULL;
+constexpr std::uint32_t kKvPoolStartAttempts    = 6;
+
 void validate_options(const EngineOptions& options) {
     if (options.artifact_path.empty()) {
         throw std::invalid_argument("Engine artifact_path must not be empty");
@@ -916,28 +921,72 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
             options.kv_capacity, planner->capacity_curve(), free_by_rank.front(),
             std::span<const std::size_t>(free_by_rank).subspan(1));
     }
-    auto sequence   = std::move(*planner).finalize(resolution.main_page_groups);
-    if (sequence.device_reservation_bytes() != resolution.runtime_reservation_bytes ||
-        sequence.kv_capacity() != resolution.resolved_tokens ||
-        !std::ranges::equal(sequence.extra_rank_reservation_bytes(),
-                            resolution.extra_rank_reservation_bytes)) {
-        throw std::logic_error("resolved KV capacity does not match the finalized Program plan");
-    }
+    // Automatic KV takes what the device actually has, and its plan is only an estimate of that; an
+    // explicit capacity is an instruction. So a Program that cannot get the memory an automatic plan
+    // promised is rebuilt with a smaller pool instead of failing the launch: the pool gives back
+    // 64 MiB of page groups a try, and the plan's own minimum ends it. The reservation fields come
+    // from the same curve, so the smaller plan stays self-consistent and the retries are bounded.
+    //
+    // A model with a staged Expert runtime is not retried: the runtime is moved into the Program, so
+    // a second attempt could not reuse it.
+    SequenceCapacityCurve curve = planner->capacity_curve();
+    const std::size_t retry_step_pages =
+        curve.bytes_per_additional_main_page_group == 0
+            ? 0
+            : std::max<std::size_t>(1, kKvPoolRetryStepBytes /
+                                           curve.bytes_per_additional_main_page_group);
+    const bool retry_capacity =
+        resolution.mode == KvCapacityMode::Automatic && experts == nullptr && retry_step_pages != 0;
     // The plan is the one authority for the resolved context-cache shape: its Host state slots,
     // Host KV bytes and long-anchor count may have been derived from the single host RAM budget.
     // Publishing that shape to the options the Engine keeps — and to the frontend grid built
     // before the plan existed — keeps the reported options, the ResourceManager and the Program
     // on the same capacity instead of a silently divergent default.
     EngineOptions resolved = options;
-    resolved.context_cache = sequence.context_cache_options();
-    instance->frontend.publish_long_anchor_limit(
-        resolved.context_cache.max_long_anchors_per_continuation.value_or(0));
-    instance->kv_capacity_resolution = resolution;
-    planning->complete();
     StartupPhaseScope program(options.startup_observer, StartupPhase::ProgramInitialize);
-    instance->program = models::qwen3_5::create_program(
-        instance->parameters, std::move(sequence), device, options.startup_observer,
-        std::move(experts), instance->steering.get());
+    for (std::uint32_t attempt = 0;; ++attempt) {
+        auto sequence = std::move(*planner).finalize(resolution.main_page_groups);
+        if (sequence.device_reservation_bytes() != resolution.runtime_reservation_bytes ||
+            sequence.kv_capacity() != resolution.resolved_tokens ||
+            !std::ranges::equal(sequence.extra_rank_reservation_bytes(),
+                                resolution.extra_rank_reservation_bytes)) {
+            throw std::logic_error("resolved KV capacity does not match the finalized Program "
+                                   "plan");
+        }
+        resolved               = options;
+        resolved.context_cache = sequence.context_cache_options();
+        instance->frontend.publish_long_anchor_limit(
+            resolved.context_cache.max_long_anchors_per_continuation.value_or(0));
+        instance->kv_capacity_resolution = resolution;
+        try {
+            instance->program = models::qwen3_5::create_program(
+                instance->parameters, std::move(sequence), device, options.startup_observer,
+                std::move(experts), instance->steering.get());
+            break;
+        } catch (const std::exception& failure) {
+            const std::uint32_t smallest = std::max<std::uint32_t>(
+                curve.minimum_main_page_groups, resolution.main_page_groups > retry_step_pages
+                                                     ? resolution.main_page_groups -
+                                                           static_cast<std::uint32_t>(
+                                                               retry_step_pages)
+                                                     : 0U);
+            if (!retry_capacity || attempt + 1U >= kKvPoolStartAttempts ||
+                smallest == resolution.main_page_groups) {
+                throw;
+            }
+            publish_diagnostic(options.diagnostic_observer, DiagnosticLevel::Info,
+                               "KV capacity: %u page groups did not fit (%s); retrying with %u",
+                               resolution.main_page_groups, failure.what(), smallest);
+            resolution = shrink_kv_capacity(resolution, curve, smallest);
+            planner.emplace(models::qwen3_5::make_sequence_planner(
+                instance->parameters, device,
+                artifact_scoped_disk_tier(options, instance->model->info().artifact_id,
+                                          control_vectors_digest(instance->steering.get())),
+                graft_main_pages));
+            curve = planner->capacity_curve();
+        }
+    }
+    planning->complete();
     if (const std::string routes = instance->program->tensor_parallel_routes(); !routes.empty()) {
         publish_diagnostic(options.diagnostic_observer, DiagnosticLevel::Info, "%s",
                            routes.c_str());

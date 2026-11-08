@@ -415,13 +415,14 @@ RequestBasePlan ProgramImpl::plan_request(const PreparedPromptData& prompt,
         // outright, so the sequence itself claims no main page: admission reserves nothing, and the
         // owner-resource check compares zero against zero. The context it may reach is bounded by
         // max_context, not by this number.
-        base->text_kv_page_entitlement    = 0;
-        base->backend_kv_page_entitlement = 0;
-        if (speculative_backend == SpeculativeBackend::Mtp) {
-            base->backend_kv_page_entitlement =
-                kv_pages_for_tokens(std::min(capacity, base->summary.prompt_tokens +
-                                                           widest_verify_window() + draft_window));
-        }
+        base->text_kv_page_entitlement = 0;
+        // The MTP pool is an ordinary pool of real pages that this sequence does materialize, so
+        // its entitlement keeps the ordinary formula: it is the number every coverage check and
+        // every restore below compares against.
+        const KVPageEntitlement entitlement =
+            kv_page_entitlement(kv_entitlement_shape(), base->summary.prompt_tokens,
+                                std::max(base->summary.effective_output_tokens, branch_output));
+        base->backend_kv_page_entitlement = entitlement.backend_pages;
     } else if (!context_cache.kv_lease_growth) {
         // One formula with concurrent_output_budget (planning/output_budget.h).
         const KVPageEntitlement entitlement =

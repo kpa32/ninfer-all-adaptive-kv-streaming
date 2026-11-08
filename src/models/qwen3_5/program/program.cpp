@@ -775,7 +775,6 @@ StreamedKvStats Program::streamed_kv_stats() const {
 std::uint32_t Program::concurrent_output_budget(std::uint32_t prompt_tokens) const noexcept {
     return impl_->concurrent_output_budget(prompt_tokens);
 }
-std::uint32_t Program::concurrent_output_budget(std::uint32_t prompt_tokens) const noexcept {
 
 void Program::reset_memory_peaks() noexcept { impl_->reset_memory_peaks(); }
 

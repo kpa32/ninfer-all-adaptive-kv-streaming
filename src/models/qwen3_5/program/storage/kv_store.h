@@ -1642,6 +1642,7 @@ public:
     [[nodiscard]] bool can_resize_entitlement(KVAddressSpaceHandle handle,
                                               std::uint32_t entitlement) const {
         const Address& address = require_active(handle);
+        if (stream_space_ != nullptr) { return entitlement == address.page_count; }
         return entitlement >= address.page_count && entitlement <= page_capacity_ &&
                pages_->physical_pool().can_resize_reservation(address.reservation,
                                                               entitlement - address.page_count);
@@ -1649,6 +1650,11 @@ public:
 
     void resize_entitlement(KVAddressSpaceHandle handle, std::uint32_t entitlement) {
         Address& address = require_active(handle);
+        if (stream_space_ != nullptr) {
+            // The space owns the pool: a streamed address holds no page reservation to resize.
+            (void)entitlement;
+            return;
+        }
         if (entitlement < address.page_count) {
             throw std::invalid_argument("KV entitlement is smaller than mapped pages");
         }
@@ -1661,6 +1667,7 @@ public:
 
     void release_growth_entitlement(KVAddressSpaceHandle handle) {
         Address& address = require_active(handle);
+        if (stream_space_ != nullptr) { return; }
         pages_->physical_pool().resize_reservation(address.reservation, 0);
     }
 
@@ -1714,6 +1721,14 @@ public:
 
     void commit_frontier(KVAddressSpaceHandle handle, std::uint32_t frontier) {
         Address& address = require_active(handle);
+        if (stream_space_ != nullptr) {
+            // No logical page tracks a streamed address; the frontier is what the sequence reports.
+            if (frontier < address.committed_frontier) {
+                throw std::invalid_argument("KV committed frontier is invalid");
+            }
+            address.committed_frontier = frontier;
+            return;
+        }
         if (frontier < address.committed_frontier ||
             pages_for_tokens(frontier) > address.page_count) {
             throw std::invalid_argument("KV committed frontier is invalid");
@@ -1734,6 +1749,15 @@ public:
 
     void destructive_truncate(KVAddressSpaceHandle handle, std::uint32_t frontier) {
         Address& address = require_active(handle);
+        if (stream_space_ != nullptr) {
+            // The space's frontier only grows within one request, and a streamed request never
+            // truncates below what it wrote: a fresh request resets the space deactivation already.
+            if (frontier > address.committed_frontier) {
+                throw std::invalid_argument("KV truncate frontier is beyond the sequence");
+            }
+            address.committed_frontier = frontier;
+            return;
+        }
         if (frontier > address.committed_frontier) {
             throw std::invalid_argument("KV destructive truncate extends the frontier");
         }

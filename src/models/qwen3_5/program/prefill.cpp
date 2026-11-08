@@ -733,7 +733,10 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                            prompt_tokens + (initial_mtp_extent == 0 ? 0U : initial_mtp_extent - 1U))
             : speculative_backend == SpeculativeBackend::DFlash ? prompt_tokens
                                                                 : 0U;
-        ensure_sequence_kv_mapped(sequence, prompt_tokens, backend_materialized);
+        // The chunk loop below publishes a streamed cache's pages as it reaches them: publishing the
+        // whole prompt here would put every page past the window before any of them holds a byte.
+        ensure_sequence_kv_mapped(sequence, prompt_tokens, backend_materialized,
+                                  /*publish_stream_pages=*/false);
         request.grammar  = request_plan.grammar;
         request.logprobs = request_plan.logprobs;
         request.readout_tokens = request_plan.readout_tokens;

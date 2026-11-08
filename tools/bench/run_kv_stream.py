@@ -967,9 +967,10 @@ def run_case(
         entry = case_entry(case, variant, program)
         entry["sentences"] = sentences
         entry["prompt_sha256"] = sha256_text(prompt_text(sentences))
-        if golden_meta:
+        if golden_meta and not record:
             # A golden recorded for a different prompt is not evidence about this one: the recipe
             # changed and the ids must be recorded again instead of matching an older question.
+            # While recording, this run *is* the source, so there is nothing older to match.
             entry["checks"]["golden_prompt_matches"] = (
                 golden_meta.get("prompt_sha256") == entry["prompt_sha256"]
             )
@@ -990,7 +991,7 @@ def run_case(
             record_rep(entry, result, variant, case)
             if result.returncode != 0:
                 print(f"  exit {result.returncode}: {result.stderr_tail}")
-        finish_entry(entry, golden)
+        finish_entry(entry, [] if record else golden)
         entries.append(entry)
         campaign.data["cases"].append(entry)
         campaign.save()

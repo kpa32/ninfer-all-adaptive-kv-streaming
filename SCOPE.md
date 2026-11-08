@@ -78,8 +78,10 @@ Legacy 与 Hybrid 两种 context/prefix cache、GDN、dense attention、CUDA Gra
 `--invariant-attention`、`--gdn-state-fp16`、结构化输出、离线 CausalScoring（`ninfer-perplexity`）、
 **Vision（图片/视频，永久保留）**、每卡 device profile 与 `ninfer-calibrate`、`--max-concurrency 1..8`。
 
-KV 存储格式：`bf16`、`rk8v4`、`rk4v4`、`rk2v4-e8` 必须保留；`int8`、`fp8`、`rk4v4-e8`、`k8v4`、
-`nvfp4` 的去留见 `CUTLIST.md` B2（默认保留）。
+KV 存储格式：**九种全部保留**。**质量下限（所有者实测）：`rk8v4` 是可用的最低档；`rk4v4`
+及以下在真实任务上幻觉与记忆明显变差、无法工作；阶段 2 做流式之后倾向于用 `int8`。**
+因此 `int8` 的 codec 与选项必留；删 `fp8`/`k8v4`/`nvfp4` 三种仅当 `CUTLIST.md` B2 被批准。
+`rk2v4-e8` 能原生装下 262K 的事实只是容量数据点，**不是**可交付的工作配置。
 
 多卡（pipeline stages、tensor parallelism）：**保留代码**，但它是"耦合极深、阶段 1 不动"的一类；
 本产品的目标是单卡，多卡不参与验收。
@@ -90,6 +92,7 @@ KV 存储格式：`bf16`、`rk8v4`、`rk4v4`、`rk2v4-e8` 必须保留；`int8`�
 ## 4. 新增能力：自适应 KV 流式（本分叉的唯一新增产品能力）
 
 - 目标：262 144 原生上下文在 16 GiB 上不 OOM，decode 稳定，正确性与全驻留路径逐 token 一致。
+  **质量前提：`rk8v4` 或更好（`int8`）；`rk4v4` 及以下不作为交付配置。**
 - 形态：host（pinned）为权威 KV，设备持有 resident 区 + 有界 ring，按 full-attention 层流式预取，
   resident/streaming 划分按可用显存自适应。
 - 复用：`src/ops/kv_stream/*`（410 行，Flash-Next 删掉后仍保留）与 `core/host_kv_arena.*` 的

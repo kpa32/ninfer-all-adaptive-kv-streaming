@@ -806,7 +806,9 @@ void ProgramImpl::prepare_materialization(MaterializationTransaction& transactio
             backend_address = *transaction.root_backend_address;
         }
     }
-    if (details.text_kv_page_entitlement == 0 ||
+    // A streamed root claims no text page: the space owns them all and the address only carries the
+    // row its layer tables are read through, so it is the one address that may be entitled to none.
+    if ((details.text_kv_page_entitlement == 0 && !text_kv_addresses->streaming()) ||
         backend_address.has_value() != (details.backend_kv_page_entitlement != 0)) {
         throw std::logic_error("materialization KV addresses do not match their entitlements");
     }

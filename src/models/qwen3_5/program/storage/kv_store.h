@@ -942,6 +942,8 @@ public:
     // page reservation takes part.
     void enable_streaming(StreamedKVSpace* space) noexcept { stream_space_ = space; }
 
+    [[nodiscard]] bool streaming() const noexcept { return stream_space_ != nullptr; }
+
     void activate(KVAddressSpaceHandle handle, std::uint32_t entitlement,
                   std::int32_t execution_row, RankStreams streams) {
         Address& address = require(handle);

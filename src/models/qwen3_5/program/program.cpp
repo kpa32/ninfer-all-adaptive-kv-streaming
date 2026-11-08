@@ -757,9 +757,25 @@ ExpertResidencyStats Program::expert_residency_stats() const {
     return out;
 }
 
+StreamedKvStats Program::streamed_kv_stats() const {
+    StreamedKvStats out;
+    if (!impl_->text_stream_space) { return out; }
+    const StreamedKVSpace::TransferStats stats = impl_->text_stream_space->transfer_stats();
+    out.enabled        = true;
+    out.resident_pages = stats.resident_pages;
+    out.streamed_pages = stats.streamed_pages;
+    out.layers         = stats.layers;
+    out.rounds         = stats.rounds;
+    out.upload_bytes   = stats.upload_bytes;
+    out.copy_busy_seconds = stats.copy_busy_seconds;
+    out.exposed_seconds   = stats.exposed_seconds;
+    return out;
+}
+
 std::uint32_t Program::concurrent_output_budget(std::uint32_t prompt_tokens) const noexcept {
     return impl_->concurrent_output_budget(prompt_tokens);
 }
+std::uint32_t Program::concurrent_output_budget(std::uint32_t prompt_tokens) const noexcept {
 
 void Program::reset_memory_peaks() noexcept { impl_->reset_memory_peaks(); }
 

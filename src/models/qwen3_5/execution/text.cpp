@@ -2024,6 +2024,11 @@ template <class Tap>
 void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& tap) {
     const bool prefill      = ph == Phase::Prefill;
     const std::uint32_t end = parameters_.text.stage_end(stage);
+    // A stage-0 decode pass is one round of the streaming loop, and the round before it is done
+    // with its copies by the time this one starts issuing them.
+    if (kv_stream_space_ != nullptr && !prefill && stage == 0) {
+        kv_stream_space_->begin_round();
+    }
     // The adapters' measures start from the residual the stage receives.
     steer(ops::SteerResidualStep::Measure, 0, -1, x);
     for (std::uint32_t layer = parameters_.text.stage_begin[stage]; layer < end; ++layer) {
@@ -2058,8 +2063,9 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                                                        kv_stream_space_->consumed_event(previous),
                                                        0));
                         kv_stream_space_->upload(compact_layer, kv_stream_copy_);
-                        CUDA_CHECK(cudaStreamWaitEvent(
-                            ctx_.stream, kv_stream_space_->ready_event(compact_layer), 0));
+                        // The wait is measured: whatever it costs here is copy time this round
+                        // could not hide behind compute.
+                        kv_stream_space_->wait_ready(compact_layer, ctx_.stream);
                     }
 
                     attn_mix(block, x, compact, ph);

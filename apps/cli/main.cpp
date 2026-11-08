@@ -264,6 +264,30 @@ void print_generation_summary(const ninfer::GenerationResult& result,
         }
     }
 
+    // What the streamed KV path moved and what the compute stream waited for it. The exposed share
+    // is the headroom a scheduling change could still take; copy busy is what the link carried.
+    const ninfer::StreamedKvStats& streamed = stats.streamed_kv;
+    if (streamed.enabled) {
+        print_metric("stream window", std::to_string(streamed.resident_pages) + " pages/layer");
+        print_metric("stream ring", std::to_string(streamed.streamed_pages) + " pages x " +
+                                         std::to_string(streamed.layers) + " layers");
+        print_metric("stream rounds", std::to_string(streamed.rounds));
+        print_metric("stream upload", format_bytes(streamed.upload_bytes));
+        if (streamed.rounds != 0) {
+            std::ostringstream busy, exposed, per_round;
+            const double rounds = static_cast<double>(streamed.rounds);
+            busy << std::fixed << std::setprecision(2)
+                 << 1e3 * streamed.copy_busy_seconds / rounds << " ms/round";
+            exposed << std::fixed << std::setprecision(2)
+                    << 1e3 * streamed.exposed_seconds / rounds << " ms/round";
+            per_round << format_bytes(
+                static_cast<std::uint64_t>(static_cast<double>(streamed.upload_bytes) / rounds));
+            print_metric("stream copy busy", busy.str());
+            print_metric("stream exposed wait", exposed.str());
+            print_metric("stream upload per round", per_round.str());
+        }
+    }
+
     const ninfer::SpeculativeStats& speculative = result.speculative;
     if (speculative.enabled) {
         const std::string backend = ninfer::product::speculative_backend_name(speculative.backend);

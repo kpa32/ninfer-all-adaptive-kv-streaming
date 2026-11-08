@@ -75,12 +75,80 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
     create_events(ready_, layers_);
     create_events(consumed_, layers_);
     create_events(dropped_, layers_);
+    // Timing events keep their times, so they are created without the disable-timing flag.
+    const auto create_timed = [&](std::vector<cudaEvent_t>& events) {
+        events.assign(layers_, nullptr);
+        for (cudaEvent_t& event : events) { CUDA_CHECK(cudaEventCreate(&event)); }
+    };
+    create_timed(copy_begin_);
+    create_timed(copy_end_);
+    create_timed(wait_begin_);
+    create_timed(wait_end_);
+    copy_pending_.assign(layers_, 0);
+    wait_pending_.assign(layers_, 0);
 }
 
 StreamedKVSpace::~StreamedKVSpace() {
     destroy_events(ready_);
     destroy_events(consumed_);
     destroy_events(dropped_);
+    destroy_events(copy_begin_);
+    destroy_events(copy_end_);
+    destroy_events(wait_begin_);
+    destroy_events(wait_end_);
+}
+
+void StreamedKVSpace::add_timing(cudaEvent_t begin, cudaEvent_t end, std::uint8_t& pending,
+                                 double& into) {
+    if (!pending) { return; }
+    if (cudaEventQuery(end) != cudaSuccess) {
+        // Not finished yet; the query cleared any error it reported, and the pair stays pending.
+        (void)cudaGetLastError();
+        return;
+    }
+    float milliseconds = 0.0F;
+    if (cudaEventElapsedTime(&milliseconds, begin, end) != cudaSuccess) {
+        (void)cudaGetLastError();
+        return;
+    }
+    into += static_cast<double>(milliseconds) / 1000.0;
+    pending = false;
+}
+
+void StreamedKVSpace::collect_timings() {
+    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+        add_timing(copy_begin_[layer], copy_end_[layer], copy_pending_[layer], copy_seconds_);
+        add_timing(wait_begin_[layer], wait_end_[layer], wait_pending_[layer], exposed_seconds_);
+    }
+}
+
+void StreamedKVSpace::begin_round() {
+    collect_timings();
+    ++rounds_;
+    upload_bytes_ += uploaded_bytes();
+}
+
+void StreamedKVSpace::wait_ready(std::uint32_t layer, cudaStream_t compute) {
+    if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
+    if (compute == nullptr) {
+        throw std::invalid_argument("A streamed KV wait needs a compute stream");
+    }
+    CUDA_CHECK(cudaEventRecord(wait_begin_[layer], compute));
+    CUDA_CHECK(cudaStreamWaitEvent(compute, ready_[layer], 0));
+    CUDA_CHECK(cudaEventRecord(wait_end_[layer], compute));
+    wait_pending_[layer] = 1;
+}
+
+StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() const {
+    return TransferStats{
+        .resident_pages      = split_.resident_pages,
+        .streamed_pages      = window_start(),
+        .layers              = layers_,
+        .rounds              = rounds_,
+        .upload_bytes        = upload_bytes_,
+        .copy_busy_seconds   = copy_seconds_,
+        .exposed_seconds     = exposed_seconds_,
+    };
 }
 
 HostKVAllocationView StreamedKVSpace::host_pages(std::uint32_t layer) noexcept {
@@ -152,6 +220,7 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
     if (copy == nullptr) { throw std::invalid_argument("A streamed KV upload needs a copy stream"); }
     const std::uint32_t count = window_start();
+    CUDA_CHECK(cudaEventRecord(copy_begin_[layer], copy));
     if (count != 0) {
         // Every streamed page of this layer, page 0 first, into the consecutive ring slots; the
         // pool turns the run into one strided transfer per plane. The host copies a round's window
@@ -160,6 +229,8 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
         cache_->page_pool().copy_from_host_pages(host_pages(layer).data(), host_layout_,
                                                  ring_base_, count, RankStreams(copy));
     }
+    CUDA_CHECK(cudaEventRecord(copy_end_[layer], copy));
+    copy_pending_[layer] = 1;
     CUDA_CHECK(cudaEventRecord(ready_[layer], copy));
 }
 

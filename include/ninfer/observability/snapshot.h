@@ -72,6 +72,8 @@ struct RuntimeStats {
     // sum of the requests in them.
     std::uint64_t shared_prefill_passes     = 0;
     std::uint64_t shared_prefill_requests   = 0;
+    // Streamed KV traffic and the compute time it made the device wait for.
+    StreamedKvStats streamed_kv;
     std::uint32_t running_requests          = 0;
     std::uint32_t prefilling_requests       = 0;
     std::uint32_t decode_ready_requests     = 0;

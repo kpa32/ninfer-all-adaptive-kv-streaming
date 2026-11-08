@@ -97,9 +97,36 @@ public:
     [[nodiscard]] cudaEvent_t consumed_event(std::uint32_t layer) const;
     [[nodiscard]] cudaEvent_t dropped_event(std::uint32_t layer) const;
 
+    // What one request's streaming asked of the PCIe link, and what the compute stream waited for.
+    // `exposed_seconds` is the number that decides whether scheduling work can still buy anything:
+    // it counts the time the compute stream spent on a `wait_ready` whose copy had not landed.
+    struct TransferStats {
+        std::uint32_t resident_pages = 0;
+        std::uint32_t streamed_pages = 0;
+        std::uint32_t layers         = 0;
+        std::uint64_t rounds         = 0;
+        std::uint64_t upload_bytes   = 0;
+        double copy_busy_seconds     = 0.0;
+        double exposed_seconds       = 0.0;
+    };
+
+    // Marks the first layer of a decode round: the previous round's copies are complete by now, so
+    // their measured times are collected and the round counts.
+    void begin_round();
+
+    // Waits on `layer`'s ready event on the compute stream and measures how much of that wait was
+    // real, which is the copy time this round could not hide.
+    void wait_ready(std::uint32_t layer, cudaStream_t compute);
+
+    [[nodiscard]] TransferStats transfer_stats() const;
+
 private:
     void publish_slot(std::uint32_t layer, std::uint32_t page, std::int32_t slot,
                       RankStreams streams);
+    // Adds every complete pair of timing events to the accumulators. A pair whose events have not
+    // completed yet is left for a later call; a re-recorded pair overwrites the pending one.
+    void collect_timings();
+    void add_timing(cudaEvent_t begin, cudaEvent_t end, std::uint8_t& pending, double& into);
 
     PagedKVCache* cache_               = nullptr;
     // The host authority's pages, allocated for this cache alone: the retention arena belongs to a
@@ -116,6 +143,18 @@ private:
     std::vector<cudaEvent_t> ready_;
     std::vector<cudaEvent_t> consumed_;
     std::vector<cudaEvent_t> dropped_;
+    // Timing pairs, one per layer for each of the two phases of a round: the copy on the copy
+    // stream and the wait for it on the compute stream.
+    std::vector<cudaEvent_t> copy_begin_;
+    std::vector<cudaEvent_t> copy_end_;
+    std::vector<cudaEvent_t> wait_begin_;
+    std::vector<cudaEvent_t> wait_end_;
+    std::vector<std::uint8_t> copy_pending_;
+    std::vector<std::uint8_t> wait_pending_;
+    std::uint64_t rounds_        = 0;
+    std::uint64_t upload_bytes_  = 0;
+    double copy_seconds_         = 0.0;
+    double exposed_seconds_      = 0.0;
     std::uint32_t active_ = 0;
 };
 

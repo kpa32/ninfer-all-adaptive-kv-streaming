@@ -167,4 +167,20 @@ struct ExpertResidencyStats {
     std::uint32_t slots             = 0;
 };
 
+// Streamed KV (--kv-stream), monotonic. `resident_pages` is the newest-pages window one
+// full-attention layer keeps on the device and `streamed_pages` the pages the shared ring moves
+// every round; `upload_bytes` is what that traffic came to. `exposed_seconds` counts the time the
+// compute stream spent waiting for those copies, so it is the scheduling headroom the streaming
+// loop has left: a round whose copies the compute path hides shows almost none.
+struct StreamedKvStats {
+    bool enabled                 = false;
+    std::uint32_t resident_pages = 0;
+    std::uint32_t streamed_pages = 0;
+    std::uint32_t layers         = 0;
+    std::uint64_t rounds         = 0;
+    std::uint64_t upload_bytes   = 0;
+    double copy_busy_seconds     = 0.0;
+    double exposed_seconds       = 0.0;
+};
+
 } // namespace ninfer

@@ -1849,8 +1849,14 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
         static_cast<std::uint64_t>(std::max(logical_pages, inputs.max_concurrency)) +
         resident_main_pages;
     const std::uint64_t maximum_pages64 =
-        maximum_main_page_groups(inputs.max_concurrency, logical_pages, inputs.context_cache) +
-        resident_main_pages;
+        inputs.features.kv_stream
+            ? static_cast<std::uint64_t>(
+                  parameters.model.config().text.full_attention_layers) *
+                      logical_pages +
+                  resident_main_pages
+            : maximum_main_page_groups(inputs.max_concurrency, logical_pages,
+                                       inputs.context_cache) +
+                  resident_main_pages;
     if (maximum_pages64 > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("maximum Main KV page count exceeds uint32");
     }

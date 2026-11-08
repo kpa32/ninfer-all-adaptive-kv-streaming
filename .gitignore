@@ -91,3 +91,6 @@ repro/
 third_party/webui/
 # FFmpeg and dav1d release archives fetched by scripts/fetch-media-sources.sh.
 third_party/media-sources/
+
+# Local session state: the chat TODO plan and temporary task specs.
+.thinkrail/

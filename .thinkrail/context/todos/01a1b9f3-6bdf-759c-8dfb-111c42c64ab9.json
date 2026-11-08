@@ -1,0 +1,351 @@
+{
+  "version": 6,
+  "todos": [],
+  "groups": [
+    {
+      "id": "g_d87f8a3cfd1f",
+      "title": "kv-streaming 分支与资料归档",
+      "todos": [
+        {
+          "id": "t_2fc5a08b043f",
+          "title": "回滚全部删除",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:45:17.068Z",
+          "updatedAt": "2026-11-08T07:45:17.068Z",
+          "note": "工作区干净，3220 个文件全在，删减批次在 stash@{0}"
+        },
+        {
+          "id": "t_fed0b5b79b6e",
+          "title": "从 master 建 kv-streaming 分支",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:45:17.068Z",
+          "updatedAt": "2026-11-08T07:45:17.068Z",
+          "note": "从 origin/master 6eb311fd 开分支并设好 upstream"
+        },
+        {
+          "id": "t_3acc6e192d1d",
+          "title": "把两份资料存进仓库",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:45:17.068Z",
+          "updatedAt": "2026-11-08T07:45:17.068Z",
+          "note": "docs/maintainer/adaptive-kv-streaming-inputs.md：参考文章全文 + CUDA Graph 说明，标明是输入不是现状"
+        },
+        {
+          "id": "t_5ce5d41fa20b",
+          "title": "写设计文档与真实上界",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:45:17.068Z",
+          "updatedAt": "2026-11-08T07:45:17.068Z",
+          "note": "docs/maintainer/kv-streaming-design.md：容量与带宽预算、机制、D1–D5、验收、M0–M5"
+        },
+        {
+          "id": "t_e661934bf7d8",
+          "title": "建 spec 节点并推送分支",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:45:17.068Z",
+          "updatedAt": "2026-11-08T07:45:17.068Z",
+          "note": "spec_validate 无问题；7 个节点已可见"
+        }
+      ]
+    },
+    {
+      "id": "g_ab78f8991da9",
+      "title": "调研与原型文档",
+      "todos": [
+        {
+          "id": "t_005af0328b7b",
+          "title": "读参考实现：数据放置/调度/控制器/硬限制",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_3911872f042a",
+          "title": "核实 NInfer：页几何、表、搬运原语、图捕获、两个前例",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_7cb99e4647ba",
+          "title": "算出“per-layer plane 下流式不可能省内存”并改设计",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_221f1330be3d",
+          "title": "写 452 行原型文档并推送",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        }
+      ]
+    },
+    {
+      "id": "g_435665864e59",
+      "title": "M0 核实（施工前置）",
+      "todos": [
+        {
+          "id": "t_65c3b9e06d30",
+          "title": "核实块表在重放间的设备地址稳定性",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:13:33.657Z",
+          "note": "paged-kv-cache 的发布路径 + decode_graph 的捕获键",
+          "summary": "表池的 `replicas_` 在构造时一次性分配，`row()` 只是它的切片视图 → 设备地址在整个进程生命周期内稳定，发布只改内容，CUDA Graph 可以一直重放。发布路径 = `pinned host_shadow_` + `cudaMemcpyAsync` + 每 (row, replica) 一个 `RowFence` 事件；不相交的条目无需等待，捕获中直接跳过 fence，成本为一次 memcpy + 一次 record。每层表不需要新基础设施：`table_rows = 16`（每个 full-attention 层一行）即可。",
+          "verification": "- 读 `src/core/paged_kv_cache.h:480-556`（KVExecutionTablePool 合同）→ 地址稳定、fence 机制确认\n- 读 `paged_kv_cache.cpp:1380-1405`（publish_indices）→ memcpyAsync + 捕获时跳过 fence 确认\n- 读 `paged_kv_cache.cpp:681-684`（physical_index）→ 只校验 owner/generation，槽号可任意"
+        },
+        {
+          "id": "t_dac38d8034a8",
+          "title": "核实 cudaEventWaitExternal 重放语义",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:13:36.621Z",
+          "note": "structured_round.cpp:136 之外，每轮 record 同一事件是否合法",
+          "summary": "NInfer 已经在用“每轮重录同一事件 + 图内等待”这个 idiom：捕获中走 `cudaStreamWaitEvent(..., cudaEventWaitExternal)` 变成图内外部事件节点，非捕获（热身轮）走 `cudaEventWaitDefault`。所以 16 层 × 2 个事件只需要照抄这个模式，不需要新机制。",
+          "verification": "- 读 `src/models/qwen3_5/program/structured_round.cpp:131-146` → 捕获/非捕获两种等待分支确认"
+        },
+        {
+          "id": "t_11aacf2e40d2",
+          "title": "核实页拷贝的图外/图内配对",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:13:39.318Z",
+          "note": "PhysicalKVPagePool::copy_from_host 能否图外投递、图内等",
+          "summary": "`copy_from_host` 是纯异步宿主函数（不发同步）：把目标页按**连续 run** 分组，每个 plane 一条 `cudaMemcpy2DAsync`（device pitch = `plane.nb[3]`，host pitch = `host_pitch × stride`），只在 host stride 超出 `device_max_copy_pitch()` 时才退化成逐页拷贝。环槽是连续区间 → 每层每 plane 正好一条 2D 拷贝。因此“图外在拷贝流上投递 + record 事件 + 图内等待”完全成立。",
+          "verification": "- 读 `src/core/paged_kv_cache.cpp:866-925`（copy_host_run）→ 每 plane 一条 2D 拷贝、无同步确认\n- 读 `src/core/paged_kv_cache.cpp:953-985`（copy_from_host）→ 连续 run 分组确认"
+        },
+        {
+          "id": "t_2c79fede2a90",
+          "title": "核实 MTP/DFlash2 KV 的页数与预算扣减",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:13:42.022Z",
+          "note": "262K 时 MTP 107 MB、DFlash2 5×sliding；它们不参与流式",
+          "summary": "**推翻了原来的 107 MB 假设**：`mtp_physical_pages = main physical pages + ceil((draft_window−1)/64) × max_concurrency`，同 dtype、`mtp_layers = 1`。262 144 + MTP3 → MTP KV = 4097 页 × 104 448 B = **428 MB**（`rk8v4`），不是 107 MB。而 3.07 GB 的预算来自带 MTP3 的实测运行时容量，所以它**已经包含**这 428 MB → 流式池实际只有 2.64 GB（25 300 页）。容量表和所有上界都要重算：R = 1413/层、S = 2683 页（280 MB）、每轮 4.48 GB → **15.0 tok/s**（原写 16.4）。DFlash2 的五层全是 local attention，draft 用 cyclic storage，不占 growing pool。",
+          "verification": "- 读 `src/models/qwen3_5/program/planning/startup.cpp:145-152`（mtp_extra_pages / mtp_physical_pages）→ 与主池同尺寸确认\n- 读同文件 `:221` → `.mtp_layers = 1`\n- 反算 MTP KV = 4097 × 104 448 B = 427.9 MB，与实测容量降幅 −0.73 GB（含权重与工作区）自洽"
+        },
+        {
+          "id": "t_30e5753ee4f4",
+          "title": "实测 PCIe 4.0 x16 的有效 H2D 带宽",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:14:55.415Z",
+          "note": "假设 25 GB/s；若只有 18，262K MVP 掉到约 12 tok/s",
+          "summary": "实测 PCIe 4.0 x16：**25.77 GB/s H2D / 25.44 D2H**；2D 拷贝（4096 行 × 104 448 B，即一层流式段的真实形状）同速 25.80；**并发 spin kernel 时 20.803 ms vs 串行 20.832 ms → 拷贝引擎与计算完全独立**，这是 M3 重叠成立的前提。原设计假设的 25 GB/s 成立（略保守）。",
+          "verification": "- `/tmp` 下 nvcc 单文件基准（512 MiB pinned，各方向 30 次 + 2D + 并发内核）→ 25.77 / 25.44 / 25.80 GB/s，并发 20.803 ms\n- 自清理：目录已删（`ls -d` 报不存在）、GPU 回 9 MiB、`pgrep bw` 无进程"
+        },
+        {
+          "id": "t_7e0054e7497a",
+          "title": "把四条结论写回设计文档",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:14:57.902Z",
+          "summary": "M0 全五项写回：§4.7 的“待核实”换成已确认的四条（表地址稳定/事件 idiom 现成/拷贝可图外投递/槽号任意）+ 一条采图注意（捕获中 publish 跳过 fence → 表必须在捕获前或轮间发布）；§4.5 修正容量不等式方向与常数（`R ≤ (K/B − P)/15`）并按 MTP 428 MB 重算三档；§5.2 用实测带宽重算上界；§9 把 3 项未核实转为已核实、新增 2 项（预算拆分需 planner 复核、分配器结构开销）；§8 标 M0 ✅；SPEC.md 的速度目标改成 15.3/18.9 与 10.6/12.6。",
+          "verification": "- `spec_validate` → 无问题\n- `git diff --check` → 干净\n- 提交 `be6d5a79` 已推送"
+        }
+      ]
+    },
+    {
+      "id": "g_cea5c18bb684",
+      "title": "M1 单流跑通 262K",
+      "todos": [
+        {
+          "id": "t_478d156a04cf",
+          "title": "建扁平槽池与分配器",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_897fc583e97d",
+          "title": "每层表与表内核",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_a6b623e9bfba",
+          "title": "host 权威页与写入路径（mutable tail）",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_3652a98ac2ed",
+          "title": "单流 H2D 序列与事件对",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_18959219c27c",
+          "title": "跑通 262 144 rk8v4",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_1a6efc2cd165",
+          "title": "一致性：on/off 逐 token 相同",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_c86fa5697727",
+          "title": "记录实测并对比上界",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        }
+      ]
+    },
+    {
+      "id": "g_eeee2a409d8c",
+      "title": "M3–M5",
+      "todos": [
+        {
+          "id": "t_d471af9bba74",
+          "title": "三指标反馈与 hysteresis",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_a3f3a8371d19",
+          "title": "分段流水（偏 softmax 合并）",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_d101dc8bcb96",
+          "title": "支持 int8 档位",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        },
+        {
+          "id": "t_23589239498a",
+          "title": "与多序列/Hybrid prefix/TP 的共存或拒绝",
+          "status": "pending",
+          "origin": "agent",
+          "createdAt": "2026-11-08T08:03:02.834Z",
+          "updatedAt": "2026-11-08T08:03:02.834Z"
+        }
+      ]
+    },
+    {
+      "id": "g_a457e353f874",
+      "title": "Spec 图谱（已完成）",
+      "todos": [
+        {
+          "id": "t_bba1f3592959",
+          "title": "建 SPEC/SCOPE/CUTLIST 三个根节点",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:31:07.488Z",
+          "updatedAt": "2026-11-08T07:31:07.488Z",
+          "note": "SPEC.md = goal-and-requirements 根节点"
+        },
+        {
+          "id": "t_7dd9621ab63d",
+          "title": "采纳 5 篇既有维护者文档为节点",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:31:07.488Z",
+          "updatedAt": "2026-11-08T07:31:07.488Z",
+          "note": "engine-architecture、paged-kv-cache、resource-scheduling、qwen3_5-model、hybrid-prefix-cache-spec，只加 frontmatter"
+        },
+        {
+          "id": "t_086a50391db3",
+          "title": "新建 kv_stream 模块节点",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:31:07.488Z",
+          "updatedAt": "2026-11-08T07:31:07.488Z",
+          "note": "src/ops/kv_stream/SPEC.md：责任/合同/边界"
+        },
+        {
+          "id": "t_3b6b01a10f75",
+          "title": "图谱校验与面板可见性",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:31:07.488Z",
+          "updatedAt": "2026-11-08T07:31:07.488Z",
+          "note": "spec_validate → no issues found"
+        }
+      ]
+    },
+    {
+      "id": "g_777b6eeac584",
+      "title": "补齐 Linux 基线测量",
+      "todos": [
+        {
+          "id": "t_3b4e4095725e",
+          "title": "重跑 8K/32K/64K/120K 阶梯（rk8v4 + MTP3）",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:31:07.488Z",
+          "updatedAt": "2026-11-08T07:40:31.622Z",
+          "note": "prefill 2.37k→1.86k tok/s，decode 114→109 tok/s，峰值 12672→15632 MiB",
+          "summary": "用服务端同款 flags（`--prefill-chunk 256 --gdn-state-fp16 --spec mtp --draft-tokens 3 --greedy`）在 RTX 4080 SUPER 上跑了真实阶梯，每档 128 token 生成：8K 114.3 / 32K 115.0 / 64K 117.6 / 120K 109.1 tok/s，prefill 2.37k→1.86k tok/s，峰值显存 12 672→15 632 MiB。前两版脚本失败并已定位：prompt 按 4.4 chars/token 估算导致超长，以及给 CLI 传了 serve 专有的 `--max-concurrency`/`--cuda-graph-allowance-mib`。",
+          "verification": "- 阶梯四次运行 rc=0，每条输出都带 engine ready 与 summary 行\n- 峰值显存由 0.3s 轮询 nvidia-smi 得到\n- 跑完 pgrep 无 ninfer、nvidia-smi 回 9 MiB、临时目录退出即删"
+        },
+        {
+          "id": "t_b2f8aaa8b295",
+          "title": "补 KV 格式对照与长生成 decode",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:31:07.488Z",
+          "updatedAt": "2026-11-08T07:40:31.625Z",
+          "note": "bf16 121.8 / int8 116.6 / rk4v4 115.1 / rk2v4-e8 122.2；长生成 145.8 tok/s",
+          "summary": "32K 同 prompt 下四种 KV 格式对照：bf16 121.8 / int8 116.6 / rk4v4 115.1 / rk2v4-e8 122.2 tok/s，峰值 14 632 / 13 576 / 13 050 / 12 914 MiB；128 token 长生成 decode 145.8 tok/s（MTP 接受长度 3.50 tok/轮）。结论：质量档位的代价主要在容量而非算力，int8 与 bf16 只差 5 tok/s。",
+          "verification": "- 四种格式各自 rc=0，engine ready 与 summary 均记录\n- 长生成 128 new tokens 的 decode 速度来自 CLI summary 行"
+        }
+      ]
+    },
+    {
+      "id": "g_e607c3eaa9f7",
+      "title": "KV 流式设计（阶段 2 前置）",
+      "todos": [
+        {
+          "id": "t_cf70558caeab",
+          "title": "写 kv-streaming-design 节点",
+          "status": "done",
+          "origin": "agent",
+          "createdAt": "2026-11-08T07:31:07.489Z",
+          "updatedAt": "2026-11-08T07:31:07.489Z",
+          "note": "docs/maintainer/kv-streaming-design.md，已含实测容量与每轮上界"
+        }
+      ]
+    }
+  ]
+}

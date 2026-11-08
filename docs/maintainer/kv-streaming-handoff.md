@@ -158,12 +158,15 @@
 9. **`--embedding-residency host`：白拿的显存，已写进推荐配方，但加速数字是外推。**
    产物 `text/token_embedding` 是 `gguf_iq2_s` 388.4 MiB，`tie_word_embeddings: false` ⇒ 可搬。
    要证实只差一个 footprint 变体（`--embedding-residency host`），需用户批准再跑。
-10. **下一步的正式工作 = span 级流水（设计已写，待实现）**：
-   `docs/maintainer/kv-streaming-design.md` §5.13。环从“一层”改成“一段”（46 页），
-   注意力本来就已 split-KV 且段界 = 页界，所以**逐位相同**；预测 +25~35%（69 → 87–94 tok/s）。
-   开工顺序：先加 `split_begin` 参数（不动数学）→ 环规划改 span → Program 按 span 发拷贝/发射
-   → 跑 `check --suite equiv`（必须仍 4/4）+ `bench --case stream-251k`。
-   发射税靠恢复流式 CUDA Graph 消掉（即上面第 4 项）。
+10. **正在做的工作 = 帧级环（设计 §5.13 + 更正 §5.13.1）**：
+   环从“一层的流式区间”改成“一两帧”轮转（一帧 = 一次发射能读的量 = 一个 wave 的段数），
+   所以表项仍只改两次、页仍只搬一次，但拷贝流不再空转。**预测修正为 +18~24%（69 → 82–86 tok/s）**，
+   大头是取回现状 9.2 ms/轮的空转，不是窗口（只 +1.5%）。
+   已落地（可构建、未上卡）：`CausalSplitRange` 贯到 k8v4 发射（`98973519`）、
+   `KVStreamSplit::frame_pages/frames_per_layer` + `kv_stream_region()` + 规划器与单测（`c47e6780`，
+   `tests/test_kv_stream_layout.cpp` 全部通过）。
+   还剩：`StreamedKVSpace` 改成按帧上载/事件 → `text.cpp` 按帧发射（需把 small-T 的
+   “partial 发射 + 一次 reduce”拆成两个入口）→ 上卡验 `check --suite equiv`（必须 4/4）+ `bench --case stream-251k`。
 11. **主机侧注意力分担：已按算术排除，不要做**（§5.14）。尾巴注意力一轮约 90 GFLOP，
     16 核 CPU 只到 0.1 TFLOP/s ⇒ 只能接 ~3%。它不降质量，纯粹是算力对不上带宽。
 

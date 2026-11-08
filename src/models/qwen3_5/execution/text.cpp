@@ -2069,6 +2069,52 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                             if (rounds < 1) {
                                 const std::uint32_t streamed = kv_stream_space_->window_start();
                                 if (streamed != 0) {
+                                    // The table is what attention dereferences, so its entries are
+                                    // the thing to check, not only the bytes at the slots they
+                                    // ought to name.
+                                    {
+                                        const Tensor row = batch_text_kv_->execution_tables().row_at(
+                                            static_cast<std::int32_t>(compact_layer), 0);
+                                        const std::uint32_t entries =
+                                            static_cast<std::uint32_t>(row.ne[0]);
+                                        std::vector<std::int32_t> table(entries, -1);
+                                        CUDA_CHECK(cudaMemcpyAsync(
+                                            table.data(), row.data,
+                                            sizeof(std::int32_t) * entries,
+                                            cudaMemcpyDeviceToHost, ctx_.stream));
+                                        CUDA_CHECK(cudaStreamSynchronize(ctx_.stream));
+                                        const std::uint32_t active =
+                                            kv_stream_space_->active_pages();
+                                        std::uint32_t bad_entries = 0;
+                                        std::size_t first_bad       = 0;
+                                        for (std::uint32_t page = 0; page < active; ++page) {
+                                            const std::int32_t want =
+                                                page < streamed
+                                                    ? kv_stream_ring_slot(
+                                                          page,
+                                                          kv_stream_space_->split(),
+                                                          kv_stream_space_->layers())
+                                                    : kv_stream_window_slot(
+                                                          compact_layer, page,
+                                                          kv_stream_space_->split());
+                                            if (table[page] == want) { continue; }
+                                            if (bad_entries == 0) { first_bad = page; }
+                                            ++bad_entries;
+                                        }
+                                        std::fprintf(stderr,
+                                                     "KVSTREAM-TABLE layer=%u active=%u "
+                                                     "streamed=%u bad=%u first_bad=%zu "
+                                                     "entry0=%d want0=%d entry_s=%d wants=%d\n",
+                                                     compact_layer, active, streamed, bad_entries,
+                                                     first_bad, table[0],
+                                                     kv_stream_ring_slot(
+                                                         0, kv_stream_space_->split(),
+                                                         kv_stream_space_->layers()),
+                                                     table[streamed],
+                                                     kv_stream_window_slot(
+                                                         compact_layer, streamed,
+                                                         kv_stream_space_->split()));
+                                    }
                                     const auto& pool  = batch_text_kv_->page_pool();
                                     const auto layout =
                                         plan_host_kv_page_layout(pool.geometry());

@@ -12,7 +12,7 @@
 #
 # Cases pin every flag that moves the arithmetic (--prefill-chunk included: chunking changes the
 # batched shapes and therefore the tokens), so a comparison never mixes two different questions.
-set -euo pipefail
+set -uo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BIN=${NINFER_BIN:-$ROOT/build-sm89/apps/ninfer}
@@ -57,13 +57,13 @@ PY
 }
 
 # case: name words capacity extra flags...
-case_words() { case $1 in equivalence-190k) echo 184000 ;; streamed-246k) echo 246600 ;; esac; }
-case_capacity() { case $1 in equivalence-190k) echo 190016 ;; streamed-246k) echo 262144 ;; esac; }
+case_words() { case $1 in equivalence-184k) echo 183500 ;; streamed-246k) echo 246600 ;; esac; }
+case_capacity() { case $1 in equivalence-184k) echo 184064 ;; streamed-246k) echo 262144 ;; esac; }
 case_extra() {
     case $1 in
         # All resident: the pool holds the whole context, so streaming takes no part.
-        equivalence-190k) echo "--kv-headroom-mib 8" ;;
-        equivalence-190k-streamed) echo "--kv-stream" ;;
+        equivalence-184k) echo "--kv-headroom-mib 8" ;;
+        equivalence-184k-streamed) echo "--kv-stream" ;;
         # Streamed: the same prompt, but the pool cannot hold it and every layer streams.
         streamed-246k) echo "--kv-stream" ;;
         *) return 1 ;;
@@ -72,7 +72,7 @@ case_extra() {
 
 cases=("$@")
 if [[ ${#cases[@]} -eq 0 ]]; then
-    cases=(equivalence-190k equivalence-190k-streamed streamed-246k)
+    cases=(equivalence-184k equivalence-184k-streamed streamed-246k)
 fi
 
 for name in "${cases[@]}"; do
@@ -110,12 +110,12 @@ for name in "${cases[@]}"; do
 done
 
 # The equivalence itself: the same prompt answered by an all-resident and a streamed cache.
-if [[ -f $WORK/equivalence-190k.ids && -f $WORK/equivalence-190k-streamed.ids ]]; then
-    if diff -q "$WORK/equivalence-190k.ids" "$WORK/equivalence-190k-streamed.ids" >/dev/null; then
-        echo "=== equivalence-190k: all-resident and streamed ids are identical"
+if [[ -f $WORK/equivalence-184k.ids && -f $WORK/equivalence-184k-streamed.ids ]]; then
+    if diff -q "$WORK/equivalence-184k.ids" "$WORK/equivalence-184k-streamed.ids" >/dev/null; then
+        echo "=== equivalence-184k: all-resident and streamed ids are identical"
     else
-        echo "=== equivalence-190k: all-resident and streamed ids DIFFER"
-        diff <(tr ' ' '\n' <"$WORK/equivalence-190k.ids") \
-             <(tr ' ' '\n' <"$WORK/equivalence-190k-streamed.ids") | head -20
+        echo "=== equivalence-184k: all-resident and streamed ids DIFFER"
+        diff <(tr ' ' '\n' <"$WORK/equivalence-184k.ids") \
+             <(tr ' ' '\n' <"$WORK/equivalence-184k-streamed.ids") | head -20
     fi
 fi

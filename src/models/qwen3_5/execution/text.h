@@ -115,6 +115,19 @@ struct PrefillBatchHost {
     float* readout        = nullptr;
 };
 
+// The frames one streamed layer's keys are launched in, and the copies that feed them (design
+// 5.13.2). A frame is `page_width` pages of that layer's keys; `issued` is how many of its frames
+// this round's copy stream has been given, so a copy always runs under the launch before the one
+// that needs it instead of in front of it.
+struct StreamFrameFeed {
+    StreamedKVSpace* space  = nullptr;
+    std::uint32_t layer     = 0;
+    std::int32_t page_width = 0;
+    std::int32_t issued     = 0;
+    cudaStream_t copy       = nullptr;
+    cudaStream_t compute    = nullptr;
+};
+
 class TextContext {
 public:
     TextContext(DeviceContext& ctx, const execution::Parameters& weights, WorkspaceArena& work,
@@ -169,6 +182,12 @@ public:
     void set_kv_stream(StreamedKVSpace* space, cudaStream_t copy) noexcept {
         kv_stream_space_ = space;
         kv_stream_copy_  = copy;
+        stream_feeds_.assign(space == nullptr ? 0U : space->layers(), StreamFrameFeed{});
+        for (std::size_t layer = 0; layer < stream_feeds_.size(); ++layer) {
+            stream_feeds_[layer].space = space;
+            stream_feeds_[layer].layer = static_cast<std::uint32_t>(layer);
+            stream_feeds_[layer].copy  = copy;
+        }
     }
 
     void set_prefill_split_frontier(std::int64_t position) noexcept {
@@ -413,6 +432,10 @@ private:
     qwen3_5::PagedKVCacheView mtp_kv_;
     const qwen3_5::PagedKVCache* batch_text_kv_ = nullptr;
     StreamedKVSpace* kv_stream_space_           = nullptr;
+    // One feed per streaming layer: how far its frames have been issued this round, and the page
+    // width they were planned over. A round starts every feed at frame zero (design 5.13.2).
+    std::vector<StreamFrameFeed> stream_feeds_;
+    std::int32_t stream_frame_pages_ = 0;
     cudaStream_t kv_stream_copy_                = nullptr;
     const qwen3_5::PagedKVCache* batch_mtp_kv_  = nullptr;
     LinearAttentionStatePool& state_;

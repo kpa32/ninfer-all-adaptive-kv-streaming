@@ -235,11 +235,14 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
 struct CausalAttentionFramePlan {
     std::int32_t frames = 0;
     std::int32_t pages  = 0;
+    // The splits per launch the plan resolved to: one wave of the device when the caller asked for
+    // the default, which the hook then states back to the call.
+    std::int32_t splits_per_frame = 0;
 };
 [[nodiscard]] CausalAttentionFramePlan causal_attention_frame_plan(
     AttentionHeadGeometry geometry, std::int32_t width, std::int32_t batch,
     std::int32_t window_tokens, std::int32_t splits_per_frame, KvCacheStorage storage,
-    CausalAttentionExecutionEnvelope envelope);
+    CausalAttentionExecutionEnvelope envelope, std::int32_t max_frames = 8);
 
 /**
  * Position-split attention (--tensor-attention positions). Each rank of a position-split pool

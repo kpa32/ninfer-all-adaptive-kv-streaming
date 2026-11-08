@@ -259,18 +259,29 @@ std::int32_t causal_attention_active_splits(std::int32_t q_heads, std::int32_t t
 CausalAttentionFramePlan causal_attention_frame_plan(
     AttentionHeadGeometry geometry, std::int32_t width, std::int32_t batch,
     std::int32_t window_tokens, std::int32_t splits_per_frame, KvCacheStorage storage,
-    CausalAttentionExecutionEnvelope envelope) {
+    CausalAttentionExecutionEnvelope envelope, std::int32_t max_frames) {
     const auto q_heads = static_cast<std::int32_t>(geometry.query_heads);
-    if (window_tokens <= 0 || splits_per_frame <= 0) { return {}; }
+    if (window_tokens <= 0) { return {}; }
     const std::int32_t active = causal_attention_active_splits(q_heads, width, batch,
                                                                window_tokens, storage, envelope);
     if (active <= 0) { return {}; }
-    const std::int32_t frames =
-        (active - 1) / splits_per_frame + 1;
-    // A frame's pages are the launch's page span rounded up: the caller copies this width and one
-    // spare page on each side, which covers a split that starts on a tile boundary mid-page.
-    const std::int32_t pages = 1 + (window_tokens - 1) / kPagedKVPageSize;
-    return {frames, (pages - 1) / frames + 1};
+    // A split is `kv_heads` CTAs, so one wave of the device is `sms / kv_heads` splits: fewer and a
+    // launch leaves the device idle, more and it takes more than a wave (design 5.13.1).
+    std::int32_t splits = splits_per_frame;
+    if (splits <= 0) {
+        const std::int32_t kv_heads = static_cast<std::int32_t>(geometry.kv_heads);
+        const std::int32_t sms      = static_cast<std::int32_t>(current_device_multiprocessors(0));
+        splits = kv_heads > 0 ? (sms + kv_heads - 1) / kv_heads : active;
+        if (splits < 1) { splits = 1; }
+    }
+    // A caller has as many frame slots as it planned for: grow a frame until the call fits them.
+    if (max_frames > 0) {
+        const std::int32_t fewest = (active + max_frames - 1) / max_frames;
+        if (splits < fewest) { splits = fewest; }
+    }
+    const std::int32_t frames = (active - 1) / splits + 1;
+    const std::int32_t pages  = 1 + (window_tokens - 1) / kPagedKVPageSize;
+    return {frames, (pages - 1) / frames + 1, splits};
 }
 
 std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t tokens,

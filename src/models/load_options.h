@@ -70,6 +70,9 @@ struct LoadOptions {
     // How a prompt chunk's partial sums cross between the devices
     // (`--tensor-parallel-prompt-partials`).
     TensorParallelPartials tensor_parallel_prompt_partials = TensorParallelPartials::Fp32;
+    // A streaming KV cache (`--kv-stream`): the text cache's pages are authoritative on the host
+    // and the device holds a resident window per layer plus one ring of slots shared by all.
+    bool kv_stream = false;
 
     bool operator==(const LoadOptions&) const = default;
 
@@ -163,7 +166,8 @@ struct LoadOptions {
             .tensor_split    = options.tensor_split,
             .tensor_attention = options.tensor_attention,
             .tensor_parallel_transport = options.tensor_parallel_transport,
-            .tensor_parallel_prompt_partials = options.tensor_parallel_prompt_partials};
+            .tensor_parallel_prompt_partials = options.tensor_parallel_prompt_partials,
+            .kv_stream = options.kv_stream};
 }
 
 } // namespace ninfer::models

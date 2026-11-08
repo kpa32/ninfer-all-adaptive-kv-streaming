@@ -404,6 +404,11 @@ struct SequenceCapacityCurve {
     // Pages held for good by injected graft prefixes. They sit inside the range above, so an
     // explicit capacity asks for them on top of the requested tokens.
     std::uint32_t resident_main_pages = 0;
+    // Streaming KV (--kv-stream): the logical page capacity of one streaming layer, 0 otherwise.
+    // The page-group axis then counts slots of a flat pool rather than pages of a whole cache, so
+    // the resolved token capacity is the context the caller asked for, and the pool's size follows
+    // free memory instead of the requested tokens.
+    std::uint32_t logical_main_pages = 0;
     std::vector<RankCapacityCurve> extra_ranks;
 
     [[nodiscard]] std::size_t reservation_bytes(std::uint32_t main_page_groups) const;

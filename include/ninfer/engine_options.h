@@ -497,6 +497,13 @@ struct EngineOptions {
     // bytes whether it is decoded alone, verified in a draft window or batched with others. The
     // other kernels (projections, experts, Gated DeltaNet) keep their own schedules.
     bool invariant_attention = false;
+    // Qwen3.5-core dense models: keep each full-attention layer's newest pages on the device and
+    // stream each layer's older pages back from pinned host memory every round, so the context may
+    // exceed the device pool (docs/maintainer/kv-streaming-design.md). The host holds the pages;
+    // the device holds a window per layer plus one ring shared by all of them; a round copies what
+    // the window lacks over PCIe, so an all-resident cache stays faster and this is off by default.
+    // Requires one sequence, one device, --kv-capacity auto and no retained-context cache.
+    bool kv_stream = false;
     // Native Qwen MoE, Qwen3.8-Flash-Next, Gemma 4 MoE and Flint.
     ExpertResidency expert_residency = ExpertResidency::Device;
     // Host/disk experts: device memory lent to the persistent cache, split

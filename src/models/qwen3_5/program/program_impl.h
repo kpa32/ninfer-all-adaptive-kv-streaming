@@ -10,6 +10,7 @@
 #include "core/gdn_replay_records.h"
 #include "core/host_kv_arena.h"
 #include "core/kv_expert_loan.h"
+#include "models/qwen3_5/program/storage/kv_stream_space.h"
 #include "ninfer/ops/gdn_replay.h"
 #include "ninfer/ops/sampling.h"
 #include "core/decode_graph.h"
@@ -992,6 +993,9 @@ public:
     std::unique_ptr<HostKVArena> host_kv_arena;
     std::unique_ptr<LogicalKVPageStore> text_kv_pages;
     std::unique_ptr<KVAddressSpaceStore> text_kv_addresses;
+    // Present when the text cache streams: it owns the pool's slots, the host authority and the
+    // per-layer tables, and the address space above derives its mapping from it.
+    std::unique_ptr<StreamedKVSpace> text_stream_space;
     std::unique_ptr<LogicalKVPageStore> backend_kv_pages;
     std::unique_ptr<KVAddressSpaceStore> backend_kv_addresses;
     std::unique_ptr<HostKVExtentStore> host_kv_extents;

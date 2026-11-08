@@ -96,10 +96,16 @@ std::uint32_t SequenceCapacityCurve::resolved_tokens(std::uint32_t main_page_gro
         throw std::invalid_argument("Main KV page count is outside the target capacity curve");
     }
     const std::uint64_t tokens = static_cast<std::uint64_t>(main_page_groups) * main_page_tokens;
-    if (tokens > std::numeric_limits<std::uint32_t>::max()) {
+    // A streaming pool's axis counts slots, so the capacity it resolves to is the logical context
+    // the cache was planned for, not the trickle of tokens one layer's slots would otherwise name.
+    const std::uint64_t capacity =
+        logical_main_pages != 0
+            ? static_cast<std::uint64_t>(logical_main_pages) * main_page_tokens
+            : tokens;
+    if (capacity > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("resolved KV token capacity exceeds uint32");
     }
-    return static_cast<std::uint32_t>(tokens);
+    return static_cast<std::uint32_t>(capacity);
 }
 
 KvCapacityResolution resolve_kv_capacity(const KvCapacityPolicy& policy,

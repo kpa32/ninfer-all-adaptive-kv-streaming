@@ -142,6 +142,21 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
         static_cast<std::int32_t>(std::min(plan.prefill_chunk, plan.capacity));
     const std::uint32_t logical_pages  = page_count(plan.capacity);
     const std::uint32_t physical_pages = plan.main_page_groups;
+    // A streaming text cache divides the pool's slots into a resident window per layer and one
+    // ring shared by all of them (kv_stream_layout.h). The capacity axis stays in slots, so the
+    // cache keeps whatever the resolution granted and leaves fewer than `layers` slots idle.
+    const std::optional<KVStreamSplit> text_stream =
+        plan.features.kv_stream
+            ? plan_kv_stream_split(physical_pages, logical_pages, config.full_attention_layers)
+            : std::nullopt;
+    if (plan.features.kv_stream && !text_stream) {
+        throw std::invalid_argument(
+            "--kv-stream needs a KV pool of at least one layer's pages; lower --max-context");
+    }
+    // The MTP cache holds its own whole context and never streams, so it keeps the logical page
+    // count rather than the streaming text pool's slot count.
+    const std::uint32_t mtp_base_pages =
+        plan.features.kv_stream ? logical_pages : physical_pages;
     const std::uint64_t mtp_extra_pages =
         plan.features.mtp()
             ? static_cast<std::uint64_t>(plan.max_concurrency) *
@@ -149,7 +164,7 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
                    static_cast<std::uint32_t>(kPagedKVPageSize))
             : 0ULL;
     const std::uint32_t mtp_physical_pages = static_cast<std::uint32_t>(
-        checked_i32(static_cast<std::uint64_t>(physical_pages) + mtp_extra_pages,
+        checked_i32(static_cast<std::uint64_t>(mtp_base_pages) + mtp_extra_pages,
                     "MTP Paged KV physical pages exceed int32"));
     // One layout per device. A stage's layers keep their KV planes and recurrent state on the
     // stage's device; everything else -- round state, prefill buffers, the head's inputs, MTP and
@@ -232,6 +247,7 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
                               .text_kv_position_ranks    = kv_position_ranks,
                               .mtp_kv_head_shares        = std::move(mtp_kv_head_shares),
                               .invariant_attention       = plan.invariant_attention,
+                              .text_stream               = text_stream,
                           });
     // The Program binds this pool's own planned geometry, so the Host page cost the RAM budget
     // trades against is priced from the plan rather than recovered from a constructed pool.
@@ -1325,8 +1341,37 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     }
     const std::uint32_t logical_pages = page_count(options.max_context);
     const std::uint32_t minimum_pages = std::max(logical_pages, options.max_concurrency);
+    // --kv-stream keeps a window of each full-attention layer's newest pages on the device and
+    // brings the rest back from pinned host memory every round. Its pool holds slots rather than
+    // whole contexts, so the axis reaches every layer's whole context and the size follows free
+    // memory. What it rules out is everything whose device pages stop meaning "the whole KV": a
+    // second sequence sharing the ring, a second device holding part of every layer, a checkpoint
+    // taken from the device, and a capacity chosen by token count rather than measured.
+    if (options.kv_stream) {
+        if (options.kv_capacity.mode != KvCapacityMode::Automatic) {
+            throw std::invalid_argument(
+                "--kv-stream sizes its KV pool from free memory: pass --kv-capacity auto");
+        }
+        if (options.max_concurrency != 1) {
+            throw std::invalid_argument("--kv-stream serves one sequence: set --max-concurrency 1");
+        }
+        if (device.size() != 1 || parameters.text.tensor_parallel()) {
+            throw std::invalid_argument("--kv-stream keeps the KV cache on one device");
+        }
+        if (options.context_cache.enabled) {
+            throw std::invalid_argument(
+                "--kv-stream cannot checkpoint or reuse retained context (--no-prefix-reuse)");
+        }
+    }
     const std::uint64_t maximum_pages64 =
-        maximum_main_page_groups(options.max_concurrency, logical_pages, options.context_cache);
+        options.kv_stream
+            ? static_cast<std::uint64_t>(
+                  parameters.model.config().text.full_attention_layers) *
+                      logical_pages +
+                  resident_main_pages
+            : maximum_main_page_groups(options.max_concurrency, logical_pages,
+                                       options.context_cache) +
+                  resident_main_pages;
     switch (options.kv_capacity.mode) {
     case KvCapacityMode::Explicit: {
         if (options.kv_capacity.explicit_tokens < options.max_context) {
@@ -1824,6 +1869,7 @@ make_sequence_planner_impl(const execution::Parameters& parameters, DeviceContex
           .minimum_device_reservation_bytes     = planner->minimum->device_reservation_bytes,
           .bytes_per_additional_main_page_group = 0,
           .resident_main_pages                  = resident_main_pages,
+          .logical_main_pages                   = inputs.features.kv_stream ? logical_pages : 0U,
     };
     for (const std::size_t bytes : planner->minimum->extra_rank_reservation_bytes) {
         planner->curve.extra_ranks.push_back({.minimum_device_reservation_bytes = bytes});

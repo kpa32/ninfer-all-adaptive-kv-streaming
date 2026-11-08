@@ -946,10 +946,12 @@ public:
                   std::int32_t execution_row, RankStreams streams) {
         Address& address = require(handle);
         if (stream_space_ != nullptr) {
-            if (address.active || address.row || address.reservation.valid() ||
-                entitlement != page_capacity_ || execution_row < 0) {
+            if (address.active || address.row || address.reservation.valid() || execution_row < 0) {
                 throw std::logic_error("Streamed KV activation is inconsistent");
             }
+            // The sequence's entitlement and page count are the pool's own in every other mode; a
+            // streaming pool has no free page to be entitled to, so neither takes part.
+            (void)entitlement;
             address.row.emplace(tables_->acquire(execution_row));
             address.active              = true;
             address.page_count          = 0;

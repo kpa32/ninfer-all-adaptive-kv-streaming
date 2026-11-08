@@ -389,6 +389,12 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
     text_kv_addresses = std::make_unique<KVAddressSpaceStore>(
         *text_kv_pages, decoder->text_kv.execution_tables(), address_capacity,
         decoder->text_kv.execution_tables().logical_page_capacity());
+    if (decoder->text_kv.flat_slots()) {
+        // The streamed cache derives its mapping and owns every slot, so the address space above
+        // publishes nothing and the pool has nothing to lend.
+        text_stream_space = std::make_unique<StreamedKVSpace>(decoder->text_kv);
+        text_kv_addresses->enable_streaming(text_stream_space.get());
+    }
     if (vision_broker && kv_arena && kv_arena->window_capacity_bytes() != 0) {
         // A loan changes the admission capacity, so it may not race a sealed plan: refuse one while
         // a context transaction or a pressure-planning session is in flight, or while any lane has

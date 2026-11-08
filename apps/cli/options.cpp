@@ -220,6 +220,12 @@ std::string usage_text(const char* argv0) {
            "  --kv-dtype T                  bf16 (default), int8, fp8, rk8v4, rk4v4,\n"
            "                                rk4v4-e8, rk2v4-e8, nvfp4 or k8v4\n" +
            std::string(product::kKvResidentHelp) +
+           "  --kv-stream                   keep each full-attention layer's newest pages\n"
+           "                                on the device and stream the rest back from\n"
+           "                                pinned host memory every round, so the context\n"
+           "                                far exceeds the device pool; a round copies over\n"
+           "                                PCIe, so an all-resident cache is faster. Needs\n"
+           "                                --kv-capacity auto, one sequence, one device\n"
            "\n"
            "SPECULATIVE DECODING\n"
            "  --spec none|mtp|dflash|dflash2|dspark\n"
@@ -439,6 +445,8 @@ Options parse_options(int argc, char** argv) {
                 ninfer::product::parse_tensor_parallel_partials(value(arg));
         } else if (arg == "--invariant-attention") {
             options.invariant_attention = true;
+        } else if (arg == "--kv-stream") {
+            options.kv_stream = true;
         } else if (arg == "--expert-residency") {
             const std::string residency = value(arg);
             if (residency == "device") {

@@ -79,6 +79,8 @@ other references own narrower contracts:
 | [Resource scheduling and context cache](maintainer/resource-scheduling-and-context-cache.md) | candidate selection, retention, materialization and Device/Host checkpoint policy |
 | [Hybrid prefix cache](maintainer/hybrid-prefix-cache-spec.md) | the default prefix cache of `ninfer-serve`: block tree, sparse state snapshots, tap placement, Host slab tier, eviction and automatic configuration |
 | [Paged KV context store](maintainer/paged-kv-cache.md) | typed pools, pages, replicas, address spaces, reservations and consumer views |
+| [KV streaming](maintainer/kv-streaming-design.md) | the 262 144 context on a 16 GB card: capacity and bandwidth budget, mechanism, decisions, milestones and acceptance |
+| [KV streaming inputs](maintainer/adaptive-kv-streaming-inputs.md) | the reference article and the CUDA Graph notes behind that design; input, not a description of this repository |
 | [ReplaySSM GDN](maintainer/replayssm-gdn.md) | raw transition records and faithful commitment of the verified state prefix |
 | [Op development](maintainer/op-development.md) | semantic boundaries, source ownership, numerical qualification and performance evidence |
 | [Operational logging](maintainer/logging.md) | log ownership, presentation, severity and data policy |

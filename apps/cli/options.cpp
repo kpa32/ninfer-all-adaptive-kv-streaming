@@ -233,6 +233,12 @@ std::string usage_text(const char* argv0) {
            "                                waits they cause, and report both per round. The\n"
            "                                timing events cost device time, so this is off by\n"
            "                                default: a run being measured is not one to time\n"
+           "  --report-json FILE            write one JSON report of the run: the cards and\n"
+           "                                driver, the memory and streamed-KV space on both\n"
+           "                                sides, every phase's time, the decode rounds and\n"
+           "                                per-layer KV copies, speculative acceptance and the\n"
+           "                                generated ids. With --kv-stream the streaming timing\n"
+           "                                is turned on for the report's series\n"
            "\n"
            "SPECULATIVE DECODING\n"
            "  --spec none|mtp|dflash|dflash2|dspark\n"
@@ -456,6 +462,8 @@ Options parse_options(int argc, char** argv) {
             options.kv_stream = true;
         } else if (arg == "--kv-stream-report") {
             options.kv_stream_report = true;
+        } else if (arg == "--report-json") {
+            options.report_json_path = value(arg);
         } else if (arg == "--expert-residency") {
             const std::string residency = value(arg);
             if (residency == "device") {

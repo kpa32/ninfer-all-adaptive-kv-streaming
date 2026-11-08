@@ -48,6 +48,9 @@ struct Options {
     bool invariant_attention                 = false;
     bool kv_stream                           = false;
     bool kv_stream_report                    = false;
+    // Where the structured run report goes; empty writes none. With `kv_stream` it also turns the
+    // streaming timing on, because the report's series is what that timing exists for.
+    std::filesystem::path report_json_path;
     // Qwen3.8-Flash-Next: where the expert banks live, and where its n-gram table comes from.
     ninfer::ExpertResidency expert_residency = ninfer::ExpertResidency::Device;
     std::optional<std::uint64_t> expert_cache_bytes;

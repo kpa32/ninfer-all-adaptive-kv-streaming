@@ -41,8 +41,8 @@ function(ninfer_app name program)
 endfunction()
 
 ninfer_app(ninfer ninfer_app_cli BUILD_ID
-  SOURCES cli/main.cpp cli/options.cpp
-  LIBRARIES ninfer_engine ninfer_product_logging ninfer_product_prompt_input)
+  SOURCES cli/main.cpp cli/options.cpp cli/run_report.cpp
+  LIBRARIES ninfer_engine ninfer_product_logging ninfer_product_prompt_input ninfer::json)
 ninfer_app(ninfer-serve ninfer_app_serve BUILD_ID
   SOURCES serve/main.cpp
   LIBRARIES ninfer_serve ninfer_product_logging)

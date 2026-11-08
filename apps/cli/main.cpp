@@ -1,5 +1,6 @@
 #include "ninfer_build_id.h"
 #include "options.h"
+#include "run_report.h"
 #include "product/logging/engine_diagnostics.h"
 #include "product/logging/logging.h"
 #include "product/logging/pretty_format.h"
@@ -60,52 +61,6 @@ std::string format_sampling(const ninfer::ResolvedSamplingParameters& sampling) 
            << " min_p=" << sampling.min_p << " presence=" << sampling.presence_penalty
            << " freq=" << sampling.frequency_penalty << " seed=" << sampling.seed;
     return output.str();
-}
-
-std::string format_finish(ninfer::FinishReason reason) {
-    switch (reason) {
-    case ninfer::FinishReason::None:
-        return "none";
-    case ninfer::FinishReason::OutputLimit:
-        return "output-limit";
-    case ninfer::FinishReason::ContextCapacity:
-        return "context-capacity";
-    case ninfer::FinishReason::StopToken:
-        return "stop-token";
-    case ninfer::FinishReason::StopString:
-        return "stop-string";
-    case ninfer::FinishReason::Cancelled:
-        return "cancelled";
-    }
-    return "unknown";
-}
-
-std::string format_kv_cache(ninfer::KvCacheStorage storage) {
-    switch (storage) {
-    case ninfer::KvCacheStorage::BFloat16:
-        return "bf16";
-    case ninfer::KvCacheStorage::Int8Group64:
-        return "int8-group64";
-    case ninfer::KvCacheStorage::Fp8E4M3Row256:
-        return "fp8-e4m3-row256";
-    case ninfer::KvCacheStorage::RotatedInt8KeyInt4ValueGroup64:
-        return "rotated-k8g64-v4g32";
-    case ninfer::KvCacheStorage::RotatedLloyd4KeyInt4Value:
-        return "rotated-lloyd4g64-v4g32";
-    case ninfer::KvCacheStorage::RotatedInt4KeyInt4ValueE8:
-        return "rotated-k4e8g64-v4g32";
-    case ninfer::KvCacheStorage::RotatedE8RootKeyInt4Value:
-        return "rotated-k2e8g64-v4g32";
-    case ninfer::KvCacheStorage::Nvfp4Group16:
-        return "nvfp4";
-    case ninfer::KvCacheStorage::Fp8KeyNvfp4Value:
-        return "k8v4";
-    }
-    return "unknown";
-}
-
-std::string format_kv_capacity_mode(ninfer::KvCapacityMode mode) {
-    return mode == ninfer::KvCapacityMode::Automatic ? "auto" : "explicit";
 }
 
 // Stats colouring (stderr only). Each statistic gets a stable 256-colour ANSI
@@ -184,7 +139,8 @@ private:
 void print_generation_summary(const ninfer::GenerationResult& result,
                               const ninfer::ResolvedSamplingParameters& sampling,
                               const ninfer::MemorySummary& memory,
-                              const ninfer::RuntimeStats& stats) {
+                              const ninfer::RuntimeStats& stats,
+                              const ninfer::LoadSummary& load) {
     print_stage("prepare", "render/preprocess", result.timings.prepare_seconds);
     print_stage("generate", "vision", result.timings.vision_seconds);
     print_stage("generate", "text prefill", result.timings.prefill_seconds);
@@ -196,7 +152,7 @@ void print_generation_summary(const ninfer::GenerationResult& result,
     const double model_seconds  = result.timings.vision_seconds + result.timings.prefill_seconds +
                                  result.timings.decode_seconds;
     print_metric("sampling", format_sampling(sampling));
-    print_metric("finish reason", format_finish(result.finish_reason));
+    print_metric("finish reason", ninfer::cli::finish_reason_name(result.finish_reason));
     print_metric("prompt tokens", std::to_string(result.prompt.prompt_tokens));
     print_metric("reused prompt tokens", std::to_string(result.reused_prompt_tokens));
     print_metric("generated tokens", std::to_string(generated));
@@ -230,14 +186,25 @@ void print_generation_summary(const ninfer::GenerationResult& result,
     const std::uint64_t reserved = static_cast<std::uint64_t>(memory.weights.capacity_bytes) +
                                    memory.runtime_reservation_bytes;
     print_metric("device", std::to_string(memory.device));
+    for (const ninfer::LoadSummary::DeviceIdentity& identity : load.devices) {
+        const std::string prefix =
+            load.devices.size() > 1 ? "gpu " + std::to_string(identity.index) + " " : "";
+        print_metric(prefix + "device name", identity.name + " (driver " +
+                                                    identity.driver_version + ")");
+        print_metric(prefix + "compute capability",
+                     std::to_string(identity.compute_major) + "." +
+                         std::to_string(identity.compute_minor) + ", " +
+                         std::to_string(identity.multiprocessors) + " SMs, " +
+                         format_bytes(identity.memory_bytes) + " memory");
+    }
     print_metric("max context", std::to_string(memory.max_context));
-    print_metric("KV capacity policy", format_kv_capacity_mode(memory.kv_capacity_mode));
+    print_metric("KV capacity policy", ninfer::cli::kv_capacity_mode_name(memory.kv_capacity_mode));
     print_metric("KV capacity", std::to_string(memory.kv_capacity));
     print_metric("KV page groups", std::to_string(memory.kv_capacity_page_groups) + " / " +
                                        std::to_string(memory.kv_capacity_max_page_groups));
     print_metric("gpu weights used", format_arena_used(memory.weights));
     print_metric("gpu sequence used", format_arena_used(memory.sequence));
-    print_metric("kv cache dtype", format_kv_cache(memory.kv_cache));
+    print_metric("kv cache dtype", ninfer::cli::kv_cache_name(memory.kv_cache));
     print_metric("kv cache payload", format_bytes(memory.kv_payload_bytes));
     print_metric("gpu workspace peak", format_arena_peak(memory.workspace));
     print_metric("runtime reservation", format_bytes(memory.runtime_reservation_bytes));
@@ -268,11 +235,27 @@ void print_generation_summary(const ninfer::GenerationResult& result,
     // is the headroom a scheduling change could still take; copy busy is what the link carried.
     const ninfer::StreamedKvStats& streamed = stats.streamed_kv;
     if (streamed.enabled) {
-        print_metric("stream window", std::to_string(streamed.resident_pages) + " pages/layer");
-        print_metric("stream ring", std::to_string(streamed.streamed_pages) + " pages x " +
-                                         std::to_string(streamed.layers) + " layers");
+        print_metric("stream pages", std::to_string(streamed.pages_per_layer) + " pages/layer x " +
+                                         std::to_string(streamed.layers) + " layers, " +
+                                         format_bytes(streamed.page_bytes) + "/page");
+        print_metric("stream window", std::to_string(streamed.resident_pages) + " pages/layer (" +
+                                         format_bytes(streamed.window_bytes) + ")");
+        print_metric("stream outside window",
+                     std::to_string(streamed.streamed_pages) + " pages");
+        print_metric("stream ring", std::to_string(streamed.ring_depth) + " regions, " +
+                                       format_bytes(streamed.ring_bytes));
+        print_metric("stream host KV", format_bytes(streamed.host_bytes) + " pinned");
+        print_metric("stream device KV", format_bytes(streamed.device_bytes));
         print_metric("stream rounds", std::to_string(streamed.rounds));
-        print_metric("stream upload", format_bytes(streamed.upload_bytes));
+        print_metric("stream H2D", format_bytes(streamed.upload_bytes) + " decode, " +
+                                        format_bytes(streamed.prefill_upload_bytes) + " prompt");
+        print_metric("stream D2H", format_bytes(streamed.download_bytes) + " decode, " +
+                                        format_bytes(streamed.prefill_download_bytes) + " prompt");
+        if (streamed.timing_lost != 0) {
+            print_metric("stream timing lost",
+                         std::to_string(streamed.timing_lost) + " pairs (" +
+                             std::to_string(streamed.timing_samples) + " read)");
+        }
         if (streamed.rounds != 0) {
             std::ostringstream busy, exposed, per_round;
             const double rounds = static_cast<double>(streamed.rounds);
@@ -367,6 +350,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     log_colours_flag = cli.log_colours;
+    const auto run_started = std::chrono::system_clock::now();
+    const std::vector<std::string> run_argv(argv, argv + argc);
 
     ninfer::product::LoggingRuntime logging(
         {.logger_name  = "ninfer",
@@ -409,7 +394,10 @@ int main(int argc, char** argv) {
         engine_options.tensor_parallel_prompt_partials = cli.tensor_parallel_prompt_partials;
         engine_options.invariant_attention      = cli.invariant_attention;
         engine_options.kv_stream                = cli.kv_stream;
-        engine_options.kv_stream_report         = cli.kv_stream_report;
+        // The report's series is what the streaming timing exists for, so asking for the report
+        // turns the timing on with the streamed layout; without `--kv-stream` the flag is a no-op.
+        engine_options.kv_stream_report         =
+            cli.kv_stream_report || (cli.kv_stream && !cli.report_json_path.empty());
         engine_options.expert_residency              = cli.expert_residency;
         engine_options.ngram_table                   = cli.ngram_table;
         engine_options.kv_resident_positions         = cli.kv_resident_positions;
@@ -483,7 +471,23 @@ int main(int argc, char** argv) {
             }
             std::cerr << '\n';
         }
-        print_generation_summary(result, sampling, engine.memory_summary(), engine.runtime_stats());
+        const ninfer::LoadSummary load     = engine.load_summary();
+        const ninfer::MemorySummary memory = engine.memory_summary();
+        const ninfer::RuntimeStats stats   = engine.runtime_stats();
+        print_generation_summary(result, sampling, memory, stats, load);
+        if (!cli.report_json_path.empty()) {
+            ninfer::cli::write_run_report(
+                cli.report_json_path,
+                ninfer::cli::RunReport{.options  = cli,
+                                       .result   = result,
+                                       .sampling = sampling,
+                                       .memory   = memory,
+                                       .stats    = stats,
+                                       .load     = load,
+                                       .argv     = run_argv,
+                                       .started  = run_started,
+                                       .finished = std::chrono::system_clock::now()});
+        }
         return 0;
     } catch (const std::exception& error) {
         logger->error("{}", ninfer::product::format_pretty_text(error.what()));

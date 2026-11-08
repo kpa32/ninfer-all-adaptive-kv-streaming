@@ -1,0 +1,270 @@
+{
+  "decode_rounds": {
+    "count": 1,
+    "sample_cap": 2048,
+    "samples": [
+      {
+        "seconds": 0.09189728800000001,
+        "tokens": 7
+      }
+    ]
+  },
+  "devices": [
+    {
+      "compute_capability": "8.9",
+      "driver_version": "13.4",
+      "index": 0,
+      "memory_bytes": 16796745728,
+      "multiprocessors": 80,
+      "name": "NVIDIA GeForce RTX 4080 SUPER"
+    }
+  ],
+  "generation": {
+    "finish_reason": "output-limit",
+    "token_ids": [
+      17,
+      16,
+      198,
+      17,
+      17,
+      198,
+      17,
+      18
+    ],
+    "tokens": 8
+  },
+  "kind": "ninfer-run-report",
+  "kv_transfer": {
+    "backend": {
+      "d2d_bytes": 0,
+      "d2d_pages": 0,
+      "d2h_bytes": 0,
+      "d2h_pages": 0,
+      "h2d_bytes": 0,
+      "h2d_pages": 0
+    },
+    "main": {
+      "d2d_bytes": 0,
+      "d2d_pages": 0,
+      "d2d_seconds": 0.0,
+      "d2h_bytes": 0,
+      "d2h_pages": 0,
+      "d2h_seconds": 0.0,
+      "h2d_bytes": 0,
+      "h2d_pages": 0,
+      "h2d_seconds": 0.0
+    },
+    "state": {
+      "d2d_bytes": 0,
+      "d2d_seconds": 0.0,
+      "d2h_bytes": 0,
+      "d2h_seconds": 0.0,
+      "h2d_bytes": 0,
+      "h2d_seconds": 0.0
+    }
+  },
+  "memory": {
+    "available_after_startup_bytes": 56098816,
+    "available_after_weights_bytes": 2153250816,
+    "cuda_graph_allowance_bytes": 0,
+    "cuda_graph_measured_bytes": 0,
+    "devices": [],
+    "expert_cache_bytes": 0,
+    "host_cache_budget_bytes": 0,
+    "host_kv_capacity_bytes": 0,
+    "host_kv_occupied_bytes": 0,
+    "host_kv_page_group_bytes": 71680,
+    "host_state_capacity_slots": 0,
+    "host_state_image_bytes": 120399872,
+    "host_state_occupied_slots": 0,
+    "kv_cache": "rotated-lloyd4g64-v4g32",
+    "kv_capacity": 262144,
+    "kv_capacity_headroom_bytes": 67108864,
+    "kv_capacity_increment_bytes": 71680,
+    "kv_capacity_max_page_groups": 65536,
+    "kv_capacity_mode": "auto",
+    "kv_capacity_page_groups": 25232,
+    "kv_payload_bytes": 1808629760,
+    "max_context": 262144,
+    "minimum_runtime_reservation_bytes": 571071232,
+    "planned_slack_bytes": 67151104,
+    "runtime_reservation_bytes": 2086099712,
+    "sequence": {
+      "capacity_bytes": 1977719296,
+      "peak_used_bytes": 1977719296,
+      "used_bytes": 1977719296
+    },
+    "weights": {
+      "capacity_bytes": 14360105472,
+      "peak_used_bytes": 14360105472,
+      "used_bytes": 14360105472
+    },
+    "workspace": {
+      "capacity_bytes": 108380416,
+      "peak_used_bytes": 108380416,
+      "used_bytes": 0
+    },
+    "workspace_logical_peak_bytes": 108380416
+  },
+  "prompt": {
+    "reused_tokens": 0,
+    "tokens": 7948
+  },
+  "run": {
+    "argv": [
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/build-sm89/apps/ninfer",
+      "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+      "--messages",
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T214346Z-footprint-ac0f4d53/prompt/prompt.json",
+      "--max-context",
+      "262144",
+      "--kv-capacity",
+      "auto",
+      "--kv-dtype",
+      "rk4v4",
+      "--gdn-state-fp16",
+      "--prefill-chunk",
+      "256",
+      "--greedy",
+      "--seed",
+      "42",
+      "--invariant-attention",
+      "--spec",
+      "dflash2",
+      "--draft-tokens",
+      "7",
+      "--no-thinking",
+      "--max-new",
+      "8",
+      "--spec",
+      "dflash2",
+      "--draft-tokens",
+      "7",
+      "--ngram-draft-tokens",
+      "0",
+      "--kv-stream",
+      "--device",
+      "0",
+      "--print-token-ids",
+      "--report-json",
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T214346Z-footprint-ac0f4d53/dflash2-7/report.json"
+    ],
+    "build_id": "cf90eaaf",
+    "finished_utc": "2026-11-08T21:46:30Z",
+    "started_utc": "2026-11-08T21:45:57Z",
+    "version": "untagged",
+    "wall_seconds": 32.832729965
+  },
+  "sampling": {
+    "frequency_penalty": 0.0,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "seed": 42,
+    "temperature": 0.0,
+    "top_k": 20,
+    "top_p": 0.800000011920929
+  },
+  "schema": 1,
+  "speculative": {
+    "acceptance_length": 7.0,
+    "acceptance_rate": 1.0,
+    "accepted_per_position": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      0
+    ],
+    "accepted_tokens": 6,
+    "adaptive": false,
+    "backend": "dflash2",
+    "draft_window": 7,
+    "drafted_tokens": 6,
+    "enabled": true,
+    "fallback_steps": 0,
+    "rounds": 1,
+    "rounds_per_window": [],
+    "window_transitions": 0
+  },
+  "stream": {
+    "copy_busy_seconds": 0.0005419839988462643,
+    "device_bytes": 1808629760,
+    "download_bytes": 0,
+    "enabled": true,
+    "exposed_seconds": 0.0004896319988183684,
+    "host_bytes": 4697620480,
+    "layers": 16,
+    "page_bytes": 71680,
+    "pages_per_layer": 4096,
+    "prefill": {
+      "copy_seconds": 0.0005419839988462643,
+      "download_bytes": 0,
+      "exposed_seconds": 0.0004896319988183684,
+      "upload_bytes": 0
+    },
+    "resident_pages": 1217,
+    "ring_bytes": 412876800,
+    "ring_depth": 2,
+    "rounds": 0,
+    "rounds_series": [],
+    "streamed_pages": 0,
+    "timing": {
+      "lost": 0,
+      "samples": 704
+    },
+    "upload_bytes": 0,
+    "window_bytes": 1395752960
+  },
+  "target": {
+    "architecture": "Qwen3_5ForCausalLM",
+    "artifact_bytes_read": 14373504554,
+    "cuda_graph_requested": true,
+    "device": 0,
+    "devices": [],
+    "host_to_device_bytes": 14360099328,
+    "invariant_attention": true,
+    "kv_cache": "rotated-lloyd4g64-v4g32",
+    "kv_capacity": 262144,
+    "kv_capacity_max_page_groups": 65536,
+    "kv_capacity_mode": "auto",
+    "kv_capacity_page_groups": 25232,
+    "kv_stream": true,
+    "kv_stream_report": true,
+    "load_seconds": 28.683782227,
+    "max_context": 262144,
+    "max_new": 8,
+    "model_name": "qwen3.8-27b",
+    "model_path": "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+    "pinned_weight_bytes": 0,
+    "prefill_chunk": 256,
+    "upload_seconds": 26.432387533,
+    "weight_formats": [
+      "bf16",
+      "fp32",
+      "gguf_iq1_m",
+      "gguf_iq2_s",
+      "gguf_iq2_xs",
+      "gguf_iq2_xxs",
+      "gguf_iq3_s",
+      "gguf_iq3_xxs",
+      "gguf_iq4_xs",
+      "gguf_q2_k",
+      "gguf_q4_k",
+      "int32",
+      "q8_g32_fp16"
+    ]
+  },
+  "timings": {
+    "decode_seconds": 0.09253623,
+    "decode_tokens_per_second": 75.64604695912077,
+    "model_seconds": 3.8582687069999997,
+    "overall_tokens_per_second": 2.0734688554702574,
+    "prefill_seconds": 3.765732477,
+    "prefill_tokens_per_second": 2110.61195890682,
+    "prepare_seconds": 0.003444625,
+    "total_seconds": 3.862391552,
+    "vision_seconds": 0.0
+  }
+}

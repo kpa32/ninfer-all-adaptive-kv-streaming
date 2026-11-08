@@ -1357,6 +1357,14 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                 schedule_state.drafter = drafter;
                 execution::PrefillChunkResult result;
                 timing.pause();
+                // A streaming cache publishes each chunk's pages just before the chunk writes and
+                // attends them: earlier pages are then complete and reachable from the host.
+                if (text_stream_space) {
+                    const std::uint32_t chunk_end = staged.cursor + remaining;
+                    text_stream_space->advance(
+                        1U + (chunk_end - 1U) / static_cast<std::uint32_t>(kPagedKVPageSize),
+                        compute_streams);
+                }
                 if (staged.vision) {
                     if (!workspace_plan.vision) {
                         throw std::logic_error("active Vision prefill lost its workspace plan");

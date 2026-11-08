@@ -1889,7 +1889,8 @@ private:
     void bind_sequence_kv(SequenceState& sequence);
     void unbind_sequence_kv(SequenceState& sequence) noexcept;
     void ensure_sequence_kv_mapped(SequenceState& sequence, std::uint32_t main_tokens,
-                                   std::uint32_t backend_tokens = 0);
+                                   std::uint32_t backend_tokens = 0,
+                                   bool publish_stream_pages = true);
 
     [[nodiscard]] std::uint32_t kv_lease_growth_margin_tokens() const noexcept {
         return std::max(prefill_chunk, kKVLeaseGrowthMarginTokens);

@@ -1745,7 +1745,8 @@ ProgramImpl::retained_device_kv_pages(const SharedPrefixHandle& shared) const no
 }
 
 void ProgramImpl::ensure_sequence_kv_mapped(SequenceState& sequence, std::uint32_t main_tokens,
-                                            std::uint32_t backend_tokens) {
+                                            std::uint32_t backend_tokens,
+                                            bool publish_stream_pages) {
     if (!sequence.kv || main_tokens > capacity || backend_tokens > capacity) {
         throw std::logic_error("KV materialization request is outside the sequence bundle");
     }
@@ -1753,7 +1754,12 @@ void ProgramImpl::ensure_sequence_kv_mapped(SequenceState& sequence, std::uint32
         throw std::logic_error("backend KV materialization requested without an allocation");
     }
     ensure_sequence_kv_lease(sequence, main_tokens, backend_tokens);
-    text_kv_addresses->ensure_mapped_to_tokens(sequence.kv->text, main_tokens, compute_streams);
+    // A streaming cache publishes only what the next pass is about to write: publishing a whole
+    // prompt up front would push its first pages out of the window before they hold anything, and
+    // the round that then reads them would upload their still-empty host records.
+    text_kv_addresses->ensure_mapped_to_tokens(
+        sequence.kv->text, publish_stream_pages || text_stream_space == nullptr ? main_tokens : 0U,
+        compute_streams);
     if (backend_tokens != 0) {
         backend_kv_addresses->ensure_mapped_to_tokens(*sequence.kv->backend, backend_tokens,
                                                       compute_streams);

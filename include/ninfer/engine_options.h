@@ -504,6 +504,10 @@ struct EngineOptions {
     // the window lacks over PCIe, so an all-resident cache stays faster and this is off by default.
     // Requires one sequence, one device, --kv-capacity auto and no retained-context cache.
     bool kv_stream = false;
+    // Report the streaming loop's traffic and the compute time its copies exposed
+    // (`--kv-stream-report`): the timing event pairs cost device time of their own, so a run that
+    // is being measured is not one worth timing by default.
+    bool kv_stream_report = false;
     // Native Qwen MoE, Qwen3.8-Flash-Next, Gemma 4 MoE and Flint.
     ExpertResidency expert_residency = ExpertResidency::Device;
     // Host/disk experts: device memory lent to the persistent cache, split

@@ -25,8 +25,8 @@ void destroy_events(std::vector<cudaEvent_t>& events) noexcept {
 
 } // namespace
 
-StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
-    : cache_(&cache), split_(cache.stream_split()), layers_(cache.layers()) {
+StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
+    : cache_(&cache), split_(cache.stream_split()), layers_(cache.layers()), report_(report) {
     if (!cache.flat_slots()) {
         throw std::invalid_argument("A streamed KV space needs a cache planned with a flat pool");
     }
@@ -75,17 +75,20 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
     create_events(ready_, layers_);
     create_events(consumed_, layers_);
     create_events(dropped_, layers_);
-    // Timing events keep their times, so they are created without the disable-timing flag.
-    const auto create_timed = [&](std::vector<cudaEvent_t>& events) {
-        events.assign(layers_, nullptr);
-        for (cudaEvent_t& event : events) { CUDA_CHECK(cudaEventCreate(&event)); }
-    };
-    create_timed(copy_begin_);
-    create_timed(copy_end_);
-    create_timed(wait_begin_);
-    create_timed(wait_end_);
-    copy_pending_.assign(layers_, 0);
-    wait_pending_.assign(layers_, 0);
+    // Timing events keep their times, so they are created without the disable-timing flag, and
+    // only when this run asks to be timed.
+    if (report_) {
+        const auto create_timed = [&](std::vector<cudaEvent_t>& events) {
+            events.assign(layers_, nullptr);
+            for (cudaEvent_t& event : events) { CUDA_CHECK(cudaEventCreate(&event)); }
+        };
+        create_timed(copy_begin_);
+        create_timed(copy_end_);
+        create_timed(wait_begin_);
+        create_timed(wait_end_);
+        copy_pending_.assign(layers_, 0);
+        wait_pending_.assign(layers_, 0);
+    }
 }
 
 StreamedKVSpace::~StreamedKVSpace() {
@@ -123,15 +126,20 @@ void StreamedKVSpace::collect_timings() {
 }
 
 void StreamedKVSpace::begin_round() {
-    collect_timings();
     ++rounds_;
     upload_bytes_ += uploaded_bytes();
+    round_streamed_pages_ = window_start();
+    if (report_) { collect_timings(); }
 }
 
 void StreamedKVSpace::wait_ready(std::uint32_t layer, cudaStream_t compute) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
     if (compute == nullptr) {
         throw std::invalid_argument("A streamed KV wait needs a compute stream");
+    }
+    if (!report_) {
+        CUDA_CHECK(cudaStreamWaitEvent(compute, ready_[layer], 0));
+        return;
     }
     CUDA_CHECK(cudaEventRecord(wait_begin_[layer], compute));
     CUDA_CHECK(cudaStreamWaitEvent(compute, ready_[layer], 0));
@@ -142,7 +150,7 @@ void StreamedKVSpace::wait_ready(std::uint32_t layer, cudaStream_t compute) {
 StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() const {
     return TransferStats{
         .resident_pages      = split_.resident_pages,
-        .streamed_pages      = window_start(),
+        .streamed_pages      = round_streamed_pages_,
         .layers              = layers_,
         .rounds              = rounds_,
         .upload_bytes        = upload_bytes_,
@@ -220,7 +228,7 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
     if (copy == nullptr) { throw std::invalid_argument("A streamed KV upload needs a copy stream"); }
     const std::uint32_t count = window_start();
-    CUDA_CHECK(cudaEventRecord(copy_begin_[layer], copy));
+    if (report_) { CUDA_CHECK(cudaEventRecord(copy_begin_[layer], copy)); }
     if (count != 0) {
         // Every streamed page of this layer, page 0 first, into the consecutive ring slots; the
         // pool turns the run into one strided transfer per plane. The host copies a round's window
@@ -229,8 +237,10 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
         cache_->page_pool().copy_from_host_pages(host_pages(layer).data(), host_layout_,
                                                  ring_base_, count, RankStreams(copy));
     }
-    CUDA_CHECK(cudaEventRecord(copy_end_[layer], copy));
-    copy_pending_[layer] = 1;
+    if (report_) {
+        CUDA_CHECK(cudaEventRecord(copy_end_[layer], copy));
+        copy_pending_[layer] = 1;
+    }
     CUDA_CHECK(cudaEventRecord(ready_[layer], copy));
 }
 

@@ -73,6 +73,9 @@ struct LoadOptions {
     // A streaming KV cache (`--kv-stream`): the text cache's pages are authoritative on the host
     // and the device holds a resident window per layer plus one ring of slots shared by all.
     bool kv_stream = false;
+    // Time the streaming loop's copies and the waits they cause (`--kv-stream-report`): the event
+    // pairs cost device time of their own, so they are recorded only when asked for.
+    bool kv_stream_report = false;
 
     bool operator==(const LoadOptions&) const = default;
 
@@ -167,7 +170,8 @@ struct LoadOptions {
             .tensor_attention = options.tensor_attention,
             .tensor_parallel_transport = options.tensor_parallel_transport,
             .tensor_parallel_prompt_partials = options.tensor_parallel_prompt_partials,
-            .kv_stream = options.kv_stream};
+            .kv_stream = options.kv_stream,
+            .kv_stream_report = options.kv_stream_report};
 }
 
 } // namespace ninfer::models

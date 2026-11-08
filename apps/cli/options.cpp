@@ -229,6 +229,10 @@ std::string usage_text(const char* argv0) {
            "                                far exceeds the device pool; a round copies over\n"
            "                                PCIe, so an all-resident cache is faster. Needs\n"
            "                                --kv-capacity auto, one sequence, one device\n"
+           "  --kv-stream-report             time the streaming loop's copies and the compute\n"
+           "                                waits they cause, and report both per round. The\n"
+           "                                timing events cost device time, so this is off by\n"
+           "                                default: a run being measured is not one to time\n"
            "\n"
            "SPECULATIVE DECODING\n"
            "  --spec none|mtp|dflash|dflash2|dspark\n"
@@ -450,6 +454,8 @@ Options parse_options(int argc, char** argv) {
             options.invariant_attention = true;
         } else if (arg == "--kv-stream") {
             options.kv_stream = true;
+        } else if (arg == "--kv-stream-report") {
+            options.kv_stream_report = true;
         } else if (arg == "--expert-residency") {
             const std::string residency = value(arg);
             if (residency == "device") {

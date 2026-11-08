@@ -47,6 +47,7 @@ struct Options {
         ninfer::TensorParallelPartials::Fp32;
     bool invariant_attention                 = false;
     bool kv_stream                           = false;
+    bool kv_stream_report                    = false;
     // Qwen3.8-Flash-Next: where the expert banks live, and where its n-gram table comes from.
     ninfer::ExpertResidency expert_residency = ninfer::ExpertResidency::Device;
     std::optional<std::uint64_t> expert_cache_bytes;

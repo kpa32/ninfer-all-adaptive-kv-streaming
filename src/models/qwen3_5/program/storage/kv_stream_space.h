@@ -28,7 +28,9 @@ class StreamedKVSpace {
 public:
     // Takes every slot of `cache`'s pool and allocates the host authority for the whole context.
     // The cache must have been planned with this split (`PagedKVCache::stream_split`).
-    explicit StreamedKVSpace(PagedKVCache& cache);
+    // `report` adds the timing event pairs that measure the copies and the waits they cause; they
+    // cost device time of their own, so a run that is being measured leaves them off.
+    explicit StreamedKVSpace(PagedKVCache& cache, bool report = false);
     ~StreamedKVSpace();
 
     StreamedKVSpace(const StreamedKVSpace&)            = delete;
@@ -151,10 +153,14 @@ private:
     std::vector<cudaEvent_t> wait_end_;
     std::vector<std::uint8_t> copy_pending_;
     std::vector<std::uint8_t> wait_pending_;
+    bool report_                 = false;
     std::uint64_t rounds_        = 0;
     std::uint64_t upload_bytes_  = 0;
     double copy_seconds_         = 0.0;
     double exposed_seconds_      = 0.0;
+    // The streamed pages one round moved, recorded when the round started: the frontier resets with
+    // the request, so the live value is not what a finished request moved.
+    std::uint32_t round_streamed_pages_ = 0;
     std::uint32_t active_ = 0;
 };
 

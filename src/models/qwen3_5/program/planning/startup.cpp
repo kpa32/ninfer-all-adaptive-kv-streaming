@@ -1347,6 +1347,9 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     // memory. What it rules out is everything whose device pages stop meaning "the whole KV": a
     // second sequence sharing the ring, a second device holding part of every layer, a checkpoint
     // taken from the device, and a capacity chosen by token count rather than measured.
+    if (options.kv_stream_report && !options.kv_stream) {
+        throw std::invalid_argument("--kv-stream-report measures --kv-stream: pass --kv-stream");
+    }
     if (options.kv_stream) {
         if (options.kv_capacity.mode != KvCapacityMode::Automatic) {
             throw std::invalid_argument(

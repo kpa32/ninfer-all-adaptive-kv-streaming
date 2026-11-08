@@ -409,6 +409,7 @@ int main(int argc, char** argv) {
         engine_options.tensor_parallel_prompt_partials = cli.tensor_parallel_prompt_partials;
         engine_options.invariant_attention      = cli.invariant_attention;
         engine_options.kv_stream                = cli.kv_stream;
+        engine_options.kv_stream_report         = cli.kv_stream_report;
         engine_options.expert_residency              = cli.expert_residency;
         engine_options.ngram_table                   = cli.ngram_table;
         engine_options.kv_resident_positions         = cli.kv_resident_positions;

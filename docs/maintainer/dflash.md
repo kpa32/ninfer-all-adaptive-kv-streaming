@@ -172,6 +172,16 @@ from prepare. The contract is
 [`dynamic_grouped_conv.h`](../../include/ninfer/ops/dynamic_grouped_conv.h). After all layers, final
 plain RMSNorm produces mask hidden columns for the selector.
 
+The finish projection is the layer's own `attention/output` and `mlp/down` matrix.
+`linear_dynamic_grouped_conv_add` accepts it as `Q8_G32_FP16` row-split (the fused routes), or as
+another row-split format Linear registers at `[H, C]`, projected through Linear into the same BF16
+plane. A drafter whose matrices keep their ggml blocks (`gguf_blocks_v1`) is neither, and its first
+draft round fails with `invalid projection_weight`; that representation is the Qwen3.8-Flash-Next
+attachment's ([`attach_dflash2.py`](../../scripts/pods/attach_dflash2.py)), whose drafter projects
+through the separate Linear call in `src/models/qwen4_exp/dflash2.cpp`. The Qwen3.5 recipes store a
+drafter's projections as Q8, so a Qwen3.5 artifact that carries a `dflash2` component runs the
+fused route.
+
 ## DFlash2 candidate path
 
 For each mask hidden h_i, the selected head produces stable top-16 unary scores u_i and global

@@ -8,6 +8,26 @@
 人工结论仍写在 [`docs/maintainer/kv-streaming-measurements.md`](../../../docs/maintainer/kv-streaming-measurements.md)；
 这里只放可机器比较的事实。
 
+## 用哪份产物
+
+只有一个：`models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer`（15 017 456 896 B）。它自带
+`text`、`vision`、`mtp`、`dflash2` 四个组件，drafter 的投影是
+`q8_g32_fp16 / row_split_k128_v1`，所以 `--spec none|mtp|dflash2` 都在这同一份产物上跑；
+占用与速度也用这份测，记录才互相可比。
+
+换产物前先读它的组件与张量格式，不要按目录名或文件名猜：
+
+```bash
+python3 -m tools.artifact.inspect <artifact>            # 组件、对象数、格式分布
+python3 -m tools.artifact.inspect <artifact> --objects  # 每个张量的 format/layout/shape
+```
+
+从 llama.cpp GGUF 挂上去的 drafter 保留 `gguf_blocks_v1` 块（Qwen3.8-Flash-Next 的那条装配
+路径，见 [`docs/maintainer/dflash.md`](../../../docs/maintainer/dflash.md#dflash2-dynamic-convolution)），
+Qwen3.5 的 drafter 融合 op 只吃 Q8 row-split。这种产物在第一次草稿轮就会抛
+`linear dynamic grouped conv add: invalid projection_weight`——那是产物与家族不匹配，不是流式、
+不是显存、也不是旗标。
+
 ## 金标是谁
 
 | 角色 | 二进制 | 用途 |

@@ -47,6 +47,7 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
         card.set_expert_runtime(state.execution.experts);
         card.set_steering(state.execution.steering);
         card.set_rope_yarn(state.execution.rope_yarn);
+        card.set_kv_stream(state.execution.text_stream_space, state.execution.text_stream_copy);
 
         Tensor tokens             = ordinary.tokens.slice(0, 0, batch_size);
         Tensor cache_positions    = ordinary.cache_positions.slice(0, 0, batch_size);

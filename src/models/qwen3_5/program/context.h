@@ -10,6 +10,7 @@
 #include "ninfer/ops/sliding_window_attention.h"
 #include "ninfer/ops/softmax_attention.h"
 #include "models/qwen3_5/program/storage/draft_context.h"
+#include "models/qwen3_5/program/storage/kv_stream_space.h"
 #include "models/qwen3_5/execution/stage_runtime.h"
 #include "models/qwen3_5/execution/text.h"
 #include "models/qwen3_5/execution/vision.h"
@@ -48,6 +49,10 @@ struct ExecutionCore {
     NativeExpertRuntime* experts = nullptr;
     // Null without LoRA adapters or control vectors.
     const SteeringView* steering = nullptr;
+    // A streamed text cache: the space that owns its pages, and the stream its copies run on. Null
+    // for an ordinary cache, whose rounds copy no pages.
+    StreamedKVSpace* text_stream_space = nullptr;
+    cudaStream_t text_stream_copy      = nullptr;
 };
 
 // The round's logprob gather outputs for a [width, batch] round: I32 and FP32 [kLogprobTopK,

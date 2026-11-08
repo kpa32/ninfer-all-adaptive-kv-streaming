@@ -394,6 +394,9 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
         // publishes nothing and the pool has nothing to lend.
         text_stream_space = std::make_unique<StreamedKVSpace>(decoder->text_kv);
         text_kv_addresses->enable_streaming(text_stream_space.get());
+        // Created up front: every round of every pass copies a streamed cache's pages on this
+        // stream, and a round that had to create it would have nowhere to report a failure.
+        CUDA_CHECK(cudaStreamCreateWithFlags(&text_stream_copy_stream, cudaStreamNonBlocking));
     }
     if (vision_broker && kv_arena && kv_arena->window_capacity_bytes() != 0) {
         // A loan changes the admission capacity, so it may not race a sealed plan: refuse one while
@@ -966,7 +969,8 @@ std::vector<float> ProgramImpl::causal_score(PreparedPromptData&& prompt,
             execution::PrefillContext schedule_state{
                 {device, parameters, work, state_images->linear(0), nullptr, io, prefill_hidden,
                  prefill_chunk, proposal_head, stage_runtime.get(), rope_yarn, fast_prefill_kernel,
-                 mtp_attention_window, experts.get(), steering.get()},
+                 mtp_attention_window, experts.get(), steering.get(), text_stream_space.get(),
+                 text_stream_copy_stream},
                 decoder->text_kv.execution_view(text_kv_addresses->execution_row(*address)),
                 {},
                 decoder->text_kv,

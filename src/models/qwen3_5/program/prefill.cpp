@@ -58,6 +58,7 @@ void configure_text_card(TextContext& card, const ExecutionCore& execution,
     card.set_gdn_state_action(GdnStateAction::UpdateInPlace, nullptr);
     card.set_mtp_proposal_extent(mtp_proposal_extent);
     card.set_fast_prefill_kernel(execution.fast_prefill_kernel);
+    card.set_kv_stream(execution.text_stream_space, execution.text_stream_copy);
     if (execution.proposal_head == ProposalHead::Full) {
         card.set_proposal_head(nullptr, nullptr, 0);
         return;
@@ -1217,7 +1218,8 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
             {device, parameters, work, state_images->linear(0),
              replay_records ? &*replay_records : nullptr, io, prefill_hidden, prefill_chunk,
              proposal_head, stage_runtime.get(), rope_yarn, fast_prefill_kernel,
-             mtp_attention_window, experts.get(), steering.get()},
+             mtp_attention_window, experts.get(), steering.get(), text_stream_space.get(),
+             text_stream_copy_stream},
             text_kv_view(sequence),
             mtp_kv_view(sequence),
             decoder->text_kv,
@@ -1807,12 +1809,7 @@ ProgramImpl::advance_prefill_batch(std::span<const std::uint32_t> lanes,
                                     pass_segments.front().begin, qwen3_5::PagedKVCacheView{},
                                     &decoder->text_kv, nullptr);
         if (text_stream_space) {
-            // A streamed cache needs a second stream for its page copies: they run outside the
-            // compute stream and the round orders them with the per-layer events.
-            if (text_stream_copy_stream == nullptr) {
-                CUDA_CHECK(cudaStreamCreateWithFlags(&text_stream_copy_stream,
-                                                     cudaStreamNonBlocking));
-            }
+            // The copies run outside the compute stream; the round orders them with per-layer events.
             card.set_kv_stream(text_stream_space.get(), text_stream_copy_stream);
         }
         card.set_expert_runtime(experts.get());

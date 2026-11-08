@@ -2705,7 +2705,6 @@ void TextContext::run_tensor_parallel(Tensor& x, Phase ph, Tap& tap) {
     layer_ready_ = {};
 }
 
-template <class Tap>
 void TextContext::issue_kv_stream_uploads() {
     if (kv_stream_space_ == nullptr) { return; }
     const std::uint32_t layers = batch_text_kv_->layers();
@@ -2719,6 +2718,7 @@ void TextContext::issue_kv_stream_uploads() {
     }
 }
 
+template <class Tap>
 void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
     issue_kv_stream_uploads();
     if (!parameters_.text.split_execution()) {

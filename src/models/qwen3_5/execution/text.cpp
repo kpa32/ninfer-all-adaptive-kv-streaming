@@ -2708,6 +2708,17 @@ void TextContext::run_tensor_parallel(Tensor& x, Phase ph, Tap& tap) {
 void TextContext::issue_kv_stream_uploads() {
     if (kv_stream_space_ == nullptr) { return; }
     const std::uint32_t layers = batch_text_kv_->layers();
+    // TEMPORARY DIAGNOSTIC (streamed KV): what the first rounds actually move.
+    {
+        static int rounds = 0;
+        if (rounds < 3) {
+            std::fprintf(stderr, "KVSTREAM-DEBUG round %d active=%u window_start=%u upload_mib=%.1f\n",
+                         rounds, kv_stream_space_->active_pages(),
+                         kv_stream_space_->window_start(),
+                         static_cast<double>(kv_stream_space_->uploaded_bytes()) / (1024.0 * 1024.0));
+            ++rounds;
+        }
+    }
     for (std::uint32_t layer = 0; layer < layers; ++layer) {
         // The ring holds one layer's streamed pages: layer 0 waits for the previous round's last
         // layer to finish reading it, and every later layer for its predecessor.

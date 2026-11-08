@@ -74,11 +74,13 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
     // already spent the budget on exactly these slots.
     create_events(ready_, layers_);
     create_events(consumed_, layers_);
+    create_events(dropped_, layers_);
 }
 
 StreamedKVSpace::~StreamedKVSpace() {
     destroy_events(ready_);
     destroy_events(consumed_);
+    destroy_events(dropped_);
 }
 
 HostKVAllocationView StreamedKVSpace::host_pages() noexcept { return arena_->writable_view(host_); }
@@ -94,6 +96,11 @@ cudaEvent_t StreamedKVSpace::ready_event(std::uint32_t layer) const {
 cudaEvent_t StreamedKVSpace::consumed_event(std::uint32_t layer) const {
     if (layer >= consumed_.size()) { throw std::out_of_range("Streamed KV layer is out of range"); }
     return consumed_[layer];
+}
+
+cudaEvent_t StreamedKVSpace::dropped_event(std::uint32_t layer) const {
+    if (layer >= dropped_.size()) { throw std::out_of_range("Streamed KV layer is out of range"); }
+    return dropped_[layer];
 }
 
 void StreamedKVSpace::publish_slot(std::uint32_t layer, std::uint32_t page, std::int32_t slot,
@@ -122,12 +129,18 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
             // first, and its table entry then points at the ring slot it will be read from. The
             // copy is ordered here, before this round's append overwrites the slot the arriving
             // page takes - the two pages' indices differ by the window depth, so it is the same.
-            const std::uint32_t dropped      = page - split_.resident_pages;
-            const std::int32_t dropped_slot  = kv_stream_window_slot(layer, dropped, split_);
+            const std::uint32_t dropped     = page - split_.resident_pages;
+            const std::int32_t dropped_slot = kv_stream_window_slot(layer, dropped, split_);
             cache_->page_pool().copy_to_host_pages(dropped_slot, 1, host.subview(dropped, 1),
                                                    streams);
             publish_slot(layer, dropped, kv_stream_ring_slot(dropped, split_, layers_), streams);
         }
+    }
+    // The host copies above are ordered on the compute streams, and the uploads that read those
+    // pages run on the copy stream: without this mark the copy stream could read a page while the
+    // compute stream is still writing it.
+    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+        CUDA_CHECK(cudaEventRecord(dropped_[layer], streams[0]));
     }
     active_ = active_pages;
 }
@@ -138,7 +151,9 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     const std::uint32_t count = window_start();
     if (count != 0) {
         // Every streamed page of this layer, page 0 first, into the consecutive ring slots; the
-        // pool turns the run into one strided transfer per plane.
+        // pool turns the run into one strided transfer per plane. The host copies a round's window
+        // dropped are ordered on the compute stream, so the uploads wait for them first.
+        CUDA_CHECK(cudaStreamWaitEvent(copy, dropped_[layer], 0));
         cache_->page_pool().copy_from_host_pages(host_pages().data(), host_layout_, ring_base_,
                                                  count, RankStreams(copy));
     }

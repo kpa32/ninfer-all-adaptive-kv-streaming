@@ -90,9 +90,11 @@ public:
 
     // The per-layer events a round orders its copies and its consumers with. `ready(layer)` is
     // recorded by `upload`; `consumed(layer)` is recorded by the consumer once that layer's
-    // attention has read the ring.
+    // attention has read the ring. `dropped(layer)` covers a round's host copies of the pages that
+    // page's window dropped, so the upload that reads them waits for their bytes to arrive.
     [[nodiscard]] cudaEvent_t ready_event(std::uint32_t layer) const;
     [[nodiscard]] cudaEvent_t consumed_event(std::uint32_t layer) const;
+    [[nodiscard]] cudaEvent_t dropped_event(std::uint32_t layer) const;
 
 private:
     void publish_slot(std::uint32_t layer, std::uint32_t page, std::int32_t slot,
@@ -112,6 +114,7 @@ private:
     HostKVAllocation host_;
     std::vector<cudaEvent_t> ready_;
     std::vector<cudaEvent_t> consumed_;
+    std::vector<cudaEvent_t> dropped_;
     std::uint32_t active_ = 0;
 };
 

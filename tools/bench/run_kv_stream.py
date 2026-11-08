@@ -176,6 +176,44 @@ CASES: dict[str, Case] = {
         oracle="self",
         require_full_generation=True,
     ),
+    # The speculative arm of the 251 K comparison: one flag apart from stream-251k, because the
+    # n-gram copier would otherwise hide what the drafter itself accepts.
+    "spec-251k-none": Case(
+        name="spec-251k-none",
+        purpose="251 K without speculation: the window the drafters take memory from.",
+        kind="perf",
+        target_tokens=251000,
+        capacity=262144,
+        max_new=64,
+        variants=("streamed",),
+        oracle="self",
+        require_full_generation=True,
+        streamed_flags=("--spec", "none", "--ngram-draft-tokens", "0"),
+    ),
+    "spec-251k-mtp3": Case(
+        name="spec-251k-mtp3",
+        purpose="251 K with MTP and three drafts, the same drafting the other arms get.",
+        kind="perf",
+        target_tokens=251000,
+        capacity=262144,
+        max_new=64,
+        variants=("streamed",),
+        oracle="self",
+        require_full_generation=True,
+        streamed_flags=("--draft-tokens", "3", "--ngram-draft-tokens", "0"),
+    ),
+    "spec-251k-mtp7": Case(
+        name="spec-251k-mtp7",
+        purpose="251 K with seven drafts: the widest window the MTP block verifies.",
+        kind="perf",
+        target_tokens=251000,
+        capacity=262144,
+        max_new=64,
+        variants=("streamed",),
+        oracle="self",
+        require_full_generation=True,
+        streamed_flags=("--draft-tokens", "7", "--ngram-draft-tokens", "0"),
+    ),
     "prompt-shape": Case(
         name="prompt-shape",
         purpose=(
@@ -196,6 +234,7 @@ CASES: dict[str, Case] = {
 }
 EQUIVALENCE_SUITE = ("equiv-8k", "equiv-100k", "equiv-183k")
 PERF_SUITE = ("prompt-shape", "stream-251k", "resident-8k")
+SPEC_SUITE = ("spec-251k-none", "spec-251k-mtp3", "spec-251k-mtp7")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -446,6 +485,7 @@ def save_calibration(path: Path, calibration: Calibration) -> None:
 SUMMARY_LINE = re.compile(r"^summary\s+(.+?)\s{2,}(.+?)\s*$", re.MULTILINE)
 GENERATED_IDS = re.compile(r"^tokens\s+generated ids\s+([0-9 ]+)\s*$", re.MULTILINE)
 RATE = re.compile(r"^([0-9.]+)\s*([kKmM]?)", re.ASCII)
+STARTUP_WEIGHTS = re.compile(r"weights ready \| ([0-9.]+) GiB")
 
 
 @dataclass
@@ -479,6 +519,31 @@ def parse_rate(text: str) -> Optional[float]:
     return value * {"": 1.0, "k": 1e3, "K": 1e3, "m": 1e6, "M": 1e6}[match.group(2)]
 
 
+def gib(value: Optional[float]) -> str:
+    return f"{value / 2**30:.2f} GiB" if value else "n/a"
+
+
+def startup_weight_bytes(stderr: str) -> int:
+    """The loader prints what it put on the card before anything else can fail."""
+    match = STARTUP_WEIGHTS.search(stderr)
+    return int(float(match.group(1)) * 2**30) if match else 0
+
+
+def page_group_bytes(report: Mapping[str, Any]) -> int:
+    """One page of one layer: the unit a pool's bytes and a window's pages are counted in."""
+    stream = report.get("stream", {})
+    layers = stream.get("layers") or 0
+    page = stream.get("page_bytes") or 0
+    return int(layers) * int(page)
+
+
+def first_error(stderr: str) -> str:
+    for line in stderr.splitlines():
+        if line.startswith("error:"):
+            return line.strip()
+    return ""
+
+
 def request_argv(
     binary: Path,
     model: Path,
@@ -486,10 +551,14 @@ def request_argv(
     case: Case,
     variant: str,
     device: int,
+    extra: Sequence[str] = (),
 ) -> list[str]:
     argv = [str(binary), str(model), "--messages", str(prompt_path)]
     argv += ["--max-context", str(case.capacity), *FIXED_FLAGS, "--max-new", str(case.max_new)]
     argv += list(case.streamed_flags if variant == "streamed" else case.resident_flags)
+    # A later flag wins in the CLI's parser, so a config override goes after the pinned flags and
+    # the argv still records exactly what the run used.
+    argv += list(extra)
     if variant == "streamed":
         argv.append("--kv-stream")
     return argv + ["--device", str(device)]
@@ -506,9 +575,10 @@ def run_once(
     timeout: float,
     with_report: bool,
     with_logprobs: bool = False,
+    extra: Sequence[str] = (),
 ) -> RepResult:
     directory.mkdir(parents=True, exist_ok=False)
-    argv = request_argv(binary, model, prompt_path, case, variant, device)
+    argv = request_argv(binary, model, prompt_path, case, variant, device, extra)
     argv.append("--print-token-ids")
     if with_logprobs:
         argv.append("--logprobs")
@@ -1201,6 +1271,111 @@ def command_bench(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def command_footprint(args: argparse.Namespace) -> int:
+    """Measure what each speculative backend costs on this card, and what it takes from the window.
+
+    The same artifact runs once per backend with everything else pinned, so the difference in
+    weights and in the context pool is that backend's footprint; the pool difference is also the
+    window a streamed request loses, and therefore the extra traffic it copies every round.
+    """
+    require_idle_gpu(args.allow_busy)
+    calibration = require_calibration(args.results, args.model)
+    work = args.results / "runs" / f"{timestamp(utc_now())}-footprint-{git_state()['short_head']}"
+    work.mkdir(parents=True, exist_ok=False)
+    prompt_tokens = min(args.prompt_tokens, args.context - args.max_new - 1)
+    sentences = calibration.sentences_for(prompt_tokens)
+    prompt_path = write_prompt(work / "prompt", sentences)
+    model_sha = sha256_file(args.model)
+    ledger_path = args.results / "footprint.json"
+    ledger = json.loads(ledger_path.read_text()) if ledger_path.is_file() else []
+    configs = [tuple(row.split(":", 1)) for row in args.config]
+    ok = True
+    for spec, draft in configs:
+        draft_tokens = int(draft)
+        extra = ["--spec", spec]
+        if draft_tokens:
+            extra += ["--draft-tokens", str(draft_tokens)]
+        # The drafters are compared on their own: a copied n-gram would hide their acceptance.
+        extra += ["--ngram-draft-tokens", "0"]
+        case = Case(
+            name=f"footprint-{spec}-{draft_tokens}",
+            purpose="Read one backend's weights and context pool on this card.",
+            kind="calibration",
+            target_tokens=prompt_tokens,
+            capacity=args.context,
+            max_new=args.max_new,
+            variants=("streamed",),
+        )
+        print(f"footprint: {spec}/{draft_tokens} at {args.context} ...", flush=True)
+        result = run_once(
+            args.binary,
+            args.model,
+            prompt_path,
+            case,
+            "streamed",
+            args.device,
+            work / f"{spec}-{draft_tokens}",
+            args.timeout,
+            with_report=True,
+            extra=extra,
+        )
+        memory = result.report.get("memory", {}) if result.report else {}
+        stream = result.report.get("stream", {}) if result.report else {}
+        speculative = result.report.get("speculative", {}) if result.report else {}
+        timings = result.report.get("timings", {}) if result.report else {}
+        stderr = (result.directory / "stderr.log").read_text(errors="replace")
+        weights = startup_weight_bytes(stderr)
+        pages = page_group_bytes(result.report) if result.report else 0
+        pool_bytes = memory.get("sequence", {}).get("capacity_bytes", 0)
+        entry = {
+            "measured_utc": iso(utc_now()),
+            "model_sha256": model_sha,
+            "git_head": git_state()["short_head"],
+            "context": args.context,
+            "spec": spec,
+            "draft_tokens": draft_tokens,
+            "returncode": result.returncode,
+            "started": result.returncode == 0,
+            "error": first_error(stderr) if result.returncode != 0 else "",
+            "weights_bytes": weights,
+            "pool_bytes": pool_bytes,
+            "pool_pages": pool_bytes // pages if pages else 0,
+            "minimum_reservation_bytes": memory.get("minimum_runtime_reservation_bytes", 0),
+            "window_pages": stream.get("resident_pages"),
+            "window_tokens": (stream.get("resident_pages") or 0) * 64,
+            "stream_host_bytes": stream.get("host_bytes"),
+            "stream_device_bytes": stream.get("device_bytes"),
+            "acceptance_length": speculative.get("acceptance_length"),
+            "decode_tokens_per_second": timings.get("decode_tokens_per_second"),
+            "seconds": result.seconds,
+            "argv": result.argv,
+            "campaign": str(work.relative_to(REPO_ROOT)),
+        }
+        ledger = [
+            row
+            for row in ledger
+            if not (
+                row.get("model_sha256") == model_sha
+                and row.get("context") == args.context
+                and row.get("spec") == spec
+                and row.get("draft_tokens") == draft_tokens
+            )
+        ]
+        ledger.append(entry)
+        ledger_path.write_text(json.dumps(ledger, indent=2) + "\n")
+        if result.returncode != 0:
+            ok = False
+            print(f"  {spec}/{draft_tokens}: failed: {entry['error']}")
+        else:
+            print(
+                f"  {spec}/{draft_tokens}: weights {gib(entry['weights_bytes'])}, "
+                f"pool {entry['pool_pages']} pages, window {entry['window_pages']} pages, "
+                f"accept {entry['acceptance_length']}, decode {entry['decode_tokens_per_second']}"
+            )
+    print(f"footprint: {ledger_path.relative_to(REPO_ROOT)}")
+    return 0 if ok else 1
+
+
 def command_window(args: argparse.Namespace) -> int:
     """Measure what window a pool leaves, so a streamed case can be given a pool it streams over.
 
@@ -1506,6 +1681,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     window.add_argument("--headroom-mib", type=int, nargs="+", required=True)
     window.set_defaults(func=command_window, record_golden=False, force=False)
 
+    footprint = sub.add_parser(
+        "footprint", help="measure each speculative backend's weights, context pool and window"
+    )
+    footprint.add_argument("--context", type=int, default=262144)
+    footprint.add_argument("--prompt-tokens", type=int, default=8000)
+    footprint.add_argument("--max-new", type=int, default=8)
+    footprint.add_argument(
+        "--config",
+        nargs="+",
+        default=["none:0", "mtp:3", "mtp:7", "dflash2:3", "dflash2:7"],
+        help="spec:draft-tokens entries, run once each",
+    )
+    footprint.set_defaults(func=command_footprint, record_golden=False, force=False)
+
     compare = sub.add_parser("compare", help="print the metric deltas of two campaigns")
     compare.add_argument("left")
     compare.add_argument("right")
@@ -1521,7 +1710,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args.binary = args.binary.resolve()
     args.oracle = args.oracle.resolve()
     args.model = args.model.resolve()
-    if args.command in ("golden", "check", "bench", "calibrate", "window"):
+    if args.command in ("golden", "check", "bench", "calibrate", "window", "footprint"):
         if not args.binary.is_file():
             raise SystemExit(f"error: no binary at {args.binary}")
         if not args.model.is_file():

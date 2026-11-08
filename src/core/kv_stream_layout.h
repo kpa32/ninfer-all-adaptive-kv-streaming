@@ -25,11 +25,21 @@ namespace ninfer {
 struct KVStreamSplit {
     // Resident pages of one layer, a window over its newest pages.
     std::uint32_t resident_pages = 0;
-    // Slots shared by every streaming layer: `ring_depth` regions of one layer's streamed pages.
+    // Slots shared by every streaming layer: `ring_depth` regions of one frame each.
     std::uint32_t ring_pages = 0;
-    // The regions the ring is divided into, which is how many layers' streamed pages can be in
-    // flight at once.
+    // The regions the ring is divided into, which is how many frames can be in flight at once.
     std::uint32_t ring_depth = 1;
+    // Pages of one frame: the ring rotates through a layer's streamed pages a frame at a time, so
+    // it holds the frames in flight rather than one layer's whole streamed extent.
+    //
+    // A frame is the smallest thing a copy can be *and* the smallest thing a launch can read, so
+    // it is sized by the attention launch, not by the ring: a launch needs a device's worth of
+    // CTAs, which is `sms / kv_heads` splits (design 5.13.1). Zero keeps the whole extent in the
+    // ring, which is the layout every depth-2 measurement before it used.
+    std::uint32_t frame_pages = 0;
+    // Frames one layer has, `ceil(pages_per_layer / frame_pages)`. Planned rather than derived so
+    // that a page's region stays a pure function of `(layer, page)`; zero with `frame_pages`.
+    std::uint32_t frames_per_layer = 0;
 };
 
 // Layers' streamed extents the ring is planned to hold. The measured trade-off in
@@ -38,10 +48,34 @@ struct KVStreamSplit {
 // that page.
 constexpr std::uint32_t kKVStreamRingDepth = 2;
 
-// Streamed pages of one layer that one region of the ring holds.
+// Streamed pages of one layer that one region of the ring holds: the layer's whole streamed extent
+// in the unframed layout, one frame in the framed one.
 [[nodiscard]] constexpr std::uint32_t
 kv_stream_ring_extent(const KVStreamSplit& split, std::uint32_t layers) noexcept {
     return split.ring_depth == 0 ? 0U : split.ring_pages / split.ring_depth;
+}
+
+// The region of the ring a page uses. The unframed layout gives every layer a region of its own;
+// the framed one walks the ring once per frame, in the order the scheduler fills frames, so the
+// region page `p` uses is free by the time `p` is copied: its previous occupant is the frame
+// `ring_depth` frames back, which the consumer has already read.
+[[nodiscard]] constexpr std::uint32_t
+kv_stream_region(std::uint32_t layer, std::uint32_t logical_page,
+                 const KVStreamSplit& split) noexcept {
+    if (split.ring_depth == 0) { return 0; }
+    if (split.frame_pages == 0 || split.frames_per_layer == 0) {
+        return layer % split.ring_depth;
+    }
+    const std::uint64_t frame = static_cast<std::uint64_t>(layer) * split.frames_per_layer +
+                                logical_page / split.frame_pages;
+    return static_cast<std::uint32_t>(frame % split.ring_depth);
+}
+
+// Offset of a page inside its region: its own index in the unframed layout, its index inside the
+// frame in the framed one.
+[[nodiscard]] constexpr std::uint32_t
+kv_stream_region_offset(std::uint32_t logical_page, const KVStreamSplit& split) noexcept {
+    return split.frame_pages == 0 ? logical_page : logical_page % split.frame_pages;
 }
 
 
@@ -70,7 +104,8 @@ kv_stream_ring_extent(const KVStreamSplit& split, std::uint32_t layers) noexcept
 [[nodiscard]] constexpr std::optional<KVStreamSplit>
 plan_kv_stream_split(std::uint32_t budget_pages, std::uint32_t pages_per_layer,
                      std::uint32_t layers,
-                     std::uint32_t max_ring_depth = kKVStreamRingDepth) noexcept {
+                     std::uint32_t max_ring_depth = kKVStreamRingDepth,
+                     std::uint32_t frame_pages = 0) noexcept {
     if (layers == 0 || pages_per_layer == 0 || budget_pages < pages_per_layer) { return std::nullopt; }
     const std::uint64_t full = static_cast<std::uint64_t>(layers) * pages_per_layer;
     if (budget_pages >= full) { return KVStreamSplit{pages_per_layer, 0, 1}; }
@@ -78,6 +113,26 @@ plan_kv_stream_split(std::uint32_t budget_pages, std::uint32_t pages_per_layer,
     // division above would be by zero. A pool that does not hold the layer is refused.
     if (layers == 1) { return std::nullopt; }
     const std::uint32_t deepest = max_ring_depth < layers - 1 ? max_ring_depth : layers - 1;
+    // A framed ring costs `depth * frame_pages` slots however far a layer reaches, so the window
+    // takes whatever the ring leaves and no region has to hold the whole streamed extent:
+    //
+    //     layers * R + depth * frame_pages <= B     =>     R <= (B - depth * frame_pages) / layers
+    //
+    // Every page that a deeper frame does not need stays resident, so the deepest ring that fits is
+    // taken: the two extra frames are what let a copy run while the launch before it reads.
+    if (frame_pages != 0) {
+        const std::uint32_t frames = (pages_per_layer - 1) / frame_pages + 1;
+        for (std::uint32_t depth = deepest; depth >= 1; --depth) {
+            const std::uint64_t ring = static_cast<std::uint64_t>(depth) * frame_pages;
+            if (ring >= budget_pages) { continue; }
+            const std::uint32_t resident =
+                static_cast<std::uint32_t>((budget_pages - ring) / layers);
+            if (resident >= pages_per_layer) { return KVStreamSplit{pages_per_layer, 0, 1}; }
+            return KVStreamSplit{resident, static_cast<std::uint32_t>(ring), depth, frame_pages,
+                                 frames};
+        }
+        return std::nullopt;
+    }
     // A deeper ring costs the window one page per layer for every layer beyond the first, so it is
     // taken only from a pool that holds several contexts: six layers' pages of context is the
     // threshold below which a bigger window is worth more than the overlap (design 5.11).
@@ -103,20 +158,20 @@ plan_kv_stream_split(std::uint32_t budget_pages, std::uint32_t pages_per_layer,
 [[nodiscard]] constexpr std::int32_t
 kv_stream_ring_slot(std::uint32_t layer, std::uint32_t logical_page, const KVStreamSplit& split,
                     std::uint32_t layers) noexcept {
-    return static_cast<std::int32_t>(layers * split.resident_pages +
-                                     (layer % split.ring_depth) *
-                                         kv_stream_ring_extent(split, layers) +
-                                     logical_page);
+    return static_cast<std::int32_t>(
+        layers * split.resident_pages +
+        kv_stream_region(layer, logical_page, split) * kv_stream_ring_extent(split, layers) +
+        kv_stream_region_offset(logical_page, split));
 }
 
 // Slot of logical page `logical_page` of `layer` in the flat pool.
 //
 // Both halves of the mapping depend on the page only, never on how far the context has grown:
-// a streamed page is its own slot past the resident region, and a resident page is the slot its
-// page index leaves in its layer's region. That is what makes a table entry change exactly twice
-// in a page's life - once when the page appears, once when it leaves the window - instead of on
-// every page boundary. When a page leaves, the page taking its place is the one whose index
-// differs by the window depth, which is the same slot.
+// a streamed page is its own slot past the resident region (the frame it falls in, in the framed
+// layout), and a resident page is the slot its page index leaves in its layer's region. That is
+// what makes a table entry change exactly twice in a page's life - once when the page appears, once
+// when it leaves the window - instead of on every page boundary. When a page leaves, the page
+// taking its place is the one whose index differs by the window depth, which is the same slot.
 //
 // `logical_page` must be below `active_pages`, which must not exceed the layer's capacity; the
 // result is always below `kv_stream_pool_pages(split, layers)`.

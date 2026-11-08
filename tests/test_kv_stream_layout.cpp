@@ -9,6 +9,8 @@ namespace {
 
 using ninfer::KVStreamSplit;
 using ninfer::kv_stream_pool_pages;
+using ninfer::kv_stream_region;
+using ninfer::kv_stream_region_offset;
 using ninfer::kv_stream_ring_extent;
 using ninfer::kv_stream_ring_slot;
 using ninfer::kv_stream_slot;
@@ -165,6 +167,65 @@ void refuses_what_it_cannot_serve() {
     check(plan_kv_stream_split(5000, 4096, 1).has_value(), "one layer above its pages still plans");
 }
 
+// The framed ring: the layout the 251 K round moves to (design 5.13.1). A frame is one launch's
+// keys, so the ring holds the frames in flight instead of one layer's whole streamed extent, and
+// every page keeps a slot that is a pure function of `(layer, page)`.
+void a_framed_ring_rotates_through_the_streamed_pages() {
+    constexpr std::uint32_t kLayers = 16;
+    constexpr std::uint32_t kPages  = 4096;
+    constexpr std::uint32_t kBudget = 48358;
+    // 19 splits per launch (one wave: 76 SMs / 4 KV heads) of 49 pages each at this capacity.
+    constexpr std::uint32_t kFrame = 19 * 49;
+    const auto split = plan_kv_stream_split(kBudget, kPages, kLayers, 2, kFrame);
+    check(split.has_value(), "the framed layout must plan");
+    if (!split) { return; }
+    check(split->frame_pages == kFrame, "a framed ring keeps the frame the planner was given");
+    check(split->frames_per_layer == 5, "4096 pages at 931 a frame is five frames");
+    check(split->ring_depth == 2 && split->ring_pages == 2 * kFrame,
+          "a framed ring is as deep as its frames, not as deep as the streamed extent");
+    check(kv_stream_ring_extent(*split, kLayers) == kFrame, "a region holds one frame");
+    check(split->resident_pages == 2906, "the window takes every page the frames leave");
+    check(kv_stream_pool_pages(*split, kLayers) <= kBudget, "the framed split fits its budget");
+    // Larger frames are what a deeper ring costs: every page of window a frame does not take.
+    std::uint32_t previous = 48358;
+    for (std::uint32_t frame = 64; frame <= 2048; frame += 64) {
+        const auto other = plan_kv_stream_split(kBudget, kPages, kLayers, 2, frame);
+        check(other.has_value(), "every frame size that leaves a window must plan");
+        if (!other) { continue; }
+        check(kv_stream_pool_pages(*other, kLayers) <= kBudget, "a framed split never exceeds it");
+        check(other->resident_pages <= previous, "a larger frame never leaves more window");
+        previous = other->resident_pages;
+    }
+
+    // The slot a page gets, and the rolling order the scheduler fills frames in: a slot is refilled
+    // only by a frame `ring_depth` frames later, which the consumer has already read.
+    std::map<std::int32_t, std::uint64_t> occupant;
+    std::uint64_t order = 0;
+    for (std::uint32_t layer = 0; layer < kLayers; ++layer) {
+        for (std::uint32_t page = 0; page < kPages; ++page) {
+            const std::uint64_t frame =
+                static_cast<std::uint64_t>(layer) * split->frames_per_layer + page / kFrame;
+            const std::uint32_t region = static_cast<std::uint32_t>(frame % split->ring_depth);
+            check(kv_stream_region(layer, page, *split) == region,
+                  "a page's region is its frame's place in the rolling order");
+            check(kv_stream_region_offset(page, *split) == page % kFrame,
+                  "a page sits at its own offset inside the frame");
+            const auto slot = kv_stream_ring_slot(layer, page, *split, kLayers);
+            check(slot >= static_cast<std::int32_t>(kLayers * split->resident_pages) &&
+                      slot < static_cast<std::int32_t>(kv_stream_pool_pages(*split, kLayers)),
+                  "a streamed page lands inside the ring");
+            const auto [it, fresh] = occupant.emplace(slot, frame);
+            if (!fresh) {
+                check(frame >= it->second + split->ring_depth,
+                      "a slot is refilled only after the frame that held it was read");
+                it->second = frame;
+            }
+            ++order;
+        }
+    }
+    check(order == static_cast<std::uint64_t>(kLayers) * kPages, "every page was placed once");
+}
+
 void a_bigger_budget_never_residents_less() {
     constexpr std::uint32_t kLayers = 16;
     constexpr std::uint32_t kPages  = 512;
@@ -197,6 +258,7 @@ int main() {
     the_measured_262144_split();
     a_page_changes_slot_at_most_twice();
     slots_stay_inside_their_regions();
+    a_framed_ring_rotates_through_the_streamed_pages();
     refuses_what_it_cannot_serve();
     a_bigger_budget_never_residents_less();
     if (!failures.empty()) {

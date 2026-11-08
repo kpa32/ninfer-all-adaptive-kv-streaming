@@ -256,41 +256,6 @@ std::int32_t causal_attention_active_splits(std::int32_t q_heads, std::int32_t t
     });
 }
 
-CausalAttentionFramePlan causal_attention_frame_plan(
-    AttentionHeadGeometry geometry, std::int32_t width, std::int32_t batch,
-    std::int32_t window_tokens, std::int32_t splits_per_frame, KvCacheStorage storage,
-    CausalAttentionExecutionEnvelope envelope, std::int32_t max_frames) {
-    const auto q_heads = static_cast<std::int32_t>(geometry.query_heads);
-    if (window_tokens <= 0) { return {}; }
-    const std::int32_t active = causal_attention_active_splits(q_heads, width, batch,
-                                                               window_tokens, storage, envelope);
-    if (active <= 0) { return {}; }
-    // A split is `kv_heads` CTAs, so one wave of the device is `sms / kv_heads` splits: fewer and a
-    // launch leaves the device idle, more and it takes more than a wave (design 5.13.1).
-    std::int32_t splits = splits_per_frame;
-    if (splits <= 0) {
-        const std::int32_t kv_heads = static_cast<std::int32_t>(geometry.kv_heads);
-        const std::int32_t sms      = static_cast<std::int32_t>(current_device_multiprocessors(0));
-        splits = kv_heads > 0 ? (sms + kv_heads - 1) / kv_heads : active;
-        if (splits < 1) { splits = 1; }
-    }
-    // A caller has as many frame slots as it planned for: grow a frame until the call fits them.
-    if (max_frames > 0) {
-        const std::int32_t fewest = (active + max_frames - 1) / max_frames;
-        if (splits < fewest) { splits = fewest; }
-    }
-    const std::int32_t frames = (active - 1) / splits + 1;
-    // The keys one split reads: the geometry's own tile count per split, rounded up, because a
-    // split covers `ceil(tiles / active)` whole tiles and the tiles past the window's end belong to
-    // no split. A frame is `splits` such spans, and the caller copies that many pages plus one on
-    // each side, which also covers a split that begins mid-page.
-    const std::int32_t tiles  = 1 + (window_tokens - 1) / kCausalSmallTK8v4TileKeys;
-    const std::int32_t units  = (tiles - 1) / active + 1;
-    const std::int32_t keys   = splits * units * kCausalSmallTK8v4TileKeys;
-    const std::int32_t pages  = 1 + (keys - 1) / kPagedKVPageSize + 1;
-    return {frames, pages, splits};
-}
-
 std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t tokens,
                                              KvCacheStorage cache_storage,
                                              CausalAttentionExecutionEnvelope envelope,
@@ -682,3 +647,43 @@ void causal_attention_small_t_tiles_launch(const Tensor& q, const Tensor& positi
 
 
 } // namespace ninfer::ops::detail
+
+namespace ninfer::ops {
+
+CausalAttentionFramePlan causal_attention_frame_plan(
+    AttentionHeadGeometry geometry, std::int32_t width, std::int32_t batch,
+    std::int32_t window_tokens, std::int32_t splits_per_frame, KvCacheStorage storage,
+    CausalAttentionExecutionEnvelope envelope, std::int32_t max_frames) {
+    const auto q_heads = static_cast<std::int32_t>(geometry.query_heads);
+    if (window_tokens <= 0) { return {}; }
+    const std::int32_t active = detail::causal_attention_active_splits(
+        q_heads, width, batch, window_tokens, storage, envelope);
+    if (active <= 0) { return {}; }
+    // A split is `kv_heads` CTAs, so one wave of the device is `sms / kv_heads` splits: fewer and a
+    // launch leaves the device idle, more and it takes more than a wave (design 5.13.1).
+    std::int32_t splits = splits_per_frame;
+    if (splits <= 0) {
+        const std::int32_t kv_heads = static_cast<std::int32_t>(geometry.kv_heads);
+        const std::int32_t sms =
+            static_cast<std::int32_t>(detail::current_device_multiprocessors(0));
+        splits = kv_heads > 0 ? (sms + kv_heads - 1) / kv_heads : active;
+        if (splits < 1) { splits = 1; }
+    }
+    // A caller has as many frame slots as it planned for: grow a frame until the call fits them.
+    if (max_frames > 0) {
+        const std::int32_t fewest = (active + max_frames - 1) / max_frames;
+        if (splits < fewest) { splits = fewest; }
+    }
+    const std::int32_t frames = (active - 1) / splits + 1;
+    // The keys one split reads: the geometry's own tile count per split, rounded up, because a
+    // split covers `ceil(tiles / active)` whole tiles and the tiles past the window's end belong to
+    // no split. A frame is `splits` such spans, and the caller copies that many pages plus one on
+    // each side, which also covers a split that begins mid-page.
+    const std::int32_t tiles = 1 + (window_tokens - 1) / detail::kCausalSmallTK8v4TileKeys;
+    const std::int32_t units = (tiles - 1) / active + 1;
+    const std::int32_t keys  = splits * units * detail::kCausalSmallTK8v4TileKeys;
+    const std::int32_t pages = 1 + (keys - 1) / kPagedKVPageSize + 1;
+    return {frames, pages, splits};
+}
+
+} // namespace ninfer::ops

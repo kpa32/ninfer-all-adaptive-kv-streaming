@@ -1494,8 +1494,10 @@ void feed_stream_frames(StreamFrameFeed& feed, std::int32_t frame) {
 
 void stream_frame_wait(void* context, std::int32_t frame, std::int32_t, std::int32_t) {
     auto& feed = *static_cast<StreamFrameFeed*>(context);
-    // This frame and one further on: the copy of the next frame runs while this one computes.
-    feed_stream_frames(feed, frame + 1);
+    // Everything this layer reads was queued before the call started (`feed_stream_frames`), so the
+    // wait is the only ordering left: the link has a whole layer of copy to do under this layer's
+    // compute, and a frame that is already in the ring waits for nothing.
+    (void)frame;
     feed.space->wait_ready_frame(feed.layer, static_cast<std::uint32_t>(frame), feed.compute);
 }
 
@@ -1689,19 +1691,16 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
             const auto layer = static_cast<std::uint32_t>(fidx);
             if (plan.frames > 1 && plan.splits_per_frame > 0 && plan.pages > 0 &&
                 layer < stream_feeds_.size()) {
-                stream_frame_pages_        = plan.pages;
-                StreamFrameFeed& feed      = stream_feeds_[layer];
-                feed.page_width            = plan.pages;
-                feed.compute               = s;
-                // The next layer's first frames are issued here, under this layer's compute: at a
-                // layer boundary nothing else would cover them, and a whole frame of copy in front
-                // of a layer is what this whole schedule exists to avoid.
-                if (layer + 1 < stream_feeds_.size()) {
-                    StreamFrameFeed& next = stream_feeds_[layer + 1];
-                    next.page_width       = plan.pages;
-                    next.compute          = s;
-                    feed_stream_frames(next, 0);
-                }
+                stream_frame_pages_ = plan.pages;
+                stream_frame_count_ = plan.frames;
+                StreamFrameFeed& feed = stream_feeds_[layer];
+                feed.page_width       = plan.pages;
+                feed.compute          = s;
+                // The whole layer is queued before its first launch: the link is then busy for the
+                // layer's whole copy while the launches read it frame by frame, which is the only
+                // arrangement in which a copy never waits for a launch and a launch never waits
+                // for a copy it could have started earlier (design 5.13.2).
+                feed_stream_frames(feed, plan.frames - 1);
                 frame_hook = ops::CausalAttentionFrameHook{window_tokens, plan.splits_per_frame,
                                                            stream_frame_wait, stream_frame_consumed,
                                                            &feed};
@@ -1716,6 +1715,19 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
             static_cast<float>(1.0 / std::sqrt(static_cast<double>(config.attention->head_dim))),
             cache_view, envelope, work_, a, s,
             rotated_output || positions ? nullptr : &gate, positions ? &partial : nullptr, framed);
+        if (framed != nullptr) {
+            // The next layer's frames follow this layer's on the copy stream, now that this layer's
+            // launches are all enqueued: at a layer boundary the link then has the next layer's
+            // copy ready to start the moment this layer's last launch is enqueued, instead of
+            // waiting for that layer's first launch to ask for it.
+            const auto next_layer = static_cast<std::size_t>(fidx) + 1;
+            if (next_layer < stream_feeds_.size()) {
+                StreamFrameFeed& next = stream_feeds_[next_layer];
+                next.page_width       = stream_frame_pages_;
+                next.compute          = s;
+                feed_stream_frames(next, stream_frame_count_ - 1);
+            }
+        }
     }
     if (positions) {
         // The rank's query heads' gates, contiguous for the merge.

@@ -436,6 +436,7 @@ private:
     // width they were planned over. A round starts every feed at frame zero (design 5.13.2).
     std::vector<StreamFrameFeed> stream_feeds_;
     std::int32_t stream_frame_pages_ = 0;
+    std::int32_t stream_frame_count_ = 0;
     cudaStream_t kv_stream_copy_                = nullptr;
     const qwen3_5::PagedKVCache* batch_mtp_kv_  = nullptr;
     LinearAttentionStatePool& state_;

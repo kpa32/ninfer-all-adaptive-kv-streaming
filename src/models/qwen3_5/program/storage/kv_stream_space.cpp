@@ -143,9 +143,10 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (count != 0) {
         // Every streamed page of this layer, page 0 first, into the consecutive ring slots; the
         // pool turns the run into one strided transfer per plane.
-        cache_->page_pool().copy_from_host(host_pages().data(), host_layout_,
-                                           slot_handles_.subspan(ring_base_, count),
-                                           RankStreams(copy));
+        cache_->page_pool().copy_from_host(
+            host_pages().data(), host_layout_,
+            std::span<const DeviceKVPageHandle>(slot_handles_).subspan(ring_base_, count),
+            RankStreams(copy));
     }
     CUDA_CHECK(cudaEventRecord(ready_[layer], copy));
 }

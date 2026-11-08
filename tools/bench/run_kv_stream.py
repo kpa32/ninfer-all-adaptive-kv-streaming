@@ -128,11 +128,12 @@ CASES: dict[str, Case] = {
         max_new=512,
         variants=("resident", "streamed"),
         # The all-resident exception needs the whole 1 GiB automatic headroom cut down to 16 MiB
-        # to fit its 3.99 GB reservation; the streamed run needs a pool smaller than the context,
-        # or the window would simply hold all 183 K tokens and nothing would stream. Both are
-        # memory-layout knobs: the arithmetic is the same either way.
+        # to fit its 3.99 GB reservation. The streamed run keeps the gigabyte, which is what a
+        # measured scan (`window-scan.json`) says leaves a 2 111-page (135 104-token) window: the
+        # prompt is past it, so ~749 pages per layer really do travel every round. Both are
+        # memory-layout knobs; the arithmetic is the same either way.
         resident_flags=("--kv-headroom-mib", "16"),
-        streamed_flags=("--kv-headroom-mib", "1400"),
+        streamed_flags=("--kv-headroom-mib", "1008"),
     ),
     "stream-251k": Case(
         name="stream-251k",

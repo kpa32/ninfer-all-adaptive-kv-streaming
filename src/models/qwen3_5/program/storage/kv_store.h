@@ -1085,6 +1085,7 @@ public:
         if (stream_space_ != nullptr) {
             // The sequence's frontier goes with it; the next one republishes as its pages appear.
             address.row.reset();
+            address.reservation.release();
             address.page_count = 0;
             address.active     = false;
             stream_space_->reset();

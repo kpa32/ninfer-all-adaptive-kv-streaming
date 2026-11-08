@@ -32,6 +32,7 @@ bench/results/kv-stream/
       report.json                   程序自己写的运行报告（数值的唯一来源）
       stdout.log / stderr.log       原始输出（含 summary 与 generated ids）
       prompt.json                   prompt 原文（体积大，不入库；配方与 sha256 在 campaign 里）
+  runs/superseded/                  每轮指标还含 prefill 的旧记录，只留作历史，不要拿来比
   INDEX.md                          自动生成的索引（`report` 子命令）
 ```
 
@@ -89,6 +90,9 @@ logprob，开着思考会拿到空的 logprob 数组（ids 照样能比），关
 | `stream_engaged` | 流式变体确实在流：`stream.enabled` 且 `prompt_tokens > 窗口 token` |
 | `stream_series_aligned` | `stream.rounds_series` 与 `decode_rounds.samples` 等长，逐轮对齐 |
 | `stream_series_matches_total` | 逐轮上载之和 == 总上载 − prefill 上载（1% 内），防止"每轮"数里混进 prefill |
+
+FAIL 的行是历史：换了配方或修了工具之后，旧记录不会被改写，也不会被删（`runs/superseded/`
+是唯一例外，那些记录的每轮数含 prefill，已作废）。读一行先看它的 `campaign.json` 里的 argv。
 | `report_matches_summary` | 报告里的 decode 速度与 stderr summary 的 `decode speed` 一致（2% 内） |
 | `printed_ids_match_report` | `--print-token-ids` 打印的 ids 与报告里的 ids 相同 |
 
@@ -118,6 +122,9 @@ logprob，开着思考会拿到空的 logprob 数组（ids 照样能比），关
 | `tools/bench/speed_of_light.py --baseline` | 已有 JSON 报告的事后归因（与 roofline 比），思路与本工具 `compare` 相同 |
 | `tests/models/qwen3_5/*_real.cpp` | Engine 级行为测试（需要 `BUILD_TESTING=ON` 的构建树；本机暂无） |
 | `docs/maintainer/kv-streaming-measurements.md` | 人工结论与"这条数据决定了什么" |
+
+`scripts/kv-stream-golden.sh` 已被本工具取代并删除：它只存 ids，没有 argv、没有逐轮指标、
+也无法记录设备与判定规则。
 
 ## 指标去哪读
 

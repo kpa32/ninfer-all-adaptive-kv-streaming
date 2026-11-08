@@ -158,3 +158,63 @@ python3 -c 'import json;json.dump([{"role":"user","content":("alpha "*246600).st
   8388608 bytes of automatic headroom, but only 4032299008 bytes are available after weights`
 - 含义：全驻留 + MTP 的上限约 186 K；流式窗口在 `rk4v4`+MTP3 下是 2 835 页 = 181 440 token。
   两者重叠区间只有 ~184 K，**等价性 case 只能放在那里**。
+
+## M-10 原版金标、逐 token 等价性与 251K 基线（2026-11-08）
+
+- 提交：`73c3ae14`（工具 `cf90eaaf` 之后）
+- 工具：`tools/bench/run_kv_stream.py`；记录目录 `bench/results/kv-stream/`
+- 前置：`calibrate`（本配方 34.0 token/句 + 100 token 尾巴）、`window --capacity 184064
+  --headroom-mib 1008`（窗口 135 104 token）
+
+命令（GPU 空闲，同一模型/同一卡）：
+
+```bash
+python3 tools/bench/run_kv_stream.py --model <artifact> calibrate --force
+python3 tools/bench/run_kv_stream.py --model <artifact> golden --suite equiv --force
+python3 tools/bench/run_kv_stream.py --model <artifact> check  --suite equiv
+python3 tools/bench/run_kv_stream.py --model <artifact> golden --suite perf  --force
+python3 tools/bench/run_kv_stream.py --model <artifact> bench  --case stream-251k --reps 3 --tag baseline
+```
+
+**等价性**（`runs/20261108T195936Z-equiv-73c3ae14`，四行全 PASS）：
+
+| case | 布局 | prompt | 生成 | 轮 | decode | 每轮 | 判定 |
+|---|---|---:|---:|---:|---:|---:|---|
+| equiv-8k | 全驻留 | 7 948 | 16 | 4 | 150.0 | 25.0 ms | ids 相同 |
+| equiv-100k | 全驻留 | 99 952 | 16 | 4 | 119.0 | 31.6 ms | ids 相同 |
+| equiv-183k | 全驻留 | 182 946 | 512 | 129 | 106.1 | 37.4 ms | ids + logprob 相同 |
+| equiv-183k | 流式 | 182 946 | 512 | 129 | 91.4 | 43.4 ms | ids + logprob 相同 |
+
+- 金标由**原版二进制**录制：`/home/kpa/ninfer/ninfer-all/build-sm89/apps/ninfer`，
+  `ninfer 2026-11-04.3+…-gf6928e00`。它是唯一允许执行的参照，不写、不编。
+- 183 K 的 512 个 token 跨 8 页/层（窗口 135 104 token、750 页），环复用与滑窗都在 decode 中发生。
+- 流式与全驻留的 `logprobs_sha256` 都是 `feb518b5…`，**逐位相同**。
+- 流式每轮上载 823 MiB、暴露 2.4 ms；`stream_series_matches_total` 通过（逐轮之和 == 总 − prefill）。
+- 旧记录里 3 593 MiB/轮是工具的错（把 prefill 的 55.2 GB 摊进了 decode 轮），已改并作废。
+
+**251K 基线**（`runs/20261108T201204Z-bench-baseline-73c3ae14`，3 次）：
+
+| 指标 | 值 |
+|---|---:|
+| prompt token | 250 946 |
+| decode | 69.2 tok/s |
+| 每轮 | 56.7 ms |
+| 每轮上载 | 1 193.6 MiB |
+| 暴露（计算等拷贝） | 15.8 ms |
+| 接受长度 | 3.94 |
+| 主机权威副本 / 设备窗口 | 4 480 / 3 274 MiB |
+
+与 M-03 的 56.9 ms/轮几乎相同；tok/s 高来自接受长度（3.94 对 2.24–3.0），不是调度改动。
+
+**过程发现（都已在本提交里修掉）**：
+
+1. 思考请求发布的是 reasoning，Engine 只为 content token 保留 logprob ⇒ 开着思考时
+   `--logprobs` 得到空数组（183 K 那次的 512 个 token 全是 reasoning、stdout 为空）。
+   基准固定 `--no-thinking`，才有可逐位比较的分布。
+2. 收尾句必须"活过"预算：`1 2 3 …` 列表在第 51 个 token 命中 stop token；改成"续写数字到 800"
+   后 8 K 与 183 K 都能生成满 512。为此加了 `prompt-shape` 哨兵 case（8 K、512 token）。
+3. 8 192 容量装不下 8 K 提示 + 512 输出（引擎报 `context-capacity`，只给 245 个），
+   哨兵 case 用 16 384 容量。
+
+**未验证**：跨版本 logprob（原版 CLI 没有 `--logprobs`，只有 `--print-token-ids`）；
+8k/100k 只生成 16 个 token（跨版本 ids 已比，分布未比）。

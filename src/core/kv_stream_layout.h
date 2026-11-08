@@ -36,7 +36,7 @@ struct KVStreamSplit {
 // docs/maintainer/kv-streaming-design.md 5.11: the second region costs one page of window per
 // layer of every layer beyond the first and makes the copies overlap, which is worth several times
 // that page.
-constexpr std::uint32_t kKVStreamRingDepth = 3;
+constexpr std::uint32_t kKVStreamRingDepth = 2;
 
 // Streamed pages of one layer that one region of the ring holds.
 [[nodiscard]] constexpr std::uint32_t

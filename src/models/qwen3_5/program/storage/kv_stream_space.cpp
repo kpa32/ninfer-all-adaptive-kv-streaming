@@ -98,11 +98,11 @@ cudaEvent_t StreamedKVSpace::consumed_event(std::uint32_t layer) const {
 
 void StreamedKVSpace::publish_slot(std::uint32_t layer, std::uint32_t page, std::int32_t slot,
                                    RankStreams streams) {
-    if (slot < 0 || static_cast<std::size_t>(slot) >= slot_handles_.size()) {
+    if (slot < 0 || static_cast<std::uint32_t>(slot) >= slot_count_) {
         throw std::logic_error("Streamed KV slot is outside its pool");
     }
-    const std::span<const DeviceKVPageHandle> one(&slot_handles_[static_cast<std::size_t>(slot)], 1);
-    cache_->execution_tables().publish_at(static_cast<std::int32_t>(layer), page, one, streams);
+    cache_->execution_tables().publish_slots_at(static_cast<std::int32_t>(layer), page,
+                                                std::span<const std::int32_t>(&slot, 1), streams);
 }
 
 void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -2655,8 +2656,24 @@ bool ProgramImpl::isolated_request_feasible(const RequestBasePlan& base) const n
                value.host.state_slots <= limit.host.state_slots &&
                value.host.kv_bytes <= limit.host.kv_bytes;
     };
-    return fits(base.impl_->root_demand.physical_peak_additional, capacity) &&
-           fits(base.impl_->root_demand.final_added, capacity);
+    const bool ok = fits(base.impl_->root_demand.physical_peak_additional, capacity) &&
+                    fits(base.impl_->root_demand.final_added, capacity);
+    if (!ok) {
+        const auto& p = base.impl_->root_demand.physical_peak_additional;
+        const auto& f = base.impl_->root_demand.final_added;
+        std::fprintf(stderr,
+                     "KVSTREAM-DEBUG peak{lanes=%u state=%u main=%u be=%u hs=%u hkv=%zu} "
+                     "final{lanes=%u state=%u main=%u be=%u hs=%u hkv=%zu} "
+                     "cap{lanes=%u state=%u main=%u be=%u hs=%u hkv=%zu}\n",
+                     p.device.active_lanes, p.device.state_slots, p.device.main_kv_pages,
+                     p.device.backend_kv_pages, p.host.state_slots, p.host.kv_bytes,
+                     f.device.active_lanes, f.device.state_slots, f.device.main_kv_pages,
+                     f.device.backend_kv_pages, f.host.state_slots, f.host.kv_bytes,
+                     capacity.device.active_lanes, capacity.device.state_slots,
+                     capacity.device.main_kv_pages, capacity.device.backend_kv_pages,
+                     capacity.host.state_slots, capacity.host.kv_bytes);
+    }
+    return ok;
 }
 
 bool ProgramImpl::persistent_backfill_safe(

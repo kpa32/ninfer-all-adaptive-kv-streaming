@@ -2051,21 +2051,33 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                 auto scope = work_.scope();
                 if (full) {
                     if (kv_stream_space_ != nullptr) {
-                        // The ring is one buffer for every layer, so a layer's pages are copied
-                        // just before that layer's attention reads them and not before: a round
-                        // that filled them all first would let each layer overwrite the previous
-                        // one's pages before anything read them.
-                        const std::uint32_t compact_layer = static_cast<std::uint32_t>(compact);
-                        const std::uint32_t previous =
-                            compact_layer == 0 ? kv_stream_space_->layers() - 1U
-                                               : compact_layer - 1U;
-                        CUDA_CHECK(cudaStreamWaitEvent(kv_stream_copy_,
-                                                       kv_stream_space_->consumed_event(previous),
-                                                       0));
-                        kv_stream_space_->upload(compact_layer, kv_stream_copy_);
+                        // The ring is one buffer for every layer, in `ring_depth` regions: a layer's
+                        // pages are copied into the region the layer that far back has finished
+                        // reading, which is why a copy is ordered after that layer's consumption
+                        // and not the previous one's. Issuing this layer's copy `ring_depth - 1`
+                        // layers ahead is what makes it overlap their attention instead of stalling
+                        // in front of it - the loop ran depth one first, and every layer exposed
+                        // 1.42 ms of its 2.66 ms copy for it (design 5.11).
+                        const std::uint32_t depth   = kv_stream_space_->ring_depth();
+                        const std::uint32_t count   = kv_stream_space_->layers();
+                        const std::uint32_t current = static_cast<std::uint32_t>(compact);
+                        const auto issue = [&](std::uint32_t target) {
+                            const std::uint32_t region = (target + count - depth) % count;
+                            CUDA_CHECK(cudaStreamWaitEvent(
+                                kv_stream_copy_, kv_stream_space_->consumed_event(region), 0));
+                            kv_stream_space_->upload(target, kv_stream_copy_);
+                        };
+                        // The first layers of the first round have nothing ahead of them to overlap,
+                        // so they are issued here rather than by an earlier layer.
+                        if (current == 0) {
+                            for (std::uint32_t target = 0; target + 1 < depth; ++target) {
+                                issue(target);
+                            }
+                        }
+                        if (current + depth - 1 < count) { issue(current + depth - 1); }
                         // The wait is measured: whatever it costs here is copy time this round
                         // could not hide behind compute.
-                        kv_stream_space_->wait_ready(compact_layer, ctx_.stream);
+                        kv_stream_space_->wait_ready(current, ctx_.stream);
                     }
 
                     attn_mix(block, x, compact, ph);

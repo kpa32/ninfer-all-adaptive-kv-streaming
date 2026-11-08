@@ -9,6 +9,7 @@ namespace {
 
 using ninfer::KVStreamSplit;
 using ninfer::kv_stream_pool_pages;
+using ninfer::kv_stream_ring_extent;
 using ninfer::kv_stream_ring_slot;
 using ninfer::kv_stream_slot;
 using ninfer::kv_stream_window_slot;
@@ -41,19 +42,25 @@ void all_resident_matches_today() {
 }
 
 // The 262 144 shape measured on the card: 4096 pages per layer, 16 full-attention layers, and the
-// 2.64 GB a 16 GB card has left after weights and the MTP pool.
+// 2.64 GB a 16 GB card has left after weights and the MTP pool. The pool holds 6.2 contexts, so the
+// ring buys its second region and costs 13.5% of the window for it.
 void the_measured_262144_split() {
     constexpr std::uint32_t kBudget = 25300;
     constexpr std::uint32_t kPages  = 4096;
     constexpr std::uint32_t kLayers = 16;
     const auto split = plan_kv_stream_split(kBudget, kPages, kLayers);
     check(split.has_value(), "262 144 must plan");
-    check(split->resident_pages == 1413, "262 144 keeps 1413 pages of each layer resident");
-    check(split->ring_pages == 2683, "262 144 shares a 2683-slot ring");
+    check(split->ring_depth == 2, "262 144 keeps two layers' streamed pages in flight");
+    check(split->resident_pages == 1222, "262 144 keeps 1222 pages of each layer resident");
+    check(split->ring_pages == 5748, "262 144 shares a 5748-slot ring, two regions deep");
+    check(kv_stream_ring_extent(*split, kLayers) == kPages - split->resident_pages,
+          "a region is exactly one layer's streamed pages");
     check(kv_stream_pool_pages(*split, kLayers) <= kBudget, "the split fits the budget");
-    // The largest feasible resident window: one more page per layer would not fit.
-    const std::uint64_t one_more =
-        kv_stream_pool_pages(KVStreamSplit{split->resident_pages + 1, split->ring_pages - 1}, kLayers);
+    // The largest feasible resident window for two regions: one more page per layer would not fit.
+    const std::uint64_t one_more = kv_stream_pool_pages(
+        KVStreamSplit{split->resident_pages + 1,
+                      split->ring_depth * (kPages - split->resident_pages - 1), split->ring_depth},
+        kLayers);
     check(one_more > kBudget, "the split takes every page the budget can keep resident");
 }
 
@@ -80,7 +87,7 @@ void a_page_changes_slot_at_most_twice() {
                     check(slot == kv_stream_window_slot(layer, page, *split),
                           "a resident page keeps its window slot as the context grows");
                 } else {
-                    check(slot == kv_stream_ring_slot(page, *split, kLayers),
+                    check(slot == kv_stream_ring_slot(layer, page, *split, kLayers),
                           "a streamed page maps to its ring slot for good");
                 }
             }
@@ -100,7 +107,8 @@ void slots_stay_inside_their_regions() {
         for (std::uint32_t active = 1; active <= kPages; ++active) {
             const std::uint32_t window_start =
                 active > split->resident_pages ? active - split->resident_pages : 0;
-            check(window_start <= split->ring_pages, "a layer's streamed pages fit the ring");
+            check(window_start <= kv_stream_ring_extent(*split, kLayers),
+                  "a layer's streamed pages fit one ring region");
             for (std::uint32_t layer = 0; layer < kLayers; ++layer) {
                 std::set<std::int32_t> slots;
                 for (std::uint32_t page = 0; page < active; ++page) {
@@ -115,6 +123,15 @@ void slots_stay_inside_their_regions() {
                     } else {
                         check(slot >= static_cast<std::int32_t>(kLayers * split->resident_pages),
                               "a streamed page lands in the shared ring");
+                        // Two layers attend at once only if the ring is deeper than the distance
+                        // between them: a page's region is its layer's, so the regions in flight
+                        // never coincide.
+                        const std::uint32_t extent = kv_stream_ring_extent(*split, kLayers);
+                        const std::uint32_t region =
+                            (static_cast<std::uint32_t>(slot) - kLayers * split->resident_pages) /
+                            extent;
+                        check(region == layer % split->ring_depth,
+                              "a streamed page lands in its layer's own ring region");
                     }
                 }
                 // The identity mapping is what keeps the streamed half of every table static.
@@ -145,15 +162,25 @@ void refuses_what_it_cannot_serve() {
 void a_bigger_budget_never_residents_less() {
     constexpr std::uint32_t kLayers = 16;
     constexpr std::uint32_t kPages  = 512;
-    std::uint32_t previous = 0;
+    std::uint32_t previous       = 0;
+    std::uint32_t previous_depth = 1;
     for (std::uint32_t budget = kPages; budget <= kLayers * kPages; ++budget) {
         const auto split = plan_kv_stream_split(budget, kPages, kLayers);
         check(split.has_value(), "every budget above one layer plans");
         if (!split) { continue; }
-        check(split->resident_pages >= previous, "resident pages never shrink as the budget grows");
-        check(split->resident_pages + split->ring_pages == kPages,
-              "the ring plus the window is the layer's capacity");
-        previous = split->resident_pages;
+        // A deeper ring spends window on its extra region; that one step is the only one allowed
+        // to shrink it, and it must not cost more than a fifth of what it had.
+        if (split->ring_depth == previous_depth || previous == 0) {
+            check(split->resident_pages >= previous, "resident pages never shrink as the budget grows");
+        } else {
+            check(split->resident_pages * 5 >= previous * 4,
+                  "a deeper ring costs at most a fifth of the window");
+        }
+        check(split->resident_pages * split->ring_depth + split->ring_pages ==
+                  split->ring_depth * kPages,
+              "every region plus the window is the layer's capacity");
+        previous       = split->resident_pages;
+        previous_depth = split->ring_depth;
     }
 }
 

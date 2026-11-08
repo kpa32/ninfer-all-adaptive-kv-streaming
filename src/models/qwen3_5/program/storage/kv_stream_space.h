@@ -45,6 +45,10 @@ public:
 
     [[nodiscard]] std::uint32_t layers() const noexcept { return layers_; }
 
+    // Layers' streamed pages the ring holds at once: how far ahead of the attending layer a copy
+    // may run.
+    [[nodiscard]] std::uint32_t ring_depth() const noexcept { return split_.ring_depth; }
+
     // Pages the tables describe, and where the resident window currently starts.
     [[nodiscard]] std::uint32_t active_pages() const noexcept { return active_; }
 
@@ -78,8 +82,9 @@ public:
     // ring, on `copy`. The copies are asynchronous and land in the ring slots the tables name; the
     // caller records a ready event afterwards and has the consumer wait on it.
     //
-    // The ring is shared, so a caller that issues this for consecutive layers must order each
-    // against the previous layer's consumption (`cudaStreamWaitEvent(copy, consumed(layer - 1))`).
+    // The ring is shared, so a round copies each layer into its own region of it: the region the
+    // layer `ring_depth` steps back occupied is the one this copy overwrites, which is why the
+    // caller orders it after that layer's consumption rather than the previous layer's.
     void upload(std::uint32_t layer, cudaStream_t copy);
 
     // Device bytes one layer's streamed pages move in one upload, and what a round of every layer

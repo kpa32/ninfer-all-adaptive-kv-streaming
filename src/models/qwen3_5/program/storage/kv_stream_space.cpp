@@ -54,6 +54,9 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     if (ring_base_ + split_.ring_pages < pages_per_layer_) {
         throw std::invalid_argument("A streamed KV ring cannot hold one layer's streamed pages");
     }
+    if (kv_stream_ring_extent(split_, layers_) + split_.resident_pages < pages_per_layer_) {
+        throw std::invalid_argument("A streamed KV ring region is shallower than a layer's stream");
+    }
     host_layout_ = plan_host_kv_page_layout(cache.page_pool().geometry());
     page_bytes_  = host_layout_.page_stride;
     // The authority: every page of every streaming layer, for the whole context. A streamed page
@@ -212,7 +215,7 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
             const std::int32_t dropped_slot = kv_stream_window_slot(layer, dropped, split_);
             cache_->page_pool().copy_to_host_pages(
                 dropped_slot, 1, host_pages(layer).subview(dropped, 1), streams);
-            publish_slot(layer, dropped, kv_stream_ring_slot(dropped, split_, layers_), streams);
+            publish_slot(layer, dropped, kv_stream_ring_slot(layer, dropped, split_, layers_), streams);
         }
     }
     // The host copies above are ordered on the compute streams, and the uploads that read those

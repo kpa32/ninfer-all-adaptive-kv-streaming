@@ -2066,9 +2066,9 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                         // authority's bytes at the moment its attention is about to read them?
                         if (std::getenv("NINFER_KVSTREAM_CHECK") != nullptr) {
                             static int rounds = 0;
-                            if (rounds < 1) {
+                            if (rounds < 2) {
                                 const std::uint32_t streamed = kv_stream_space_->window_start();
-                                if (streamed != 0) {
+                                if (streamed >= 20) {
                                     // The table is what attention dereferences, so its entries are
                                     // the thing to check, not only the bytes at the slots they
                                     // ought to name.
@@ -2102,10 +2102,11 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                                             ++bad_entries;
                                         }
                                         std::fprintf(stderr,
-                                                     "KVSTREAM-TABLE layer=%u active=%u "
+ 
+                                                    "KVSTREAM-TABLE prefill=%d layer=%u active=%u "
                                                      "streamed=%u bad=%u first_bad=%zu "
                                                      "entry0=%d want0=%d entry_s=%d wants=%d\n",
-                                                     compact_layer, active, streamed, bad_entries,
+                                                     prefill ? 1 : 0, compact_layer, active, streamed, bad_entries,
                                                      first_bad, table[0],
                                                      kv_stream_ring_slot(
                                                          0, kv_stream_space_->split(),

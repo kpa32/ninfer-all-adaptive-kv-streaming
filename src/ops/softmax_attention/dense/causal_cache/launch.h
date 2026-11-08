@@ -52,6 +52,13 @@ inline constexpr int kCausalPromptI8StandardSmemBytes = 93184;
 // current device's shape set (on Turing, INT8 values leave room for four warps only).
 [[nodiscard]] bool causal_prompt_i8_fast_wide(KvCacheStorage storage);
 
+// The splits one small-T launch covers, `[begin, end)`. Zero end means the whole range the call's
+// capacity allows, which is every caller but the KV streaming scheduler's (design 5.13).
+struct CausalSplitRange {
+    std::int32_t begin = 0;
+    std::int32_t end   = 0;
+};
+
 struct CausalSmallTInvocation {
     const Tensor* valid_columns = nullptr;
     const Tensor* table_rows    = nullptr;
@@ -63,6 +70,12 @@ struct CausalSmallTInvocation {
     // partial output it exchanges (causal_store_partial_output) in place of `out`.
     CausalKeyPartition partition{};
     float* partial_out = nullptr;
+    // The splits this launch covers: `[split_begin, split_end)`. Zero means the whole range the
+    // call's capacity allows, which is how every caller but the KV streaming scheduler launches.
+    // A launch over a sub-range writes the same partial slots over the same keys as a whole-range
+    // launch would, so the reduce sees one array either way (design 5.13).
+    std::int32_t split_begin = 0;
+    std::int32_t split_end   = 0;
     // An INT8-family unit loads its CUDA module and returns without a launch
     // (causal_attention_small_t_load_modules); every other field is unread.
     bool load_module_only = false;
@@ -98,7 +111,7 @@ void causal_attention_small_t_launch(const Tensor& q, const Tensor& k, const Ten
                                      std::int32_t column_begin, std::int32_t width,
                                      Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
                                      Tensor& out, cudaStream_t stream, const void* gate = nullptr,
-                                     float* partial_out = nullptr);
+                                     float* partial_out = nullptr, CausalSplitRange splits = {});
 
 // Parallel query tiles for a single row's chunked small-T width over an INT8-family cache: the
 // tile width (0 when off) whose tiles run as the batch rows of one split-KV launch and one reduce,
@@ -168,7 +181,7 @@ void causal_attention_small_t_k8v4_launch(
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
     Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream,
-    float* partial_out = nullptr);
+    float* partial_out = nullptr, CausalSplitRange splits = {});
 
 void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& positions,
                                                  float scale, const PagedKVLayerView& cache,

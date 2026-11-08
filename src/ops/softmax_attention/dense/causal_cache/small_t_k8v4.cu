@@ -20,8 +20,23 @@ void launch_k8v4_partial(const Tensor& q, CacheInput input, const Tensor& positi
                          PagedKVBatchLayerView cache, const CausalSmallTInvocation& invocation,
                          std::int32_t logical_capacity, std::int32_t splits, Tensor& partial_acc,
                          Tensor& partial_m, Tensor& partial_l, cudaStream_t stream) {
+    // The splits this launch covers, and the capacity their partial slots step by. A whole-range
+    // launch is `[0, splits)` with the capacity equal to the grid width, exactly as before.
+    const std::int32_t split_begin = invocation.split_begin < 0 ||
+                                             invocation.split_begin > splits
+                                         ? splits
+                                         : invocation.split_begin;
+    const std::int32_t split_end = invocation.split_end <= 0 || invocation.split_end > splits
+                                       ? splits
+                                       : invocation.split_end;
+    const std::int32_t span      = split_end - split_begin;
+    if (span <= 0) { return; }
 #if defined(NINFER_TIER_VOLTA)
     if (current_device_volta()) {
+        if (span != splits) {
+            throw std::invalid_argument(
+                "a split range needs the tiled kernel; this device runs the Volta one");
+        }
         // Volta's own kernel (small_t_sm70.cuh): the same grid, splits and partial outputs. The
         // tiled kernel is the other tiers'; a build of Volta alone does not compile it.
         launch_small_t_sm70_quantized<Geometry, TokenTile, MultiBatch, Masked, CacheInput, true,
@@ -54,7 +69,7 @@ void launch_k8v4_partial(const Tensor& q, CacheInput input, const Tensor& positi
             static_assert(kCausalSmallTQuantizedFixedBytes<RowTiles, KeyBlock> + DynamicBytes <=
                           shape_max_shared_bytes_per_block(TuringShapes));
             using KernelInput = CacheInput;
-            const dim3 grid(q.ne[1] / Geometry::GroupSize, splits, invocation.batch_size);
+            const dim3 grid(q.ne[1] / Geometry::GroupSize, span, invocation.batch_size);
             const auto launch = [&]() {
                 auto kernel = causal_attention_small_t_k8v4_tiled_kernel<
                     Geometry, TokenTile, Warps, MinBlocks, KeyBlock, true, MultiBatch, Masked,
@@ -88,7 +103,8 @@ void launch_k8v4_partial(const Tensor& q, CacheInput input, const Tensor& positi
                     q_ptr, input, positions_ptr, cache_k_ptr, cache_v_ptr, k_scale_ptr, v_scale_ptr,
                     tables_ptr, valid_ptr, rows_ptr, cache.block_tables.ne[0],
                     invocation.full_width, invocation.column_begin, logical_capacity, scale,
-                    partial_acc_ptr, partial_m_ptr, partial_l_ptr, invocation.partition);
+                    partial_acc_ptr, partial_m_ptr, partial_l_ptr, invocation.partition, split_begin,
+                    splits);
                 CUDA_CHECK(cudaGetLastError());
             };
 
@@ -221,7 +237,7 @@ void causal_attention_small_t_k8v4_launch(
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
     Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream,
-    float* partial_out) {
+    float* partial_out, CausalSplitRange splits) {
     const CausalAppendInput input{static_cast<const __nv_bfloat16*>(k.data),
                                   static_cast<const __nv_bfloat16*>(v.data)};
     const CausalSmallTInvocation invocation{
@@ -233,6 +249,8 @@ void causal_attention_small_t_k8v4_launch(
         .batch_size    = q.ne[3],
         .partition     = causal_attention_key_partition(envelope, cache),
         .partial_out   = partial_out,
+        .split_begin   = splits.begin,
+        .split_end     = splits.end,
     };
     with_causal_query_geometry(q.ne[1], [&]<typename Geometry>() {
         causal_attention_small_t_k8v4_launch_for<Geometry>(q, input, positions, scale, cache,

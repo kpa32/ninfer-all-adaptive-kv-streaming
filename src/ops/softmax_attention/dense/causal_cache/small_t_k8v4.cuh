@@ -37,7 +37,8 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
         const std::int32_t* valid_columns, const std::int32_t* table_rows,
         std::int32_t table_stride, std::int32_t full_width, std::int32_t column_begin,
         std::int32_t logical_capacity, float attention_scale, float* partial_acc, float* partial_m,
-        float* partial_l, CausalKeyPartition partition) {
+        float* partial_l, CausalKeyPartition partition, std::int32_t split_begin,
+        std::int32_t split_capacity) {
     if constexpr (!shape_set_in_image(TuringShapes)) { return; } // not this image's set
     // A Volta card runs its own kernel (small_t_sm70.cuh): a build of several architectures
     // compiles this kernel empty in the Volta image.
@@ -93,9 +94,13 @@ __launch_bounds__(WarpsPerCta * 32, MinBlocksPerSm) __global__
     // The grid spans the call's KV heads.
     const int kv_heads    = static_cast<int>(gridDim.x);
     const int q_heads     = kv_heads * Geometry::GroupSize;
-    const int split       = static_cast<int>(blockIdx.y);
+    // The launch may cover a sub-range of the splits the call has (`split_begin` .. grid width);
+    // the partial slots still step by the call's whole split capacity, and the active-split policy
+    // still reads that capacity, so a range of splits lands in exactly the slots, over exactly the
+    // keys, that one launch over all of them would have (design 5.13).
+    const int split       = split_begin + static_cast<int>(blockIdx.y);
+    const int split_count = split_capacity;
     const int batch       = MultiBatch ? static_cast<int>(blockIdx.z) : 0;
-    const int split_count = static_cast<int>(gridDim.y);
     const int tid         = static_cast<int>(threadIdx.x);
     const int warp        = tid >> 5;
     const int lane        = tid & 31;

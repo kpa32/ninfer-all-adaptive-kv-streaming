@@ -431,12 +431,16 @@ void causal_attention_small_t_launch(const Tensor& q, const Tensor& k, const Ten
                                      std::int32_t column_begin, std::int32_t width,
                                      Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
                                      Tensor& out, cudaStream_t stream, const void* gate,
-                                     float* partial_out) {
+                                     float* partial_out, CausalSplitRange splits) {
     if (cache.storage == KvCacheStorage::Fp8KeyNvfp4Value) {
         causal_attention_small_t_k8v4_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
                                              envelope, column_begin, width, partial_acc, partial_m,
-                                             partial_l, out, stream, partial_out);
+                                             partial_l, out, stream, partial_out, splits);
         return;
+    }
+    if (splits.begin != 0 || splits.end != 0) {
+        throw std::invalid_argument(
+            "a split range needs the asymmetric FP8-K/NVFP4-V small-T kernel");
     }
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
         causal_attention_small_t_fp8_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,

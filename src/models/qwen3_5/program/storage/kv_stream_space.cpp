@@ -137,8 +137,7 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     const KVStreamRingGeometry geometry =
         kv_stream_ring_geometry(split_.ring_pages, reached, layers_);
     if (geometry.depth != ring_.depth || geometry.stride != ring_.stride) {
-        ring_             = geometry;
-        geometry_changed_ = true;
+        ring_ = geometry;
         if (active_ > split_.resident_pages) {
             std::vector<std::int32_t> slots(active_ - split_.resident_pages);
             for (std::uint32_t layer = 0; layer < layers_; ++layer) {
@@ -176,6 +175,13 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     active_ = active_pages;
 }
 
+void StreamedKVSpace::begin_round(cudaStream_t copy) {
+    if (copy == nullptr) { throw std::invalid_argument("A streamed KV round needs a copy stream"); }
+    for (cudaEvent_t consumed : consumed_) {
+        CUDA_CHECK(cudaStreamWaitEvent(copy, consumed, 0));
+    }
+}
+
 void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
     if (copy == nullptr) { throw std::invalid_argument("A streamed KV upload needs a copy stream"); }
@@ -183,15 +189,6 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (count != 0) {
         if (count > ring_.stride) {
             throw std::logic_error("A streamed KV layer needs more ring slots than it owns");
-        }
-        if (geometry_changed_) {
-            // A new geometry moved every run, so the layer that owns this one is not the layer that
-            // owned it last round: wait for every layer's attention instead of one. The wait is on
-            // events of the previous round, which have all been recorded by now.
-            for (cudaEvent_t consumed : consumed_) {
-                CUDA_CHECK(cudaStreamWaitEvent(copy, consumed, 0));
-            }
-            geometry_changed_ = false;
         }
         // The ring run belongs to the layer `ring_.depth` positions back, so waiting for that
         // layer's attention to finish is what keeps this copy from overwriting pages still being

@@ -79,16 +79,22 @@ public:
     void reset() noexcept {
         active_ = 0;
         // The next request starts at the worst-case geometry and `advance` narrows it again.
-        ring_             = KVStreamRingGeometry{1, split_.ring_pages};
-        geometry_changed_ = false;
+        ring_ = KVStreamRingGeometry{1, split_.ring_pages};
     }
+
+    // Marks the start of a round on the copy stream: everything the previous round read from the
+    // ring is done before this round writes any of it. A round's layers are serialized on the
+    // compute stream anyway, so this waits exactly as long as the round boundary already did; what
+    // it buys is that a deep ring need not prove which layer owned a run last round.
+    void begin_round(cudaStream_t copy);
 
     // Copies layer `layer`'s streamed pages (`[0, window_start)`) from their host pages into the
     // ring, on `copy`. The copies are asynchronous and land in the ring slots the tables name; the
     // caller records a ready event afterwards and has the consumer wait on it.
     //
-    // The ring is shared, so a caller that issues this for consecutive layers must order each
-    // against the previous layer's consumption (`cudaStreamWaitEvent(copy, consumed(layer - 1))`).
+    // Within a round the runs are reused: layer `layer` writes the run that layer `layer - depth`
+    // read, so the copy waits for that layer's attention. Callers may issue this ahead of the
+    // attention that reads it, which is how a copy overlaps the layer before it (design 4.10).
     void upload(std::uint32_t layer, cudaStream_t copy);
 
     // Device bytes one layer's streamed pages move in one upload, and what a round of every layer
@@ -129,9 +135,6 @@ private:
     std::vector<cudaEvent_t> consumed_;
     std::vector<cudaEvent_t> dropped_;
     std::uint32_t active_ = 0;
-    // Set when `advance` moved every ring run, so the next round's first upload waits for the whole
-    // ring instead of the run's previous owner.
-    bool geometry_changed_ = false;
 };
 
 } // namespace ninfer::models::qwen3_5

@@ -2041,6 +2041,10 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
         ++upload_cursor;
     };
     if (kv_stream_space_ != nullptr) {
+        // Everything the previous round read from the ring is done before this round writes any of
+        // it; a round's layers are serialized on the compute stream anyway, so this waits no
+        // longer than the round boundary already did.
+        kv_stream_space_->begin_round(kv_stream_copy_);
         for (std::uint32_t primed = 0; primed < kv_stream_space_->ring_depth(); ++primed) {
             const std::uint32_t before = upload_cursor;
             issue_next_stream_upload();

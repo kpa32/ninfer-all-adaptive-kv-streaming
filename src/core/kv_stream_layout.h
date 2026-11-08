@@ -85,6 +85,14 @@ plan_kv_stream_split(std::uint32_t budget_pages, std::uint32_t pages_per_layer,
     return KVStreamSplit{r, pages_per_layer - r};
 }
 
+// The slot a page takes once it leaves the window, in the run its layer owns inside the ring.
+[[nodiscard]] constexpr std::int32_t
+kv_stream_ring_slot(std::uint32_t layer, std::uint32_t logical_page, const KVStreamSplit& split,
+                    std::uint32_t layers, const KVStreamRingGeometry& ring) noexcept {
+    return static_cast<std::int32_t>(
+        layers * split.resident_pages + (layer % ring.depth) * ring.stride + logical_page);
+}
+
 // Slot of logical page `logical_page` of `layer` in the flat pool.
 //
 // Both halves of the mapping depend on the page only, never on how far the context has grown:
@@ -121,14 +129,6 @@ plan_kv_stream_split(std::uint32_t budget_pages, std::uint32_t pages_per_layer,
                                      (split.resident_pages == 0
                                           ? 0
                                           : logical_page % split.resident_pages));
-}
-
-// The slot a page takes once it leaves the window, in the run its layer owns inside the ring.
-[[nodiscard]] constexpr std::int32_t
-kv_stream_ring_slot(std::uint32_t layer, std::uint32_t logical_page, const KVStreamSplit& split,
-                    std::uint32_t layers, const KVStreamRingGeometry& ring) noexcept {
-    return static_cast<std::int32_t>(
-        layers * split.resident_pages + (layer % ring.depth) * ring.stride + logical_page);
 }
 
 } // namespace ninfer

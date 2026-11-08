@@ -945,21 +945,7 @@ public:
     void activate(KVAddressSpaceHandle handle, std::uint32_t entitlement,
                   std::int32_t execution_row, RankStreams streams) {
         Address& address = require(handle);
-        if (stream_space_ != nullptr) {
-            if (address.active || address.row || address.reservation.valid() || execution_row < 0) {
-                throw std::logic_error("Streamed KV activation is inconsistent");
-            }
-            // The sequence's entitlement and page count are the pool's own in every other mode; a
-            // streaming pool has no free page to be entitled to, so neither takes part.
-            (void)entitlement;
-            address.row.emplace(tables_->acquire(execution_row));
-            address.active              = true;
-            address.page_count          = 0;
-            address.committed_frontier  = 0;
-            address.checkpoint_frontier = 0;
-            return;
-        }
-        if (entitlement < address.page_count) {
+        if (stream_space_ == nullptr && entitlement < address.page_count) {
             throw std::logic_error("KV address space is not activatable");
         }
         auto reservation = prepare_activation(handle, entitlement, execution_row);
@@ -975,6 +961,14 @@ public:
             entitlement > page_capacity_ ||
             (activation_frontier && *activation_frontier > address.committed_frontier)) {
             throw std::logic_error("KV address space is not reservable for activation");
+        }
+        if (stream_space_ != nullptr) {
+            // A streaming cache has nothing to reserve: the space owns every slot and the address
+            // keeps only the row its layers' tables are read through.
+            KVExecutionRowLease row = tables_->acquire(execution_row);
+            return KVActivationReservation(*this, handle, entitlement, activation_frontier,
+                                           pages_->physical_pool().make_empty_reservation(),
+                                           std::move(row));
         }
         const std::uint32_t required_pages =
             activation_frontier ? pages_for_tokens(*activation_frontier) : address.page_count;
@@ -1026,6 +1020,21 @@ public:
             throw std::logic_error("KV activation reservation address is stale");
         }
         Address& address = require(activation.address_);
+        if (stream_space_ != nullptr) {
+            // Nothing was reserved and no logical page exists: activation installs the row, and the
+            // space publishes the pages the sequence reaches as it reaches them.
+            if (address.active || address.row || address.reservation.valid()) {
+                throw std::logic_error("Streamed KV activation destination changed");
+            }
+            address.reservation = std::move(activation.page_reservation_);
+            address.row.emplace(std::move(*activation.row_));
+            activation.row_.reset();
+            address.active              = true;
+            address.page_count          = 0;
+            address.checkpoint_frontier = 0;
+            activation.owner_           = nullptr;
+            return;
+        }
         if (address.active || address.row || address.reservation.valid() ||
             activation.requested_entitlement_ == 0 ||
             activation.requested_entitlement_ > page_capacity_ ||

@@ -256,6 +256,8 @@ public:
 
     // Physical extent of the pool; page indices are validated against it and it never changes.
     [[nodiscard]] std::uint32_t capacity_pages() const noexcept;
+    // The page a handle names, for a caller that models the pool by page number.
+    [[nodiscard]] std::int32_t page_index(DeviceKVPageHandle handle) const;
     // Pages the pool may still hand out: the physical extent minus the pages lent away.
     [[nodiscard]] std::uint32_t usable_pages() const noexcept;
     [[nodiscard]] std::uint32_t allocated_pages() const noexcept;
@@ -504,6 +506,10 @@ public:
                  std::span<const DeviceKVPageHandle> pages, RankStreams streams = {});
     void publish(KVExecutionRowHandle row, std::uint32_t logical_begin,
                  std::span<const DeviceKVPageLease> pages, RankStreams streams = {});
+    // The same for a row the pool owns rather than leases, as `row_at` reads it: a cache that
+    // keeps one table per layer rewrites single entries of it as its window moves.
+    void publish_at(std::int32_t row_index, std::uint32_t logical_begin,
+                    std::span<const DeviceKVPageHandle> pages, RankStreams streams = {});
     void publish_repeated(KVExecutionRowHandle row, DeviceKVPageHandle page, std::uint32_t count,
                           RankStreams streams = {});
 
@@ -538,12 +544,14 @@ private:
     // Resolves one stream per copy, so a missing rank fails before any shadow entry changes.
     [[nodiscard]] std::vector<cudaStream_t> resolve_streams(RankStreams streams) const;
     [[nodiscard]] RowFence& fence(std::int32_t row, std::size_t replica) noexcept;
-    [[nodiscard]] std::int32_t* writable_shadow(KVExecutionRowHandle row,
-                                                std::uint32_t logical_begin, std::size_t count,
+    [[nodiscard]] std::int32_t* writable_shadow(std::int32_t row_index, std::uint32_t logical_begin,
+                                                std::size_t count,
                                                 std::span<const cudaStream_t> streams);
-    void publish_indices(KVExecutionRowHandle row, std::uint32_t logical_begin,
+    void publish_indices(std::int32_t row_index, std::uint32_t logical_begin,
                          std::span<const std::int32_t> indices,
                          std::span<const cudaStream_t> streams);
+    void publish_row(std::int32_t row_index, std::uint32_t logical_begin,
+                     std::span<const DeviceKVPageHandle> pages, RankStreams streams);
     void destroy_fences() noexcept;
     [[nodiscard]] const Tensor& replica(std::size_t rank) const;
 

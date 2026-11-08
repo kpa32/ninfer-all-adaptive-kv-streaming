@@ -9,7 +9,9 @@ namespace {
 
 using ninfer::KVStreamSplit;
 using ninfer::kv_stream_pool_pages;
+using ninfer::kv_stream_ring_slot;
 using ninfer::kv_stream_slot;
+using ninfer::kv_stream_window_slot;
 using ninfer::plan_kv_stream_split;
 
 // One line per distinct failure, however many frontiers reach it: a broken mapping would otherwise
@@ -57,6 +59,36 @@ void the_measured_262144_split() {
 
 // Two properties the attention depends on, at every frontier: one layer's pages never share a
 // slot, resident slots never overlap the ring, and no slot leaves the pool.
+// A page keeps the slot it was given for as long as it is resident, and takes the ring slot for
+// good once it leaves: two table writes in a page's life, not one per page boundary.
+void a_page_changes_slot_at_most_twice() {
+    constexpr std::uint32_t kLayers = 16;
+    constexpr std::uint32_t kPages  = 256;
+    constexpr std::uint32_t kBudget = 3000;
+    const auto split                = plan_kv_stream_split(kBudget, kPages, kLayers);
+    check(split.has_value(), "the streaming budget must plan");
+    if (!split) { return; }
+    const std::uint32_t resident = split->resident_pages;
+    for (std::uint32_t layer = 0; layer < 1; ++layer) {
+        for (std::uint32_t page = 0; page < kPages; ++page) {
+            std::set<std::int32_t> seen;
+            for (std::uint32_t active = page + 1; active <= kPages; ++active) {
+                const auto slot = kv_stream_slot(layer, page, active, *split, kLayers);
+                seen.insert(slot);
+                const bool resident_now = page + resident >= active;
+                if (resident_now) {
+                    check(slot == kv_stream_window_slot(layer, page, *split),
+                          "a resident page keeps its window slot as the context grows");
+                } else {
+                    check(slot == kv_stream_ring_slot(page, *split, kLayers),
+                          "a streamed page maps to its ring slot for good");
+                }
+            }
+            check(seen.size() <= 2, "a page changes slot at most once");
+        }
+    }
+}
+
 void slots_stay_inside_their_regions() {
     constexpr std::uint32_t kLayers = 16;
     constexpr std::uint32_t kPages  = 96;
@@ -130,6 +162,7 @@ void a_bigger_budget_never_residents_less() {
 int main() {
     all_resident_matches_today();
     the_measured_262144_split();
+    a_page_changes_slot_at_most_twice();
     slots_stay_inside_their_regions();
     refuses_what_it_cannot_serve();
     a_bigger_budget_never_residents_less();

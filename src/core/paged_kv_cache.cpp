@@ -683,6 +683,10 @@ std::int32_t DeviceKVPagePool::physical_index(DeviceKVPageHandle handle) const {
     return handle.index_;
 }
 
+std::int32_t DeviceKVPagePool::page_index(DeviceKVPageHandle handle) const {
+    return physical_index(handle);
+}
+
 void DeviceKVPagePool::validate_distinct_pages(std::span<const DeviceKVPageHandle> pages,
                                                const char* duplicate_message) const {
     ++validation_stamp_;
@@ -1286,17 +1290,34 @@ bool KVExecutionTablePool::release_row(std::int32_t row_index, std::uint32_t gen
 void KVExecutionTablePool::publish(KVExecutionRowHandle row_handle, std::uint32_t logical_begin,
                                    std::span<const DeviceKVPageHandle> page_handles,
                                    RankStreams streams) {
-    if (!valid_handle(row_handle) || logical_begin > logical_page_capacity() ||
+    if (!valid_handle(row_handle)) {
+        throw std::invalid_argument("Paged KV execution row is stale");
+    }
+    publish_row(row_handle.row_, logical_begin, page_handles, streams);
+}
+
+void KVExecutionTablePool::publish_at(std::int32_t row_index, std::uint32_t logical_begin,
+                                      std::span<const DeviceKVPageHandle> page_handles,
+                                      RankStreams streams) {
+    if (row_index < 0 || row_index >= row_count()) {
+        throw std::out_of_range("Paged KV execution row is out of range");
+    }
+    publish_row(row_index, logical_begin, page_handles, streams);
+}
+
+void KVExecutionTablePool::publish_row(std::int32_t row_index, std::uint32_t logical_begin,
+                                       std::span<const DeviceKVPageHandle> page_handles,
+                                       RankStreams streams) {
+    if (logical_begin > logical_page_capacity() ||
         page_handles.size() > logical_page_capacity() - logical_begin) {
         throw std::invalid_argument("Paged KV mapping publication is outside its execution row");
     }
     const std::vector<cudaStream_t> resolved = resolve_streams(streams);
-    std::int32_t* shadow =
-        writable_shadow(row_handle, logical_begin, page_handles.size(), resolved);
+    std::int32_t* shadow = writable_shadow(row_index, logical_begin, page_handles.size(), resolved);
     for (std::size_t index = 0; index < page_handles.size(); ++index) {
         shadow[index] = pages_->physical_index(page_handles[index]);
     }
-    publish_indices(row_handle, logical_begin,
+    publish_indices(row_index, logical_begin,
                     std::span<const std::int32_t>(shadow, page_handles.size()), resolved);
 }
 
@@ -1345,7 +1366,7 @@ std::vector<cudaStream_t> KVExecutionTablePool::resolve_streams(RankStreams stre
     return resolved;
 }
 
-std::int32_t* KVExecutionTablePool::writable_shadow(KVExecutionRowHandle row_handle,
+std::int32_t* KVExecutionTablePool::writable_shadow(std::int32_t row_index,
                                                     std::uint32_t logical_begin, std::size_t count,
                                                     std::span<const cudaStream_t> streams) {
     // An aborted request releases its row with copies still queued (the host runs a chunk ahead of
@@ -1354,7 +1375,7 @@ std::int32_t* KVExecutionTablePool::writable_shadow(KVExecutionRowHandle row_han
     // cached prefix. Every copy reads the one shadow, so each copy's fence is checked.
     const std::uint64_t end = static_cast<std::uint64_t>(logical_begin) + count;
     for (std::size_t copy = 0; count != 0 && copy < replicas_.size(); ++copy) {
-        RowFence& pending = fence(row_handle.row_, copy);
+        RowFence& pending = fence(row_index, copy);
         if (pending.end <= pending.begin) { continue; }
         cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
         CUDA_CHECK(cudaStreamIsCapturing(streams[copy], &capture));
@@ -1374,11 +1395,10 @@ std::int32_t* KVExecutionTablePool::writable_shadow(KVExecutionRowHandle row_han
         }
     }
     return static_cast<std::int32_t*>(host_shadow_.data()) +
-           static_cast<std::size_t>(row_handle.row_) * logical_page_capacity() + logical_begin;
+           static_cast<std::size_t>(row_index) * logical_page_capacity() + logical_begin;
 }
 
-void KVExecutionTablePool::publish_indices(KVExecutionRowHandle row_handle,
-                                           std::uint32_t logical_begin,
+void KVExecutionTablePool::publish_indices(std::int32_t row_index, std::uint32_t logical_begin,
                                            std::span<const std::int32_t> indices,
                                            std::span<const cudaStream_t> streams) {
     if (indices.empty()) { return; }
@@ -1388,14 +1408,14 @@ void KVExecutionTablePool::publish_indices(KVExecutionRowHandle row_handle,
     // address it, which without peer access is its own device alone.
     for (std::size_t copy = 0; copy < replica_ranks_.size(); ++copy) {
         DeviceBinding bind(replica_devices_[copy]);
-        Tensor destination_row = row(row_handle, replica_ranks_[copy]);
+        Tensor destination_row = row_at(row_index, replica_ranks_[copy]);
         auto* destination      = static_cast<std::int32_t*>(destination_row.data) + logical_begin;
         CUDA_CHECK(cudaMemcpyAsync(destination, indices.data(), indices.size_bytes(),
                                    cudaMemcpyHostToDevice, streams[copy]));
         cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
         CUDA_CHECK(cudaStreamIsCapturing(streams[copy], &capture));
         if (capture != cudaStreamCaptureStatusNone) { continue; }
-        RowFence& pending = fence(row_handle.row_, copy);
+        RowFence& pending = fence(row_index, copy);
         CUDA_CHECK(cudaEventRecord(pending.event, streams[copy]));
         pending.stream = streams[copy];
         pending.begin =

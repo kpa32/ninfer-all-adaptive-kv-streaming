@@ -56,11 +56,15 @@ plan_kv_stream_split(std::uint32_t budget_pages, std::uint32_t pages_per_layer,
 
 // Slot of logical page `logical_page` of `layer` in the flat pool.
 //
-// Streamed pages map to the ring by identity, so that half of every layer's table is written once
-// and never rewritten; the resident window rotates through its own region of the pool, one entry
-// per page boundary (see the design, section 4.3). `logical_page` must be below `active_pages`,
-// which must not exceed the layer's capacity; the result is always below
-// `kv_stream_pool_pages(split, layers)`.
+// Both halves of the mapping depend on the page only, never on how far the context has grown:
+// a streamed page is its own slot past the resident region, and a resident page is the slot its
+// page index leaves in its layer's region. That is what makes a table entry change exactly twice
+// in a page's life - once when the page appears, once when it leaves the window - instead of on
+// every page boundary. When a page leaves, the page taking its place is the one whose index
+// differs by the window depth, which is the same slot.
+//
+// `logical_page` must be below `active_pages`, which must not exceed the layer's capacity; the
+// result is always below `kv_stream_pool_pages(split, layers)`.
 [[nodiscard]] constexpr std::int32_t kv_stream_slot(std::uint32_t layer, std::uint32_t logical_page,
                                                    std::uint32_t active_pages,
                                                    const KVStreamSplit& split,
@@ -71,8 +75,26 @@ plan_kv_stream_split(std::uint32_t budget_pages, std::uint32_t pages_per_layer,
         return static_cast<std::int32_t>(layers * resident + logical_page);
     }
     // Every page is inside the window: no streamed page exists, and the ring is not addressed.
-    const std::uint32_t within = logical_page - window_start;
-    return static_cast<std::int32_t>(layer * resident + (resident == 0 ? 0 : within % resident));
+    return static_cast<std::int32_t>(layer * resident +
+                                     (resident == 0 ? 0 : logical_page % resident));
+}
+
+// The slot a page keeps for as long as it stays in its layer's window, so that the table entry set
+// when the page appeared needs no rewrite until the page leaves.
+[[nodiscard]] constexpr std::int32_t kv_stream_window_slot(std::uint32_t layer,
+                                                         std::uint32_t logical_page,
+                                                         const KVStreamSplit& split) noexcept {
+    return static_cast<std::int32_t>(layer * split.resident_pages +
+                                     (split.resident_pages == 0
+                                          ? 0
+                                          : logical_page % split.resident_pages));
+}
+
+// The slot a page takes once it leaves the window, shared by every layer.
+[[nodiscard]] constexpr std::int32_t
+kv_stream_ring_slot(std::uint32_t logical_page, const KVStreamSplit& split,
+                    std::uint32_t layers) noexcept {
+    return static_cast<std::int32_t>(layers * split.resident_pages + logical_page);
 }
 
 } // namespace ninfer

@@ -15,6 +15,10 @@
 #include <utility>
 #include <vector>
 
+namespace ninfer::models::qwen3_5 {
+class StreamedKVSpace;
+} // namespace ninfer::models::qwen3_5
+
 namespace ninfer::models::qwen3_5::detail {
 
 class LogicalKVPageStore;
@@ -934,9 +938,27 @@ public:
                addresses_[handle.index_].generation == handle.generation_;
     }
 
+    // A streaming cache derives its mapping instead of allocating one
+    // (program/storage/kv_stream_space.h): activation still binds a row, and the pages a sequence
+    // reaches are published by the space as its window moves, so no logical page, entitlement or
+    // page reservation takes part.
+    void enable_streaming(StreamedKVSpace* space) noexcept { stream_space_ = space; }
+
     void activate(KVAddressSpaceHandle handle, std::uint32_t entitlement,
                   std::int32_t execution_row, RankStreams streams) {
         Address& address = require(handle);
+        if (stream_space_ != nullptr) {
+            if (address.active || address.row || address.reservation.valid() ||
+                entitlement != page_capacity_ || execution_row < 0) {
+                throw std::logic_error("Streamed KV activation is inconsistent");
+            }
+            address.row.emplace(tables_->acquire(execution_row));
+            address.active              = true;
+            address.page_count          = 0;
+            address.committed_frontier  = 0;
+            address.checkpoint_frontier = 0;
+            return;
+        }
         if (entitlement < address.page_count) {
             throw std::logic_error("KV address space is not activatable");
         }
@@ -1044,6 +1066,14 @@ public:
 
     void deactivate(KVAddressSpaceHandle handle) {
         Address& address = require_active(handle);
+        if (stream_space_ != nullptr) {
+            // The sequence's frontier goes with it; the next one republishes as its pages appear.
+            address.row.reset();
+            address.page_count = 0;
+            address.active     = false;
+            stream_space_->reset();
+            return;
+        }
         for (std::uint32_t page = 0; page < address.page_count; ++page) {
             const LogicalKVPageHandle logical = membership(address, page);
             if (pages_->writer_references(logical) != 0 &&
@@ -1631,6 +1661,13 @@ public:
                                  RankStreams stream = {}) {
         Address& address           = require_active(handle);
         const std::uint32_t target = pages_for_tokens(tokens);
+        if (stream_space_ != nullptr) {
+            // The space owns every slot, so reaching further into the context publishes the pages
+            // that appeared and moves out the pages the window drops; nothing is allocated.
+            if (target > address.page_count) { stream_space_->advance(target, stream); }
+            address.page_count = target > address.page_count ? target : address.page_count;
+            return;
+        }
         if (target > entitlement(address)) {
             throw std::invalid_argument(
                 "KV coverage exceeds active entitlement: tokens=" + std::to_string(tokens) +
@@ -2076,6 +2113,9 @@ private:
 
     LogicalKVPageStore* pages_    = nullptr;
     KVExecutionTablePool* tables_ = nullptr;
+    // Non-null when the text cache streams: the space derives and publishes the mapping, so this
+    // store keeps only the row and the frontier it reports.
+    StreamedKVSpace* stream_space_ = nullptr;
     std::uint32_t page_capacity_  = 0;
     std::vector<Address> addresses_;
     std::vector<std::uint32_t> free_;

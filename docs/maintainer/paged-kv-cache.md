@@ -789,3 +789,26 @@ Exact model state 和 backend mathematics 见
 [Qwen3.5 model](qwen3_5-model.md)与 [DFlash](dflash.md)；persistent KV codec 和 causal consumer
 numerical contract 由上表中的 growing-cache Ops 定义。路径用于定位当前实现，不把文件或类名本身提升为
 外部接口。
+
+### 4.5 Streaming pools: planes by kind, one table row per layer
+
+`--kv-stream` splits the same pool differently, and the difference is in what a page group is
+([design 4.1-4.5](kv-streaming-design.md)). The pool still hands out page groups, but its capacity
+axis is **slots** rather than whole contexts, and a slot is one page of one layer:
+
+```text
+slot s = layer * R + (page mod R)       for a page inside that layer's window
+slot s = layers * R + page              for a page its window dropped
+```
+
+with `R` the window depth every full-attention layer gets (identical for all of them) and
+`layers * R + (P - R)` slots in total. Two consequences the plane machinery must keep:
+
+- **A plane is one kind, not one layer.** The K, V and scale planes each span every streaming layer,
+  which is why `layer_view(layer)` addresses a layer's pages through the per-layer block table
+  (`row_at(layer)`) instead of an offset into the arena. Adding a per-layer plane dimension would
+  make a 262 144-token context on a 16 GB card arithmetically impossible: `16 (R + S) >= 16 P`.
+- **The table stays the only indirection.** A page's slot changes at most twice in its life (when it
+  appears, when its window drops it), and the table is published between rounds: `arm` writes the
+  slots, `advance` republishes as the frontier grows. The kernels, the capture rules and the page
+  handles are exactly the ones above.

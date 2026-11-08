@@ -2066,7 +2066,7 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                         // authority's bytes at the moment its attention is about to read them?
                         if (std::getenv("NINFER_KVSTREAM_CHECK") != nullptr) {
                             static int rounds = 0;
-                            if (rounds < 8) {
+                            if (rounds < 3 && !prefill) {
                                 const std::uint32_t streamed = kv_stream_space_->window_start();
                                 if (streamed >= 20) {
                                     // The table is what attention dereferences, so its entries are

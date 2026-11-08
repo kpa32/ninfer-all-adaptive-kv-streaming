@@ -31,7 +31,12 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
         throw std::invalid_argument("A streamed KV space needs a cache planned with a flat pool");
     }
     if (layers_ == 0 || split_.resident_pages == 0 || cache.max_context() == 0) {
-        throw std::invalid_argument("A streamed KV space needs layers, a window and a context");
+        throw std::invalid_argument(
+            "A streamed KV space needs layers, a window and a context: layers=" +
+            std::to_string(layers_) + " resident=" + std::to_string(split_.resident_pages) +
+            " ring=" + std::to_string(split_.ring_pages) + " slots=" +
+            std::to_string(cache.page_pool().capacity_pages()) + " context=" +
+            std::to_string(cache.max_context()));
     }
     pages_per_layer_ = page_count(cache.max_context());
     ring_base_       = layers_ * split_.resident_pages;

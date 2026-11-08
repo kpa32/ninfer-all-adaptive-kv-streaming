@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -353,20 +352,8 @@ ProgramImpl::owner_exclusive_resources(const SequenceState& sequence) const {
                                 const LogicalKVPageStore& pages, KVAddressSpaceHandle address,
                                 std::uint32_t& device_pages) {
             if (!addresses.valid(address)) { throw std::logic_error("stale KV address space"); }
-            // TEMPORARY DIAGNOSTIC (streamed KV): what this owner sees before it walks the pages.
-            std::fprintf(stderr,
-                         "KVSTREAM-DEBUG owner pages mapped=%u entitlement=%u active=%d\n",
-                         addresses.mapped_pages(address), addresses.entitlement(address),
-                         addresses.active(address) ? 1 : 0);
             for (std::uint32_t page = 0; page < addresses.mapped_pages(address); ++page) {
                 const LogicalKVPageHandle logical = addresses.logical_page(address, page);
-                std::fprintf(stderr, "KVSTREAM-DEBUG page %u valid=%d", page,
-                             pages.valid(logical) ? 1 : 0);
-                if (pages.valid(logical)) {
-                    std::fprintf(stderr, " refs=%u occupied=%d", pages.address_references(logical),
-                                 pages.device_resident(logical) ? 1 : 0);
-                }
-                std::fprintf(stderr, "\n");
                 // A shared logical page contributes to aggregate occupancy once. Releasing this
                 // address cannot free either replica while another address still references it,
                 // so it is not part of this owner's exact transition effect.

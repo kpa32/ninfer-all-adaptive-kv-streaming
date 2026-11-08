@@ -1678,10 +1678,11 @@ public:
         Address& address           = require_active(handle);
         const std::uint32_t target = pages_for_tokens(tokens);
         if (stream_space_ != nullptr) {
-            // The space owns every slot, so reaching further into the context publishes the pages
-            // that appeared and moves out the pages the window drops; nothing is allocated.
-            if (target > address.page_count) { stream_space_->advance(target, stream); }
-            address.page_count = target > address.page_count ? target : address.page_count;
+            // `page_count` counts materialized logical pages, and a streamed address materializes
+            // none: the pages a sequence reaches live in the space, whose own frontier advances.
+            // Anything that reads this count then walks nothing, which is what a streamed sequence
+            // wants - its pages are named by the layer tables, not by a per-page device replica.
+            if (target > stream_space_->active_pages()) { stream_space_->advance(target, stream); }
             return;
         }
         if (target > entitlement(address)) {

@@ -2024,6 +2024,29 @@ template <class Tap>
 void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& tap) {
     const bool prefill      = ph == Phase::Prefill;
     const std::uint32_t end = parameters_.text.stage_end(stage);
+    // Streaming issues its host copies ahead of the attention that reads them. The ring holds
+    // `ring_depth()` layers' streamed sets side by side, so priming that many uploads before the
+    // first layer lets every later copy overlap the attention before it; a ring only one layer deep
+    // degrades to exactly the old order, copy, then attend (design 4.10).
+    std::uint32_t upload_cursor = parameters_.text.stage_begin[stage];
+    auto issue_next_stream_upload = [&]() {
+        if (kv_stream_space_ == nullptr) { return; }
+        while (upload_cursor < end && config_.layer_types[upload_cursor] != MixerKind::FullAttention) {
+            ++upload_cursor;
+        }
+        if (upload_cursor >= end) { return; }
+        kv_stream_space_->upload(static_cast<std::uint32_t>(
+                                     dimension(config_.compact_layer_indices[upload_cursor])),
+                                 kv_stream_copy_);
+        ++upload_cursor;
+    };
+    if (kv_stream_space_ != nullptr) {
+        for (std::uint32_t primed = 0; primed < kv_stream_space_->ring_depth(); ++primed) {
+            const std::uint32_t before = upload_cursor;
+            issue_next_stream_upload();
+            if (upload_cursor == before) { break; }
+        }
+    }
     // The adapters' measures start from the residual the stage receives.
     steer(ops::SteerResidualStep::Measure, 0, -1, x);
     for (std::uint32_t layer = parameters_.text.stage_begin[stage]; layer < end; ++layer) {
@@ -2046,20 +2069,14 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                 auto scope = work_.scope();
                 if (full) {
                     if (kv_stream_space_ != nullptr) {
-                        // The ring is one buffer for every layer, so a layer's pages are copied
-                        // just before that layer's attention reads them and not before: a round
-                        // that filled them all first would let each layer overwrite the previous
-                        // one's pages before anything read them.
-                        const std::uint32_t compact_layer = static_cast<std::uint32_t>(compact);
-                        const std::uint32_t previous =
-                            compact_layer == 0 ? kv_stream_space_->layers() - 1U
-                                               : compact_layer - 1U;
-                        CUDA_CHECK(cudaStreamWaitEvent(kv_stream_copy_,
-                                                       kv_stream_space_->consumed_event(previous),
-                                                       0));
-                        kv_stream_space_->upload(compact_layer, kv_stream_copy_);
+                        // The ring holds `ring_depth()` layers' streamed sets, so this layer's copy
+                        // was issued `ring_depth()` layers ago and overlapped the attention of the
+                        // layers in between (design 4.10). `upload` orders each copy against the
+                        // layer that previously owned the run it writes into.
                         CUDA_CHECK(cudaStreamWaitEvent(
-                            ctx_.stream, kv_stream_space_->ready_event(compact_layer), 0));
+                            ctx_.stream,
+                            kv_stream_space_->ready_event(static_cast<std::uint32_t>(compact)),
+                            0));
                     }
 
                     attn_mix(block, x, compact, ph);
@@ -2068,6 +2085,7 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                             kv_stream_space_->consumed_event(
                                 static_cast<std::uint32_t>(compact)),
                             ctx_.stream));
+                        issue_next_stream_upload();
                     }
                 } else {
                     gdn_mix(block, x, compact, ph);

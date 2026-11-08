@@ -40,6 +40,10 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
     }
     pages_per_layer_ = page_count(cache.max_context());
     ring_base_       = layers_ * split_.resident_pages;
+    // The geometry starts at the worst case -- every layer's streamed set at the planned capacity,
+    // which is exactly one layer in the ring -- and `advance` widens it as the frontier shows how
+    // much a layer really streams.
+    ring_ = kv_stream_ring_geometry(split_.ring_pages, split_.ring_pages, layers_);
     // Every slot of the pool belongs to this space for the cache's lifetime: the mapping names
     // slots, so nothing else may allocate, lend or release one.
     const std::uint32_t slot_count = cache.page_pool().capacity_pages();
@@ -123,6 +127,29 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     if (active_pages > pages_per_layer_) {
         throw std::invalid_argument("A streamed KV frontier exceeds the cache's context");
     }
+    // The ring's depth follows what one layer actually streams: a shorter context leaves the ring
+    // empty enough for several layers' streamed sets to sit side by side, and each extra layer in
+    // it is a layer whose copy can overlap a previous layer's attention. A change of depth moves
+    // every streamed page's slot, so those entries are re-published in one span per layer.
+    const std::uint32_t reached   = active_pages > split_.resident_pages
+                                      ? active_pages - split_.resident_pages
+                                      : 0U;
+    const KVStreamRingGeometry geometry =
+        kv_stream_ring_geometry(split_.ring_pages, reached, layers_);
+    if (geometry.depth != ring_.depth || geometry.stride != ring_.stride) {
+        ring_             = geometry;
+        geometry_changed_ = true;
+        if (active_ > split_.resident_pages) {
+            std::vector<std::int32_t> slots(active_ - split_.resident_pages);
+            for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+                for (std::uint32_t page = 0; page < slots.size(); ++page) {
+                    slots[page] = kv_stream_ring_slot(layer, page, split_, layers_, ring_);
+                }
+                cache_->execution_tables().publish_slots_at(static_cast<std::int32_t>(layer), 0,
+                                                            slots, streams);
+            }
+        }
+    }
     for (std::uint32_t page = active_; page < active_pages; ++page) {
         // The page appears in its layer's window, where this round's append writes it.
         for (std::uint32_t layer = 0; layer < layers_; ++layer) {
@@ -136,7 +163,8 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
             const std::int32_t dropped_slot = kv_stream_window_slot(layer, dropped, split_);
             cache_->page_pool().copy_to_host_pages(
                 dropped_slot, 1, host_pages(layer).subview(dropped, 1), streams);
-            publish_slot(layer, dropped, kv_stream_ring_slot(dropped, split_, layers_), streams);
+            publish_slot(layer, dropped,
+                         kv_stream_ring_slot(layer, dropped, split_, layers_, ring_), streams);
         }
     }
     // The host copies above are ordered on the compute streams, and the uploads that read those
@@ -153,12 +181,33 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (copy == nullptr) { throw std::invalid_argument("A streamed KV upload needs a copy stream"); }
     const std::uint32_t count = window_start();
     if (count != 0) {
-        // Every streamed page of this layer, page 0 first, into the consecutive ring slots; the
-        // pool turns the run into one strided transfer per plane. The host copies a round's window
-        // dropped are ordered on the compute stream, so the uploads wait for them first.
+        if (count > ring_.stride) {
+            throw std::logic_error("A streamed KV layer needs more ring slots than it owns");
+        }
+        if (geometry_changed_) {
+            // A new geometry moved every run, so the layer that owns this one is not the layer that
+            // owned it last round: wait for every layer's attention instead of one. The wait is on
+            // events of the previous round, which have all been recorded by now.
+            for (cudaEvent_t consumed : consumed_) {
+                CUDA_CHECK(cudaStreamWaitEvent(copy, consumed, 0));
+            }
+            geometry_changed_ = false;
+        }
+        // The ring run belongs to the layer `ring_.depth` positions back, so waiting for that
+        // layer's attention to finish is what keeps this copy from overwriting pages still being
+        // read. With a single-layer ring that is the previous layer, which is the same ordering a
+        // round has always used; with a deeper ring it is the layer that shares this run.
+        if (layer >= ring_.depth) {
+            CUDA_CHECK(cudaStreamWaitEvent(copy, consumed_[layer - ring_.depth], 0));
+        }
+        // Every streamed page of this layer, page 0 first, into the consecutive slots this layer
+        // owns; the pool turns the run into one strided transfer per plane. The host copies a
+        // round's window dropped are ordered on the compute stream, so the uploads wait for them
+        // first.
         CUDA_CHECK(cudaStreamWaitEvent(copy, dropped_[layer], 0));
-        cache_->page_pool().copy_from_host_pages(host_pages(layer).data(), host_layout_,
-                                                 ring_base_, count, RankStreams(copy));
+        cache_->page_pool().copy_from_host_pages(
+            host_pages(layer).data(), host_layout_,
+            ring_base_ + (layer % ring_.depth) * ring_.stride, count, RankStreams(copy));
     }
     CUDA_CHECK(cudaEventRecord(ready_[layer], copy));
 }

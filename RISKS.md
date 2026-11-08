@@ -9,11 +9,13 @@
 
 ### R0 越界删除（流程风险，最高优先级）— **所有者明确警告**
 
-- 所有者 2026-11-08：删减的只是**产品范围（其它模型）**，不是功能；27B 特性与 RTX 30/40/50 支持必须保留；
-  **未经审核的删除可被整体回滚，相关工作作废**。
+- 所有者 2026-11-08：删减的只是**别的模型/别的卡的支持**；27B 特性必须保持；
+  **未经审核的删除可被整体回滚，相关工作作废**；测试必须自清理（不留进程/临时文件/显存）。
+- 2026-11-08 第二次确认：只保留 sm_89，其它卡的实现删掉以减少编译时间（以后可对比加回）；
+  Flash-Next 与其它非 27B 模型删除；多卡与 MoE “耦合极深就别动”；从简单/独立的开始。
 - 对本 agent 的约束：① 动手前先提交 `CUTLIST.md` 条目与理由；② 一条一个 commit；
-  ③ 不把“顺手清理”当成删减；④ 任何“看起来没人用”的代码先归 B 组。
-- 到本文件为止的审计只新增了 5 份根目录文档，未删除/修改任何源码、测试、脚本。
+  ③ 不把“顺手清理”当成删减；④ 任何“看起来没人用”的代码先归 B 组；⑤ 测完清理环境。
+- 到本文件为止的审计只新增了根目录文档，未删除/修改任何源码、测试、脚本。
 
 ### R1 Linux 机器上的 git 根目录与脚本不一致 — **已核实**
 
@@ -62,19 +64,19 @@
 
 | 项 | 证据 | 如果删了会怎样 |
 |---|---|---|
-| `NINFER_SM8X_COMPAT` 路径 | 实际构建命令带 `-DNINFER_SM8X_COMPAT=1 -DNINFER_TIER_AMPERE=1` | sm_89 会失去路由与回退，几乎全部 kernel 失效 |
-| `src/ops/kv_stream/*` + Strata 归属 | `qwen4_exp` 在用；阶段 2 的参考实现 | 阶段 2 从零开始，且违反 `CONTRIBUTORS.md` 的归属 |
+| sm_89 的兼容路径（`NINFER_SM8X_COMPAT`、`NINFER_TIER_AMPERE`） | 实际构建命令带 `-DNINFER_SM8X_COMPAT=1 -DNINFER_TIER_AMPERE=1`；名字里的 "sm8x" **是 89 自己走的路径** | 删了 = 删掉目标卡的全部 kernel |
+| `src/ops/kv_stream/*` + Strata 归属 | Flash-Next 在用；Flash-Next 删掉后它是阶段 2 的唯一机制来源（410 行） | 阶段 2 从零开始，且违反 `CONTRIBUTORS.md` 的归属 |
 | `HostKVArena` / `transfer_work` / `evictable_kv_pool` / `vmm` | paged KV、context cache、Vision overlay、suspend 都在用 | KV 流式没有物理基础 |
 | `qwen3_5/program/storage/*`（kv_store、host_kv_store、state_store、session_snapshot） | 上下文缓存与 checkpoint 的唯一实现 | prefix reuse / slot 持久化全部失效 |
 | `softmax_attention/dense/**` 的 `context`/`packed`/`prompt` 三组路由 | prefill、decode、verify 分别用它们 | 长上下文 prefill 或 decode 直接不可用 |
 | `linear/gguf/**` + `linear/q4,q5,q6,q8/**` | artifact 实际格式（见 `SCOPE.md` §2） | 目标模型加载失败 |
 | `linear_attention`、`gdn_*`、`dynamic_grouped_conv` | 48 个 GDN 层 | 模型数学不成立 |
 | `device_profiles.json` 的 4080 SUPER 条目 + `ninfer-calibrate` | `--device-profile auto` 依赖它 | 路由退回通用系数，性能不可解释 |
-| sm_86 / sm_89 / 120a 的架构分支与各自回退路径 | 所有者要求保留 RTX 30/40/50 支持 | 删了就是删功能（你的规则） |
-| 九种 `--kv-dtype` 格式与各自的 attention/codec 变体 | 27B 的可选特性，`docs/performance.md` 有实测 | 删了就是删功能 |
-| FP8 / NVFP4 / T2 / STQ 权重单元 | 同一个 27B 的其它 artifact + 120a 构建需要 | 无法加载那些 artifact |
-| Vision（`execution/vision*`、`load/vision*`、`program/vision_control*`、`src/media/decode`）| 所有者已确认永久保留；`start-mtp.sh` 在用 | 删了就是删功能 |
-| `core/tensor_parallel.*`、`stage_link`、`stage_plan`、pipeline CLI | 多卡是功能，不是“别的模型” | 删了就是删功能 |
+| 九种 `--kv-dtype` 格式与各自的 attention/codec 变体 | 27B 的可选特性（B2 例外） | 删了就是删功能 |
+| FP8 / NVFP4 / T2 / STQ 权重单元 | 同一个 27B 的其它 artifact（B1 例外） | 无法加载那些 artifact |
+| Vision（`execution/vision*`、`load/vision*`、`program/vision_control*`、`src/media/decode`） | 所有者已确认永久保留；`start-mtp.sh` 在用 | 删了就是删功能 |
+| `core/tensor_parallel.*`、`stage_link`、`stage_plan`、pipeline CLI、`qwen3_5` 里的 rank 分支 | 耦合极深（52 个文件引用，15 个在 qwen3_5）；所有者规则“耦合极深的不动” | 等于重写模型执行主路径 |
+| `ops/candidate_selector` | 27B 的 DFlash2 在用（`execution/draft.cpp`、`load/dflash2.cpp`、`planning/startup.cpp`） | 27B 的 DFlash2 失效（它容易被误认为 Flash-Next 专属） |
 | `runtime/engine/context_cache/**` + `runtime/prefix_cache/**` | Legacy + Hybrid 两种 prefix cache | serving 的缓存模式失效 |
 
 ---
@@ -86,7 +88,8 @@
 
 | 删除动作 | 冲突面 | 缓解 |
 |---|---|---|
-| A1–A4（Gemma 4 / Flint / DeepSeek） | 上游对 `engine.cpp`、`registry.*`、`models/CMakeLists.txt`、`tests/CMakeLists.txt` 的任何改动都会冲突 | 登记点集中在一个 commit（A4），冲突时整块取上游再重放删族 |
+| A1（卡支持：70/75/80/86/120a） | `CMakeLists.txt` 顶部、`ops/*/sources.cmake`、device tier 是被上游频繁改动的区域 | 删完只动“架构白名单 + 几个专属子目录”；`NINFER_SM8X_COMPAT` 保持与上游同形 |
+| A2–A5（四个模型族） | 上游对 `engine.cpp`、`registry.*`、`models/CMakeLists.txt`、`tests/CMakeLists.txt`、`ops/CMakeLists.txt` 的任何改动都会冲突 | 登记点集中在一个 commit，冲突时整块取上游再重放删族 |
 | 未来若要删 Flash-Next / MoE（B1/B2） | `engine.cpp`、`program/` 与 `ops/` 的共享层，冲突面最大 | 阶段 2 之后再评估；按“收敛到单一路径”而不是“删 if 分支”重写 |
 | 保留项（Vision、KV 格式、FP8/NVFP4、sm_70/75、TP/pipeline） | 不产生冲突：它们保持与上游同形 | — |
 
@@ -99,7 +102,8 @@
 
 | 改动 | 为什么不能只靠编译通过 | 验证 |
 |---|---|---|
-| A1–A4 删族 | 注册点/前端方言删错会让另一个族静默退回 Qwen 语义 | 8K smoke 的 greedy token IDs 与基线比对 + `ninfer_tests` 的 qwen3_5 子集 |
+| A1 删卡支持 | 删错一个共享宏（`NINFER_SM8X_COMPAT` / `NINFER_TIER_AMPERE`）会让 89 编译出空实现或错误路由 | 构建后 8K smoke + `grep` 确认 `NINFER_SM8X_COMPAT` 的出现次数不变；对比删除前后的 `--help` 与 engine ready 日志 |
+| A2–A5 删族 | 注册点/前端方言删错会让另一个族静默退回 Qwen 语义 | 8K smoke 的 greedy token IDs 与基线比对 + `ninfer_tests` 的 qwen3_5 子集 |
 | 阶段 2 流式 | 页驻留改变的是“数据在哪”，必须是逐字节等价 | 同格式 on/off 的 greedy IDs 与 logprobs 一致；planted-code recall；perplexity |
 | （保留）改任何共享 kernel | 九种 KV 格式与 FP8/NVFP4 权重仍要可加载 | 对应 Op 测试 + 真实 artifact 启动 |
 | 阶段 2 流式 | 页驻留改变的是"数据在哪"，必须是逐字节等价 | 同格式 on/off 的 greedy IDs 与 logprobs 一致；planted-code recall；perplexity |

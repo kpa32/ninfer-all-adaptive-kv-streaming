@@ -238,16 +238,34 @@ cat /sys/bus/pci/devices/0000:08:00.0/current_link_speed
 
 ## 5. 测量结果
 
-### 5.1 短上下文 smoke（8K，`rk8v4`，MTP3，greedy）
+### 5.1 短上下文 smoke（服务端，`rk8v4`，MTP3，`--max-context 120000`）
+
+来源：所有者 2026-11-08 15:06–15:08 的 `./start-mtp.sh` 启动日志（`build untagged+6eb311fd`，
+`nvcc 13.4.92, 89`）。这是**服务端**数据，不是 CLI 阶梯，也不是我复现的值。
 
 | 项 | 值 |
 |---|---|
-| commit / branch | `pending` |
-| 输出 token（前 64）指纹 | `pending` |
-| prefill tok/s | `pending` |
-| decode tok/s | `pending` |
-| 峰值 VRAM | `pending` |
-| 主机峰值 RSS | `pending` |
+| 权重就绪 | 11.9 GiB 读取 / 11.6 GiB 上卡，23.7 s（513.5 MiB/s） |
+| 启动总时长 | 27.8 s（含 pinned 8.00 GiB host KV、CUDA graphs 635 ms、warmup 97 ms） |
+| KV 容量 | 120 000 tokens，`rk8v4`，explicit，1 875 pages；`runtime 3.62 GiB`；**启动后空闲 145.5 MiB** |
+| 内存台账 | 权重后空闲 3.74 GiB → 启动后 145.5 MiB；headroom 0 B；slack 127.0 MiB；CUDA graphs 允许 72 MiB、用 36 MiB |
+| req#1（371 prompt，openai-chat，tools 2） | prefill **1.31k tok/s**，TTFT 284 ms，decode **108.9 tok/s**，MTP 接受 23/42 (54.8%) |
+| req#2（421 prompt，共享前缀命中 364 = 86.5%） | TTFT 45.6 ms，decode **127.8 tok/s**，MTP 接受 90/129 (69.8%) |
+| req#3（长回复，5 s 窗口） | decode **112.0 tok/s**（560 tok/窗口），batch 1.00 |
+| 加载时 PCIe 链路 | **16.0 GT/s**（空闲时 2.5 GT/s） |
+| 峰值 VRAM | 15 894 / 16 376 MiB（进程 15 860 MiB） |
+
+结论：
+
+- 16 GiB 上 `rk8v4` 的实际上限就是 120K 量级（启动后只剩 145 MiB），阶段 2 要突破的不是权重，
+  而是 **KV 占用**：`rk8v4` 每 token 约 25.5 KiB 的理论值与 `runtime 3.62 GiB / 120K`
+  （含 State/workspace）吻合到 20% 以内。
+- 短上下文 decode 112–128 tok/s 已经接近 `docs/performance.md` 里 RTX 4090 的 MTP3 数字
+  （146/109），说明本卡当前没有被构建或功耗问题拖累，后续流式优化的对照基线是可信的。
+- `~/.cache/ninfer/device-profiles.json` 里的 4080 SUPER 标定被**拒绝**：
+  `calibrated against route catalog a0d4d93c979588e1 (build 2026-11-04.3-15-gf6928e00), this build's is e614262150e40eaf; it is ignored`。
+  当前用的是内建 profile（78 routed keys, 2026-10-16）。是否花 GPU 时间重标定（`ninfer-calibrate`）
+  是阶段 3 的决定，不是基线缺陷。
 
 ### 5.2 上下文阶梯
 
@@ -256,7 +274,7 @@ cat /sys/bus/pci/devices/0000:08:00.0/current_link_speed
 | 8 192 | pending | pending | pending | |
 | 32 768 | pending | pending | pending | |
 | 65 536 | pending | pending | pending | |
-| 120 000 | pending | pending | pending | 与 `start-mtp.sh` 同容量 |
+| 120 000 | pending | pending | pending | 与 `start-mtp.sh` 同容量；服务端短上下文数字见 §5.1 |
 
 ### 5.3 KV 格式（32K）
 
@@ -277,9 +295,9 @@ cat /sys/bus/pci/devices/0000:08:00.0/current_link_speed
 
 | 项 | 值 |
 |---|---|
-| 空闲链路 | 2.5 GT/s（已测） |
-| 加载时链路 | pending |
-| pinned H2D 有效带宽 | pending |
+| 空闲链路 | 2.5 GT/s |
+| 加载时链路 | **16.0 GT/s（已测，服务端运行时）** |
+| pinned H2D 有效带宽 | pending（阶段 2 第一件事） |
 
 ---
 

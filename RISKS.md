@@ -26,14 +26,22 @@
 - 影响：任何"全量构建耗时"的量测都必须在那台机器空闲时做，否则数字不可比。
 - 处置：构建耗时只做相对对照（同一时段、同一 `-j`），并记录当时的 `loadavg`。
 
-### R3 PCIe 链路在空闲时回落到 2.5 GT/s — **已核实，但需加载时复核**
+### R3 PCIe 链路：空闲 2.5 GT/s，加载时 16.0 GT/s — **已核实（两侧都测到）**
 
-- `/sys/bus/pci/devices/0000:08:00.0`：`current_link_speed = 2.5 GT/s`，
-  `max_link_speed = 16.0 GT/s`，`width = 16`。
-- 影响：**如果加载时链路不升到 16 GT/s，KV 流式的带宽上界会差 6 倍以上**，
-  阶段 3 的所有 tok/s 结论都会失效。
-- 处置：阶段 2 第一次跑流式时，在推理进行中读一次 `current_link_speed`，并用一次
-  H2D 微基准（pinned→device，大块连续拷贝）测有效带宽，把两个数字写进 `BASELINE.md`。
+- 空闲：`current_link_speed = 2.5 GT/s`；`Max=16.0 GT/s ×16`。
+- 加载中（服务端 15.9 GiB 占用、decode 运行时）：`current_link_speed = 16.0 GT/s`。
+- 影响：链路会升速，因此阶段 2 的带宽假设（PCIe 4.0 x16，有效约 25 GB/s）成立；
+  但**有效带宽仍需自测**（协议开销、小传输、双向竞争都会拉低）。
+- 处置：阶段 2 第一次跑流式时做一次 pinned→device 大块连续拷贝的微基准，写进 `BASELINE.md` §5.5。
+
+### R5 用户自己的 device profile 标定被丢弃 — **已核实（日志）**
+
+- 启动日志：`the entry for nvidia-geforce-rtx-4080-super-sm89 was calibrated against route catalog
+  a0d4d93c979588e1 (build 2026-11-04.3-15-gf6928e00), this build's is e614262150e40eaf; it is ignored`。
+- 影响：当前跑的是**内建** profile（78 routed keys，2026-10-16），不是最近的实测标定。
+  阶段 3 比较 kernel/route 改动时，基线必须固定用同一个 profile（内建或重标定后的）。
+- 处置：在阶段 3 开始前由你决定是否花 GPU 时间 `ninfer-calibrate`；那之前所有 A/B 都注明
+  "内建 profile"，不把 profile 变化混进 kernel 改动的对比里。
 
 ### R4 Windows 侧不能编译 CUDA — 已核实
 

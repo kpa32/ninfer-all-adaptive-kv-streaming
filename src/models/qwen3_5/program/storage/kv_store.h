@@ -15,9 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace ninfer::models::qwen3_5 {
-class StreamedKVSpace;
-} // namespace ninfer::models::qwen3_5
+#include "models/qwen3_5/program/storage/kv_stream_space.h"
 
 namespace ninfer::models::qwen3_5::detail {
 

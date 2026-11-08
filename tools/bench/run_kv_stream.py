@@ -544,6 +544,33 @@ def first_error(stderr: str) -> str:
     return ""
 
 
+def apply_spec_override(argv: list[str], extra: Sequence[str]) -> list[str]:
+    """Rewrite the pinned speculation flags when a config names its own backend.
+
+    `--spec none` rejects a stray `--draft-tokens`, so an override replaces both rather than
+    appending a second `--spec` after a draft count the backend cannot take.
+    """
+    if "--spec" not in extra:
+        return argv
+    spec = extra[list(extra).index("--spec") + 1]
+    draft = extra[list(extra).index("--draft-tokens") + 1] if "--draft-tokens" in extra else None
+    out: list[str] = []
+    skip = False
+    for token in argv:
+        if skip:
+            skip = False
+            continue
+        if token in ("--spec", "--draft-tokens"):
+            if token == "--spec":
+                out += ["--spec", spec]
+            elif draft is not None:
+                out += ["--draft-tokens", draft]
+            skip = True
+            continue
+        out.append(token)
+    return out
+
+
 def request_argv(
     binary: Path,
     model: Path,
@@ -556,6 +583,7 @@ def request_argv(
     argv = [str(binary), str(model), "--messages", str(prompt_path)]
     argv += ["--max-context", str(case.capacity), *FIXED_FLAGS, "--max-new", str(case.max_new)]
     argv += list(case.streamed_flags if variant == "streamed" else case.resident_flags)
+    argv = apply_spec_override(argv, extra)
     # A later flag wins in the CLI's parser, so a config override goes after the pinned flags and
     # the argv still records exactly what the run used.
     argv += list(extra)

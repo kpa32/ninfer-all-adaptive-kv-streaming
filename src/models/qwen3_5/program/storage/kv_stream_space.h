@@ -43,12 +43,6 @@ public:
 
     [[nodiscard]] std::uint32_t layers() const noexcept { return layers_; }
 
-    // Layers whose streamed sets the ring holds at once. The round issues this many uploads ahead
-    // of its attention so a copy overlaps the layer before it (design 4.10).
-    [[nodiscard]] std::uint32_t ring_depth() const noexcept { return ring_.depth; }
-    // Slots one layer owns inside the ring.
-    [[nodiscard]] std::uint32_t ring_stride() const noexcept { return ring_.stride; }
-
     // Pages the tables describe, and where the resident window currently starts.
     [[nodiscard]] std::uint32_t active_pages() const noexcept { return active_; }
 
@@ -76,25 +70,14 @@ public:
 
     // Forgets the context: the frontier returns to zero and the next request republishes each
     // entry as its pages appear. Nothing is copied, because those pages are written again.
-    void reset() noexcept {
-        active_ = 0;
-        // The next request starts at the worst-case geometry and `advance` narrows it again.
-        ring_ = KVStreamRingGeometry{1, split_.ring_pages};
-    }
-
-    // Marks the start of a round on the copy stream: everything the previous round read from the
-    // ring is done before this round writes any of it. A round's layers are serialized on the
-    // compute stream anyway, so this waits exactly as long as the round boundary already did; what
-    // it buys is that a deep ring need not prove which layer owned a run last round.
-    void begin_round(cudaStream_t copy);
+    void reset() noexcept { active_ = 0; }
 
     // Copies layer `layer`'s streamed pages (`[0, window_start)`) from their host pages into the
     // ring, on `copy`. The copies are asynchronous and land in the ring slots the tables name; the
     // caller records a ready event afterwards and has the consumer wait on it.
     //
-    // Within a round the runs are reused: layer `layer` writes the run that layer `layer - depth`
-    // read, so the copy waits for that layer's attention. Callers may issue this ahead of the
-    // attention that reads it, which is how a copy overlaps the layer before it (design 4.10).
+    // The ring is shared, so a caller that issues this for consecutive layers must order each
+    // against the previous layer's consumption (`cudaStreamWaitEvent(copy, consumed(layer - 1))`).
     void upload(std::uint32_t layer, cudaStream_t copy);
 
     // Device bytes one layer's streamed pages move in one upload, and what a round of every layer
@@ -123,7 +106,6 @@ private:
     // cache that checkpoints, which a streaming cache refuses to be.
     std::unique_ptr<HostKVArena> arena_;
     KVStreamSplit split_;
-    KVStreamRingGeometry ring_{1, 0};
     std::uint32_t layers_              = 0;
     std::uint32_t pages_per_layer_     = 0;
     std::uint32_t ring_base_           = 0;

@@ -36,7 +36,7 @@ import statistics
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -1024,8 +1024,21 @@ def command_golden(args: argparse.Namespace) -> int:
         for case in cases:
             sentences = sentences_for(case, calibration)
             if case.oracle == "original":
+                # The original has no streamed layout: the ids it answers with are the golden for
+                # every variant, so it is run once, all resident.
                 print(f"golden: {case.name} from the original binary ({sentences} sentences)")
-                ok = run_case(args, campaign, case, sentences, 1, "oracle", args.oracle) and ok
+                ok = (
+                    run_case(
+                        args,
+                        campaign,
+                        replace(case, variants=("resident",)),
+                        sentences,
+                        1,
+                        "oracle",
+                        args.oracle,
+                    )
+                    and ok
+                )
             else:
                 print(f"golden: {case.name} from our build (regression baseline)")
                 ok = run_case(args, campaign, case, sentences, 1, "ours", args.binary) and ok

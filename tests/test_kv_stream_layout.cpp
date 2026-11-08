@@ -175,8 +175,11 @@ void a_bigger_budget_never_residents_less() {
     std::uint32_t previous_depth = 1;
     for (std::uint32_t budget = kPages; budget <= kLayers * kPages; ++budget) {
         const auto split = plan_kv_stream_split(budget, kPages, kLayers);
-        check(split.has_value(), "every budget above one layer plans");
-        if (!split) { continue; }
+        if (!split) {
+            // A pool of one layer's pages leaves nothing for a window, and that is refused.
+            check(budget < kPages + kLayers - 1, "only a pool without a window is refused");
+            continue;
+        }
         // A deeper ring spends window on its extra region; that one step is the only one allowed
         // to shrink it, and it must not cost more than a fifth of what it had.
         if (split->ring_depth == previous_depth || previous == 0) {

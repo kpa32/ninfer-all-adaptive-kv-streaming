@@ -752,6 +752,9 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
     std::optional<StartupPhaseScope> planning;
     std::vector<std::size_t> free_by_rank;
     std::size_t overlay_window_bytes = 0;
+    // Each injected graft keeps its text KV pages for good; the pool grows by that many so a request
+    // can still use all the capacity that was asked for.
+    std::uint32_t graft_main_pages = 0;
     for (int refits = 0;; ++refits) {
         StartupPhaseScope binding(options.startup_observer, StartupPhase::TargetPlan);
         auto plan = models::qwen3_5::plan_load(reader, models::load_options(options),
@@ -788,9 +791,7 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
         planning.emplace(options.startup_observer, StartupPhase::TargetFinalize);
         overlay_window_bytes =
             models::qwen3_5::prepare_vision_overlay(instance->parameters, device, options);
-        // Each injected graft keeps its text KV pages for good; the pool grows by that many so a
-        // request can still use all the capacity that was asked for.
-        std::uint32_t graft_main_pages = 0;
+        graft_main_pages = 0;
         for (const auto& graft : instance->frontend.grafts()) {
             if (graft.kind != models::qwen3_5::GraftKind::PrefillKV) {
                 const auto page_tokens = static_cast<std::uint32_t>(kPagedKVPageSize);

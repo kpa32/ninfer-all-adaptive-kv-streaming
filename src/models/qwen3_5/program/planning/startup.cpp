@@ -1367,11 +1367,9 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         options.kv_stream
             ? static_cast<std::uint64_t>(
                   parameters.model.config().text.full_attention_layers) *
-                      logical_pages +
-                  resident_main_pages
+                  logical_pages
             : maximum_main_page_groups(options.max_concurrency, logical_pages,
-                                       options.context_cache) +
-                  resident_main_pages;
+                                       options.context_cache);
     switch (options.kv_capacity.mode) {
     case KvCapacityMode::Explicit: {
         if (options.kv_capacity.explicit_tokens < options.max_context) {

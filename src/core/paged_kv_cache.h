@@ -367,6 +367,14 @@ public:
     void copy_from_host(const std::byte* source, const HostKVPageLayout& host,
                         std::span<const DeviceKVPageHandle> destination,
                         RankStreams streams = {}) const;
+    // The same by page number, for a caller that owns one fixed run of the pool rather than leases
+    // of it: a streamed cache's slots are named by the block tables and hold no lease, so admission
+    // still sees the pool's unconsumed pages.
+    void copy_to_host_pages(std::int32_t first_page, std::uint32_t count,
+                            HostKVAllocationView destination, RankStreams streams = {}) const;
+    void copy_from_host_pages(const std::byte* source, const HostKVPageLayout& host,
+                              std::int32_t first_page, std::uint32_t count,
+                              RankStreams streams = {}) const;
 
 private:
     friend class DeviceKVPageLease;
@@ -510,6 +518,10 @@ public:
     // keeps one table per layer rewrites single entries of it as its window moves.
     void publish_at(std::int32_t row_index, std::uint32_t logical_begin,
                     std::span<const DeviceKVPageHandle> pages, RankStreams streams = {});
+    // The same for slots named by page number, which is how a streamed cache keeps its tables: the
+    // slots are the mapping's, not a sequence's, so no page is leased to name them.
+    void publish_slots_at(std::int32_t row_index, std::uint32_t logical_begin,
+                          std::span<const std::int32_t> slots, RankStreams streams = {});
     void publish_repeated(KVExecutionRowHandle row, DeviceKVPageHandle page, std::uint32_t count,
                           RankStreams streams = {});
 

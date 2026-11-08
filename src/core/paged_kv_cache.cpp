@@ -987,6 +987,32 @@ void DeviceKVPagePool::copy_from_host(const std::byte* source, const HostKVPageL
     }
 }
 
+void DeviceKVPagePool::copy_to_host_pages(std::int32_t first_page, std::uint32_t count,
+                                         HostKVAllocationView destination,
+                                         RankStreams streams) const {
+    if (first_page < 0 || count == 0 ||
+        static_cast<std::uint64_t>(first_page) + count > capacity_pages() ||
+        !destination.valid() || destination.page_count() != count ||
+        destination.layout().geometry != geometry()) {
+        throw std::invalid_argument("Paged KV D2H page range is inconsistent");
+    }
+    copy_host_run(cudaMemcpyDeviceToHost, 0, planes_.size(), first_page, count,
+                  destination.data(), destination.layout().page_stride, destination.layout(),
+                  streams);
+}
+
+void DeviceKVPagePool::copy_from_host_pages(const std::byte* source, const HostKVPageLayout& host,
+                                            std::int32_t first_page, std::uint32_t count,
+                                            RankStreams streams) const {
+    if (source == nullptr || count == 0 || first_page < 0 ||
+        static_cast<std::uint64_t>(first_page) + count > capacity_pages() ||
+        host.geometry != geometry()) {
+        throw std::invalid_argument("Paged KV H2D page range is inconsistent");
+    }
+    copy_host_run(cudaMemcpyHostToDevice, 0, planes_.size(), first_page, count,
+                  const_cast<std::byte*>(source), host.page_stride, host, streams);
+}
+
 std::size_t DeviceKVPagePool::host_record_run_end(std::span<const DeviceKVPageHandle> pages,
                                                   std::span<const std::byte* const> records,
                                                   std::span<const std::uint32_t> groups,
@@ -1303,6 +1329,27 @@ void KVExecutionTablePool::publish_at(std::int32_t row_index, std::uint32_t logi
         throw std::out_of_range("Paged KV execution row is out of range");
     }
     publish_row(row_index, logical_begin, page_handles, streams);
+}
+
+void KVExecutionTablePool::publish_slots_at(std::int32_t row_index, std::uint32_t logical_begin,
+                                            std::span<const std::int32_t> slots,
+                                            RankStreams streams) {
+    if (row_index < 0 || row_index >= row_count()) {
+        throw std::out_of_range("Paged KV execution row is out of range");
+    }
+    if (logical_begin > logical_page_capacity() ||
+        slots.size() > logical_page_capacity() - logical_begin) {
+        throw std::invalid_argument("Paged KV mapping publication is outside its execution row");
+    }
+    for (const std::int32_t slot : slots) {
+        if (slot < 0 || static_cast<std::uint32_t>(slot) >= pages_->capacity_pages()) {
+            throw std::invalid_argument("Paged KV mapping names a page outside its pool");
+        }
+    }
+    const std::vector<cudaStream_t> resolved = resolve_streams(streams);
+    std::int32_t* shadow = writable_shadow(row_index, logical_begin, slots.size(), resolved);
+    std::copy(slots.begin(), slots.end(), shadow);
+    publish_indices(row_index, logical_begin, slots, resolved);
 }
 
 void KVExecutionTablePool::publish_row(std::int32_t row_index, std::uint32_t logical_begin,

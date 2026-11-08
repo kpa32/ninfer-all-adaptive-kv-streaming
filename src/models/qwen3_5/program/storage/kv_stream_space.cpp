@@ -1,7 +1,6 @@
 #include "models/qwen3_5/program/storage/kv_stream_space.h"
 
 #include <stdexcept>
-#include <cstdlib>
 
 namespace ninfer::models::qwen3_5 {
 namespace {
@@ -44,6 +43,7 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
     // Every slot of the pool belongs to this space for the cache's lifetime: the mapping names
     // slots, so nothing else may allocate, lend or release one.
     const std::uint32_t slot_count = cache.page_pool().capacity_pages();
+    slot_count_                    = slot_count;
     // The capacity resolution grants a slot count the split rounds down: `layers` slots at most
     // stay unaddressed at the end of the pool, and they cost one page each.
     if (slot_count < kv_stream_pool_pages(split_, layers_)) {
@@ -67,24 +67,11 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
     }
     host_ = std::move(*host);
 
-    auto reservation = cache.page_pool().reserve(slot_count);
-    if (!reservation) {
-        throw std::invalid_argument("A streamed KV pool cannot reserve its slots");
-    }
-    slot_leases_.reserve(slot_count);
-    cache.page_pool().materialize(*reservation, slot_count, slot_leases_);
-    slot_handles_.assign(slot_count, DeviceKVPageHandle{});
-    for (const DeviceKVPageLease& lease : slot_leases_) {
-        const DeviceKVPageHandle handle = lease.handle();
-        const std::int32_t slot         = cache.page_pool().page_index(handle);
-        if (slot < 0 || static_cast<std::uint32_t>(slot) >= slot_count ||
-            slot_handles_[static_cast<std::size_t>(slot)].valid()) {
-            throw std::logic_error("A leased KV slot is outside its pool or duplicated");
-        }
-        slot_handles_[static_cast<std::size_t>(slot)] = handle;
-    }
-    // EXPERIMENT (temporary): drop the leases and see whether admission then places the request.
-    if (std::getenv("NINFER_KVSTREAM_EXPERIMENT") != nullptr) { slot_leases_.clear(); }
+    // The slots are not leased. A lease would leave admission no page to reserve, and every
+    // request would be turned away; what keeps the mapping's pages out of everyone else's hands is
+    // that nothing else in a streaming configuration allocates from this pool - the retained-context
+    // cache, the prefix cache and both loans are refused or absent - and the capacity resolution
+    // already spent the budget on exactly these slots.
     create_events(ready_, layers_);
     create_events(consumed_, layers_);
 }
@@ -137,9 +124,8 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
             // page takes - the two pages' indices differ by the window depth, so it is the same.
             const std::uint32_t dropped      = page - split_.resident_pages;
             const std::int32_t dropped_slot  = kv_stream_window_slot(layer, dropped, split_);
-            const std::span<const DeviceKVPageHandle> one(
-                &slot_handles_[static_cast<std::size_t>(dropped_slot)], 1);
-            cache_->page_pool().copy_to_host(one, host.subview(dropped, 1), streams);
+            cache_->page_pool().copy_to_host_pages(dropped_slot, 1, host.subview(dropped, 1),
+                                                   streams);
             publish_slot(layer, dropped, kv_stream_ring_slot(dropped, split_, layers_), streams);
         }
     }
@@ -153,10 +139,8 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (count != 0) {
         // Every streamed page of this layer, page 0 first, into the consecutive ring slots; the
         // pool turns the run into one strided transfer per plane.
-        cache_->page_pool().copy_from_host(
-            host_pages().data(), host_layout_,
-            std::span<const DeviceKVPageHandle>(slot_handles_).subspan(ring_base_, count),
-            RankStreams(copy));
+        cache_->page_pool().copy_from_host_pages(host_pages().data(), host_layout_, ring_base_,
+                                                 count, RankStreams(copy));
     }
     CUDA_CHECK(cudaEventRecord(ready_[layer], copy));
 }

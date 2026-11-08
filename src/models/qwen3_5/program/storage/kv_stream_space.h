@@ -56,9 +56,7 @@ public:
     [[nodiscard]] HostKVAllocationConstView host_pages() const noexcept;
 
     // Device slot handles, indexed by slot number.
-    [[nodiscard]] std::span<const DeviceKVPageHandle> slots() const noexcept {
-        return slot_handles_;
-    }
+    [[nodiscard]] std::uint32_t slot_count() const noexcept { return slot_count_; }
 
     // Brings the tables to `active_pages` logical pages of the context, creating the pages in
     // between: each new page's table entry points at its window slot, and each page the window
@@ -108,12 +106,10 @@ private:
     std::uint32_t layers_              = 0;
     std::uint32_t pages_per_layer_     = 0;
     std::uint32_t ring_base_           = 0;
+    std::uint32_t slot_count_          = 0;
     std::size_t page_bytes_            = 0;
     HostKVPageLayout host_layout_;
     HostKVAllocation host_;
-    // One lease per slot, held for the cache's lifetime, and the same handles by slot number.
-    std::vector<DeviceKVPageLease> slot_leases_;
-    std::vector<DeviceKVPageHandle> slot_handles_;
     std::vector<cudaEvent_t> ready_;
     std::vector<cudaEvent_t> consumed_;
     std::uint32_t active_ = 0;

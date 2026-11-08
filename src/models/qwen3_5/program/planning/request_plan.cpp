@@ -410,7 +410,19 @@ RequestBasePlan ProgramImpl::plan_request(const PreparedPromptData& prompt,
     base->drafting = options.speculative_drafting || speculative_backend == SpeculativeBackend::None;
     base->summary.publish_continuation =
         options.allow_prefix_reuse && prompt.identity.reusable && context_cache.enabled;
-    if (!context_cache.kv_lease_growth) {
+    if (text_stream_space != nullptr) {
+        // A streamed sequence's KV lives in the cache's own mapping, which already owns the pool's
+        // slots, so its entitlement is one page group: enough for the address space's row and
+        // activation arithmetic, and small enough that admission keeps placing requests. The
+        // context it may reach is bounded by max_context, not by this number.
+        base->text_kv_page_entitlement    = 1;
+        base->backend_kv_page_entitlement = 0;
+        if (speculative_backend == SpeculativeBackend::Mtp) {
+            base->backend_kv_page_entitlement =
+                kv_pages_for_tokens(std::min(capacity, base->summary.prompt_tokens +
+                                                           widest_verify_window() + draft_window));
+        }
+    } else if (!context_cache.kv_lease_growth) {
         // One formula with concurrent_output_budget (planning/output_budget.h).
         const KVPageEntitlement entitlement =
             kv_page_entitlement(kv_entitlement_shape(), base->summary.prompt_tokens,

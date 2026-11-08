@@ -2028,9 +2028,10 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
     // TEMPORARY DIAGNOSTIC (streamed KV): which phases run, and do they carry the space?
     if (std::getenv("NINFER_KVSTREAM_CHECK") != nullptr) {
         static int calls = 0;
-        if (calls < 12) {
-            std::fprintf(stderr, "KVSTREAM-PHASE call=%d phase=%d columns=%d space=%d\n", calls,
-                         static_cast<int>(ph), x.ne[1], kv_stream_space_ != nullptr ? 1 : 0);
+        if (ph != Phase::Prefill && calls < 6) {
+            std::fprintf(stderr, "KVSTREAM-PHASE decode call=%d phase=%d columns=%d space=%d\n",
+                         calls, static_cast<int>(ph), x.ne[1],
+                         kv_stream_space_ != nullptr ? 1 : 0);
             ++calls;
         }
     }

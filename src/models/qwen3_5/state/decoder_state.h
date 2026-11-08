@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/kv_stream_layout.h"
 #include "core/layout.h"
 #include "core/paged_kv_cache.h"
 
@@ -42,6 +43,9 @@ struct DecoderStateSpec {
     // calls split their keys into fixed segments for the capacity
     // (ops::causal_attention_invariant_segment_keys).
     bool invariant_attention = false;
+    // A streaming text cache (--kv-stream): the flat slot pool's split. Absent keeps today's layout
+    // of one plane group per layer and one table row per sequence.
+    std::optional<KVStreamSplit> text_stream;
 };
 
 struct PagedKVCacheLayout {
@@ -59,6 +63,11 @@ struct PagedKVCacheLayout {
     std::uint32_t position_ranks = 0;
     // Invariant attention reductions: the keys of one split, 0 for the tuned splits.
     std::uint32_t attention_segment_keys = 0;
+    // A flat slot pool: one plane per KV kind for every layer, and one table per layer instead of
+    // one per sequence. Only a streaming cache (kv_stream_layout.h) sets it, and only `stream`
+    // describes where its pages live.
+    bool flat_slots = false;
+    KVStreamSplit stream;
 
     [[nodiscard]] std::size_t payload_bytes() const noexcept { return pages.payload_bytes(); }
 };
@@ -99,6 +108,12 @@ public:
     [[nodiscard]] std::uint32_t max_context() const noexcept { return max_context_; }
 
     [[nodiscard]] std::uint32_t layers() const noexcept { return layers_; }
+
+    // Streaming: the flat slot pool's split, and whether the planes are one per KV kind rather
+    // than one per layer. A cache with no ring is an ordinary all-resident cache.
+    [[nodiscard]] const KVStreamSplit& stream_split() const noexcept { return stream_; }
+
+    [[nodiscard]] bool flat_slots() const noexcept { return flat_slots_; }
 
     [[nodiscard]] DeviceKVPagePool& page_pool() noexcept { return pages_; }
 
@@ -152,6 +167,10 @@ private:
     std::vector<std::int32_t> head_shares_;
     std::uint32_t position_ranks_         = 0;
     std::uint32_t attention_segment_keys_ = 0;
+    // Streaming: the flat slot pool's split, and whether the planes are per kind rather than per
+    // layer. Both are fixed at construction.
+    bool flat_slots_ = false;
+    KVStreamSplit stream_;
 };
 
 struct DecoderStateLayout {

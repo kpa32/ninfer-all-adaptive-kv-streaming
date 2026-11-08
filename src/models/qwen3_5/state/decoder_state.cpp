@@ -22,7 +22,8 @@ PagedKVCacheLayout plan_cache(std::span<LayoutBuilder* const> builders,
                               std::uint32_t position_ranks, std::uint32_t layers,
                               std::uint32_t capacity, std::int32_t kv_heads, std::int32_t head_dim,
                               KvCacheStorage storage, std::int32_t table_rows,
-                              std::uint32_t physical_page_groups, bool invariant_attention) {
+                              std::uint32_t physical_page_groups, bool invariant_attention,
+                              const KVStreamSplit* stream) {
     if (layers == 0 ||
         layers > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) ||
         kv_heads <= 0 || head_dim <= 0 || table_rows <= 0) {
@@ -35,7 +36,14 @@ PagedKVCacheLayout plan_cache(std::span<LayoutBuilder* const> builders,
     const bool scaled                     = profile.quant_group != 0;
 
     const std::uint32_t logical_pages = page_count(capacity);
-    if (physical_page_groups < logical_pages) {
+    // A streaming cache is the one case where the pool holds fewer page groups than the logical
+    // capacity reaches: that deficit is exactly what the ring covers page by page. Everything else
+    // must be able to reach its whole context at once.
+    if (stream != nullptr) {
+        if (physical_page_groups < kv_stream_pool_pages(*stream, layers)) {
+            throw std::invalid_argument("Paged KV stream pool is smaller than its split needs");
+        }
+    } else if (physical_page_groups < logical_pages) {
         throw std::invalid_argument("Paged KV physical pages are below logical capacity");
     }
 
@@ -57,6 +65,13 @@ PagedKVCacheLayout plan_cache(std::span<LayoutBuilder* const> builders,
                       position_ranks > static_cast<std::uint32_t>(builders.size()) ||
                       position_ranks > physical_page_groups)) {
         throw std::invalid_argument("Paged KV position ranks are invalid");
+    }
+    // A flat pool is one plane set shared by every layer, so the sharing it relies on is the ring's
+    // own: several layers' pages occupy the same slots one after another. Splitting a layer's heads
+    // or pages across ranks would need one flat pool per rank, which the streaming cache does not
+    // build (its M1 scope is one device).
+    if (stream != nullptr && (positions || head_shares.size() > 1 || !layer_rank.empty())) {
+        throw std::invalid_argument("A streaming KV cache keeps every plane on one rank");
     }
     const auto rank_of = [&](std::uint32_t layer) {
         return layer_rank.empty() ? std::size_t{0} : layer_rank[layer];
@@ -83,6 +98,16 @@ PagedKVCacheLayout plan_cache(std::span<LayoutBuilder* const> builders,
         {profile.key_scale_dtype, profile.scale_leading_extent},
         {profile.value_scale_dtype, profile.value_scale_leading_extent},
     };
+    if (stream != nullptr) {
+        // One plane set for the whole cache: a slot holds one layer's page, and a layer's table
+        // names the slots it reads (kv_stream_layout.h). The layers above are told apart by their
+        // tables, not by their planes.
+        for (std::size_t kind = 0; kind < planes_per_share; ++kind) {
+            geometry.planes.push_back(
+                KVPlaneGeometry{kinds[kind].first, kinds[kind].second, kv_heads, 256});
+        }
+        plane_rank.assign(planes_per_share, std::size_t{0});
+    } else
     for (std::uint32_t layer = 0; layer < layers; ++layer) {
         if (positions) {
             for (std::size_t kind = 0; kind < planes_per_share; ++kind) {
@@ -131,14 +156,21 @@ PagedKVCacheLayout plan_cache(std::span<LayoutBuilder* const> builders,
         .position_ranks   = positions ? position_ranks : 0U,
         .attention_segment_keys =
             invariant_attention ? ops::causal_attention_invariant_segment_keys(capacity) : 0U,
+        .flat_slots = stream != nullptr,
+        .stream     = stream != nullptr ? *stream : KVStreamSplit{},
     };
+    // A flat pool owns one table per layer; those rows belong to the cache for its whole lifetime
+    // and no request acquires them, so the sequence rows come after them.
+    const std::int32_t rows =
+        stream != nullptr ? layers + static_cast<std::uint32_t>(table_rows) : table_rows;
     for (const std::size_t rank : table_ranks) {
         if (rank >= builders.size() || builders[rank] == nullptr) {
             throw std::invalid_argument("Paged KV layer names a rank with no layout builder");
         }
         out.execution_tables.push_back(plan_kv_execution_tables(
             *builders[rank],
-            KVExecutionTableSpec{.logical_page_capacity = logical_pages, .table_rows = table_rows},
+            KVExecutionTableSpec{.logical_page_capacity = logical_pages,
+                                 .table_rows             = rows},
             rank));
     }
     return out;
@@ -158,12 +190,14 @@ DecoderStateLayout plan_decoder_state(std::span<LayoutBuilder* const> builders,
                                 spec.text_kv_position_ranks, spec.full_attention_layers,
                                 spec.capacity, spec.kv_heads, spec.attention_head_dim,
                                 spec.kv_storage, spec.kv_table_rows,
-                                spec.text_physical_page_groups, spec.invariant_attention);
+                                spec.text_physical_page_groups, spec.invariant_attention,
+                                spec.text_stream ? &*spec.text_stream : nullptr);
     if (spec.enable_mtp) {
         layout.mtp_kv = plan_cache(spec.mtp_kv_head_shares.empty() ? builders.first(1) : builders,
                                    {}, spec.mtp_kv_head_shares, 0, spec.mtp_layers, spec.capacity,
                                    spec.kv_heads, spec.attention_head_dim, spec.kv_storage,
-                                   spec.kv_table_rows, spec.mtp_physical_page_groups, false);
+                                   spec.kv_table_rows, spec.mtp_physical_page_groups, false,
+                                   nullptr);
     }
     return layout;
 }
@@ -176,7 +210,8 @@ PagedKVCache::PagedKVCache(std::span<const DeviceSpan> backings, const PagedKVCa
       layers_(layout.layers), max_context_(layout.max_context), kv_heads_(layout.kv_heads),
       head_dim_(layout.head_dim), storage_(layout.storage), head_shares_(layout.head_shares),
       position_ranks_(layout.position_ranks),
-      attention_segment_keys_(layout.attention_segment_keys) {}
+      attention_segment_keys_(layout.attention_segment_keys), flat_slots_(layout.flat_slots),
+      stream_(layout.stream) {}
 
 PagedKVCacheView::PagedKVCacheView(const PagedKVCache& cache, KVExecutionRowHandle row) noexcept
     : cache_(&cache), row_(row) {}
@@ -205,6 +240,10 @@ std::size_t PagedKVCache::plane_index(std::uint32_t layer, std::size_t rank,
     if (rank >= shares) { throw std::out_of_range("Paged KV rank holds no heads of the layer"); }
     const bool scaled        = ops::d256_kv_cache_profile(storage_).quant_group != 0;
     const std::size_t kinds  = scaled ? 4ULL : 2ULL;
+    if (kind >= kinds) { throw std::out_of_range("Paged KV plane kind is out of range"); }
+    // A flat pool is one plane set for every layer: the layer is named by its table, not by its
+    // planes, so the kind alone addresses it (kv_stream_layout.h).
+    if (flat_slots_) { return kind; }
     const std::size_t first  = static_cast<std::size_t>(layer) * shares * kinds;
     return position_ranks_ > 1 ? first + kind * shares + rank : first + rank * kinds + kind;
 }
@@ -220,7 +259,12 @@ PagedKVLayerView PagedKVCache::layer_view(std::uint32_t layer, const KVExecution
     // The layer reads the copy of the table on the rank holding its planes; a kernel cannot follow
     // a pointer into another device's memory.
     const std::size_t holder = pages_.plane_rank(base);
-    const Tensor block_table = row == nullptr ? Tensor() : execution_tables_.row(*row, holder);
+    // A flat pool keeps one table per layer, owned by the cache: the streamed half of it is an
+    // identity mapping and the resident window rotates inside its own region, so attention reaches
+    // a page through the table it already dereferences (kv_stream_layout.h).
+    const Tensor block_table =
+        flat_slots_ ? execution_tables_.row_at(static_cast<std::int32_t>(layer), holder)
+                    : (row == nullptr ? Tensor() : execution_tables_.row(*row, holder));
     return PagedKVLayerView{
         .k_pages       = pages_.plane(base),
         .v_pages       = pages_.plane(plane_index(layer, rank, 1)),
@@ -237,6 +281,8 @@ PagedKVLayerView PagedKVCache::layer_view(std::uint32_t layer, const KVExecution
 
 PagedKVBatchLayerView PagedKVCache::batch_layer_view(std::uint32_t layer, std::size_t rank) const {
     const PagedKVLayerView direct = layer_view(layer, nullptr, rank);
+    // A layer table is one sequence's row: the batched form of a flat pool is that single row.
+    if (flat_slots_) { return single_row_paged_kv_batch_view(direct); }
     return PagedKVBatchLayerView{
         .k_pages       = direct.k_pages,
         .v_pages       = direct.v_pages,

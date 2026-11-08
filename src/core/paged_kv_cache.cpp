@@ -1410,4 +1410,12 @@ Tensor KVExecutionTablePool::row(KVExecutionRowHandle handle, std::size_t rank) 
         {static_cast<std::int32_t>(logical_page_capacity())});
 }
 
+Tensor KVExecutionTablePool::row_at(std::int32_t row_index, std::size_t rank) const {
+    if (row_index < 0 || row_index >= row_count()) {
+        throw std::out_of_range("Paged KV execution row is out of range");
+    }
+    return replica(rank).slice(1, row_index, 1).view(
+        {static_cast<std::int32_t>(logical_page_capacity())});
+}
+
 } // namespace ninfer

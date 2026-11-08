@@ -509,6 +509,9 @@ public:
 
     // The row and matrix as rank `rank` sees them. Throws if that rank holds no copy.
     [[nodiscard]] Tensor row(KVExecutionRowHandle handle, std::size_t rank = 0) const;
+    // A row that is never leased, indexed by its position: a pooled cache that owns one table per
+    // layer keeps those rows for its whole lifetime, and nothing acquires them per request.
+    [[nodiscard]] Tensor row_at(std::int32_t row_index, std::size_t rank = 0) const;
     [[nodiscard]] const Tensor& matrix(std::size_t rank = 0) const;
     // Ranks that hold a copy, in the order the layouts were given.
     [[nodiscard]] std::span<const std::size_t> replica_ranks() const noexcept {

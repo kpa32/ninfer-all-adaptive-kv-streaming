@@ -1,31 +1,49 @@
-# 产品范围：单目标硬分叉（RTX 4080 SUPER · Qwen3.8-27B Dense）
+# 产品范围：单目标 NInfer（RTX 4080 SUPER · Qwen3.8-27B Dense）
 
-本文件是这个仓库唯一的**产品范围契约**。`AGENTS.md` 与 `CONTRIBUTING.md` 中的
-"every model family / every platform" 规则由本文件取代：本仓库只交付下列一条路线，
-改动本文件必须由仓库所有者显式决定，代码、测试、文档、构建目标都以本文件为准。
+本文件是这个仓库唯一的**产品范围契约**，也是删减的许可边界。代码、测试、文档、构建目标都以
+本文件为准；`AGENTS.md` 与 `CONTRIBUTING.md` 的描述不得宽于本文件。
 
-来源：所有者 2026-11-08 的任务书（阶段 1 审计期间确认）。本文档在阶段 1 交付时仍是
-**草稿**，删除清单确认后升级为 `active`。
+---
+
+## 0. 删减规则（所有者 2026-11-08 确认，最高优先级）
+
+1. **删减的对象是"产品范围"（其它模型的支持），不是"功能"。**
+   27B 上正在使用、或可以使用的特性必须**保持不变**——包括 Vision、全部 KV 格式、
+   MTP/DFlash2、context/prefix cache、并发、CUDA Graph、结构化输出、量化权重格式。
+2. **支持 RTX 30 / 40 / 50 系列（sm_86 / sm_89 / 120a）的代码保留。**
+3. 任何删除都必须先写进 `CUTLIST.md`，由所有者逐条审核通过后执行；**不得静默删除**。
+4. 未经审核的删除视为越界：所有者可直接回滚，相关工作作废。
+5. 每个删除条目一个独立 commit，可单独 revert；提交信息写明"删了什么/为什么/测试结果"。
+6. 拿不准的一律归入 `CUTLIST.md` 的 B 组（待定），不默认删除。
+
+审计期间的事实：本分支（`target/4080s-27b`）到本文件为止只**新增**了根目录文档
+（`SCOPE.md`/`SPEC.md`/`CUTLIST.md`/`BASELINE.md`/`RISKS.md`），没有改动任何源码、测试、脚本。
+
+---
 
 ## 1. 硬件
 
 | 项 | 值 |
 |---|---|
-| GPU | NVIDIA GeForce RTX 4080 SUPER，16 376 MiB，计算能力 8.9（Ada），80 SM |
-| 主机链路 | PCIe 4.0 x16（`max_link_speed = 16.0 GT/s`，`width = 16`）；空闲时链路回落到 2.5 GT/s，加载时须复核 |
-| 卡数 | 1 |
-| 主机内存 | 64 GB 级（`MemTotal` 64 213 MiB） |
-| 构建目标 | `CMAKE_CUDA_ARCHITECTURES=89` |
+| 唯一目标机 | NVIDIA GeForce RTX 4080 SUPER，16 376 MiB，计算能力 8.9（Ada），80 SM |
+| 主机链路 | PCIe 4.0 x16（最大值 16.0 GT/s ×16；空闲回落 2.5 GT/s，加载时实测升到 16.0 GT/s） |
+| 主机内存 | 64 GB 级（`MemTotal` 64 213 MiB，Debian 13） |
+| 本机构建目标 | `CMAKE_CUDA_ARCHITECTURES=89` |
 
-**非目标**：sm_70 / sm_75 / 120a 构建、Turing/Volta 仿真、Blackwell 专属指令路径、任何多卡形态
-（`--devices` pipeline stage、`--tensor-parallel`、`--tensor-split`、`--stage-layers`）、NVLink/P2P。
-sm_86 / sm_80 只在目标路径确实共享同一份回退实现时保留，且不作为验收对象。
+**保留（不删）**：sm_86（RTX 30 系列）、sm_89（RTX 40 系列）、120a（RTX 50 系列）的构建与路由，
+以及它们各自需要的回退路径、device profile 与标定工具。删掉它们等于删功能。
+
+**待定**：sm_70（Tesla V100）与 sm_75（Turing）——不属于 RTX 30/40/50，但删它们也不影响目标卡；
+见 `CUTLIST.md` B1，由所有者决定。
+
+**非目标（产品范围）**：与非目标模型绑定的多卡形态（`--devices` pipeline stage、
+`--tensor-parallel` 等）属于"功能"而非"别的模型"，因此**保留**，直到所有者明确要求删除。
 
 ## 2. 模型与权重
 
-- 架构：`Qwen3_5ForCausalLM` / `model_type: qwen3_5_text`，**Dense**。
-- artifact：`Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer`（15 017 456 896 B = 13.99 GiB 整包，
-  文本权重 10.9 GiB），组件：`text`、`proposal`(131 072 行索引头)、`vision`、`mtp`、`dflash2`。
+- 目标模型：架构 `Qwen3_5ForCausalLM` / `model_type: qwen3_5_text`，**Dense 27B**。
+- artifact（当前使用）：`Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer`（15 017 456 896 B = 13.99 GiB，
+  文本权重 10.9 GiB），组件 `text`、`proposal`(131 072 行)、`vision`、`mtp`、`dflash2`。
 - 几何（自 artifact 目录读回，2026-11-08）：
 
   | 量 | 值 |
@@ -37,36 +55,27 @@ sm_86 / sm_80 只在目标路径确实共享同一份回退实现时保留，且
   | 位置 | 262 144 原生；`rope_theta=1e7`，partial rotary 0.25，mrope `[11,11,10]`，`rms_norm_eps=1e-6` |
   | DFlash2 | 5 层 sliding(2048)，target layers `[5,19,33,47,61]` |
 
-- 权重格式（artifact 内实际使用，必须全部保留）：
-  `bf16`(627 tensors)、`fp32`(96)、`int32`(2)、GGUF 块 `gguf_blocks_v1`(386：`iq1_m` 1、`iq2_s` 17、
-  `iq2_xs` 9、`iq2_xxs` 6、`iq3_s` 131、`iq3_xxs` 68、`iq4_xs` 89、`q2_k` 19、`q4_k` 41、`q6_k` 5）、
-  原生 row-split `row_split_k128_v1`(132：`q4_g64_fp16` 54、`q5_g64_fp16` 54、`q6_g64_fp16` 1、
-  `q8_g32_fp16` 23)。
-  artifact 中**不存在** FP8、NVFP4、T2、STQ、SM70 格式的权重。
+- 权重格式：**保留全部格式**。IQ3_S artifact 用到 `bf16`/`fp32`/`int32`/GGUF 块/原生 row-split
+  `q4/q5/q6/q8`；FP8、NVFP4、T2、STQ 是**同一个 27B 架构**的其它 artifact（官方 groupwise-int、
+  MXFP8、NVFP4 等）以及 120a 构建需要的格式，属于 27B 的可选特性，不删。
+- 其它模型族（Gemma 4、Flint、DeepSeek-V4.1-Flash、Qwen3.8-Flash-Next、Qwen3.5 MoE 35B-A3B）
+  是**别的模型的支持**，是本次删减的唯一对象；逐项见 `CUTLIST.md`。
 
-**非目标**：MoE（`Qwen3_5MoeForCausalLM`）、Qwen3.8-Flash-Next、Gemma 4、Flint、
-DeepSeek-V4.1-Flash、Vision 图像/视频输入、ngram/PLE/Engram、其它 artifact 家族。
-Vision 与 MoE 代码的**保留期限**见 `CUTLIST.md`（Vision 取决于所有者对 `--vision` 的决定）。
+## 3. 功能（全部保留）
 
-## 3. 功能
+文本 chat（`ninfer` CLI）与 HTTP serving（`ninfer-serve`，OpenAI/Anthropic 协议契约）、
+`--spec mtp` 与 `--spec dflash2`、`--lookup-ngram`/`--ngram-draft-tokens`、paged KV + host KV arena +
+context/prefix cache（Legacy 与 Hybrid 两种模式）、GDN、dense attention、CUDA Graph、
+`--invariant-attention`、`--gdn-state-fp16`、结构化输出、离线 CausalScoring（`ninfer-perplexity`）、
+**Vision（图片/视频，永久保留）**、每卡 device profile 与 `ninfer-calibrate`、
+`--max-concurrency 1..8`、pipeline stages 与 tensor parallelism。
 
-保留：
+KV 存储格式：**九种全部保留**（`bf16`、`int8`、`fp8`、`rk8v4`、`rk4v4`、`rk4v4-e8`、`rk2v4-e8`、
+`k8v4`、`nvfp4`）。关于"只要 bf16/rk8v4/rk4v4/rk2v4-e8"的早期指示，与"27B 特性保持不变"
+冲突，按后者执行；如果所有者要删其余五种，那是功能删减，走 `CUTLIST.md` B 组单独确认。
 
-- 文本 chat（`ninfer` CLI）与 HTTP serving（`ninfer-serve`，含已承诺的 OpenAI/Anthropic 协议行为）；
-- `--spec mtp`（当前 `start-mtp.sh` 使用）与 `--spec dflash2`（artifact 带组件，可选保留）；
-- `--lookup-ngram` / `--ngram-draft-tokens` 复制式起草（与 `--spec` 并行，默认开启，不属于额外的模型族）；
-- paged KV + host KV arena + context/prefix cache（`--slot-*`、`--auto-long-anchors`、`--auto-prefix-grid` 等）；
-- GDN、dense attention、CUDA Graph、`--invariant-attention`、`--gdn-state-fp16`、结构化输出、离线
-  CausalScoring（`ninfer-perplexity`）；
-- 每卡 device profile 与 `ninfer-calibrate`（4080 SUPER 的 profile 已内建）。
-
-KV 存储格式：`bf16`（基线/调试）、`rk8v4`、`rk4v4`、`rk2v4-e8`。**不得**只保留一种。
-`int8`、`fp8`、`rk4v4-e8`、`k8v4`、`nvfp4` 的去留见 `CUTLIST.md`（待所有者确认）。
-
-并发：保留现有 `--max-concurrency 1..8` 语义，不以并发为目标也不删除（KV 流式首先在 C=1 上成立）。
-
-**非目标**：图片/视频（除非所有者决定保留 Vision）、主动抢占、优先级/QoS、跨 Engine context store、
-大规模 continuous batching、Python 推理路线、C++ SDK 导出、非 `.ninfer` 的模型格式。
+**非目标**：`.ninfer` 之外的模型格式、Python 推理路线、C++ SDK 导出、主动抢占、优先级/QoS、
+跨 Engine context store、大规模 continuous batching。
 
 ## 4. 新增能力：自适应 KV 流式（本分叉的唯一新增产品能力）
 
@@ -82,11 +91,10 @@ KV 存储格式：`bf16`（基线/调试）、`rk8v4`、`rk4v4`、`rk2v4-e8`。*
 
 ## 5. 构建与发布
 
-- 唯一构建目标：`build.sh` 的 `sm_89`（Ninja、Release、`NINFER_BUILD_APPS=ON`）。
-- 不保留 Volta/Turing/Blackwell 的构建分支与打包矩阵（Docker 的 `cuda12.9`/`cuda13.4` 多架构镜像、
-  `docker/`、`compose.yaml` 的去留见 `CUTLIST.md`）。
-- `LICENSE`、`NOTICE`、`CONTRIBUTORS.md` 保留（`CONTRIBUTORS.md` 中的 `kv_stream` Strata 归属
-  必须保留，因为该实现仍在用）。
+- 本机唯一构建：`build.sh` 的 `sm_89`（Ninja、Release、`NINFER_BUILD_APPS=ON`）。
+- 其它架构（sm_86/80/120a、sm_70/75）的构建支持按 §1 保留，不因本分叉删除。
+- `LICENSE`、`NOTICE`、`CONTRIBUTORS.md` 保留（`CONTRIBUTORS.md` 中 `kv_stream` 的 Strata 归属
+  必须保留，该实现仍在用）。
 
 ## 6. 出口条件
 
@@ -99,6 +107,6 @@ KV 存储格式：`bf16`（基线/调试）、`rk8v4`、`rk4v4`、`rk2v4-e8`。*
 ## 7. 变更规则
 
 1. 本文件是范围的唯一权威；`AGENTS.md`、`CONTRIBUTING.md`、`README.md` 的描述不得宽于本文件。
-2. 扩范围需要所有者显式同意，并在同一次改动中更新本文件与受影响的构建/测试/文档。
+2. 扩范围或缩功能都需要所有者显式同意，并在同一次改动中更新本文件与受影响的构建/测试/文档。
 3. `.ninfer` 仍是唯一 C++ 产品 artifact；CLI/serve/bench 只走公共 `ninfer::Engine`。
 4. 代码所有权边界（Core / Artifact / Ops / Model / Runtime / Product）不变。

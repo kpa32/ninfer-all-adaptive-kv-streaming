@@ -224,7 +224,8 @@ curl -s http://127.0.0.1:11222/v1/chat/completions -H 'content-type: application
 kill $PID; wait $PID 2>/dev/null
 ```
 
-（去掉 `start-mtp.sh` 的两行 `sudo` 与 `--vision`；是否带 Vision 由你决定，见 `CUTLIST.md` B1。）
+（命令里去掉了 `start-mtp.sh` 的两行 `sudo`；`--vision` 代码永久保留，带不带只取决于启动参数。
+我这侧默认**不**带 `--vision`，以便与 CLI 测量用同一份显存布局；是否带请告知。）
 
 E. 带宽与链路（阶段 2 前必须做，脚本自建，不改仓库）：
 

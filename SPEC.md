@@ -7,21 +7,24 @@
 
 ## 1. 目标
 
-把本仓库从"多族、多卡、多格式"的上游形态收成**一条产品路线**，然后在这条路线上实现
-**自适应 KV 流式**，让 Qwen3.8-27B Dense 的 262 144 原生上下文在单张 16 GiB 的 RTX 4080 SUPER
-上稳定、正确、可测量地运行。
+把本仓库的产品范围收成**一条路线**（Qwen3.5 Dense 27B，RTX 30/40/50 平台），然后在这条路线上
+实现**自适应 KV 流式**，让 Qwen3.8-27B Dense 的 262 144 原生上下文在单张 16 GiB 的
+RTX 4080 SUPER 上稳定、正确、可测量地运行。
 
 三个目标按顺序成立：
 
-1. **可维护**：删掉与目标路线无关的模型族、GPU 目标、权重格式与功能，保留仍被目标路径使用的基础设施。
+1. **可维护**：删掉**其它模型的支持**（Gemma 4、Flint、DeepSeek-V4.1-Flash，以及待定的
+   Flash-Next / MoE），保留 27B 的全部功能、全部 KV 与权重格式、Vision、TP/pipeline；
+   平台的保留规则见 `SCOPE.md` §1（sm_86/89/120a 保留）。
 2. **能装下**：KV 不再受显存硬墙限制；host 权威 KV + 设备 resident 区 + 有界 ring + 按层预取 +
    自适应划分。
 3. **快**：在 16 GiB 上把长上下文 decode 做到 PCIe 4.0 x16 带宽允许的上界附近，并用真实测量报告。
 
 ## 2. 非目标
 
-见 `SCOPE.md` §1–§3。要点：不做 MoE、不做多卡/TP/pipeline、不做其它模型族、不做 Vision（待确认）、
-不做 lossy 默认、不引入第二套 artifact/推理路线。
+见 `SCOPE.md` §0–§3。要点：**删减不等于删功能**——27B 上可用的一切保持可用；
+不做 lossy 默认；不引入第二套 artifact/推理路线；不在本次分叉里为其它模型新增工作。
+把“其它模型的支持”去掉是唯一被授权的删减方向，逐条见 `CUTLIST.md`。
 
 ## 3. 现状架构（审计结论，按代码核实）
 
@@ -159,14 +162,14 @@ workspace / State / Graph / 分配器；`bf16` 与 `rk8v4` 必须依赖流式才
 
 ### 阶段 1：删减（本文件交付的范围）
 
-执行条件：`CUTLIST.md` 被所有者逐项确认。
+执行条件：`CUTLIST.md` 的 A 组（三个别的模型族 + 登记点）被所有者逐项确认；B 组默认不动。
 每步：小步 commit → Linux `git pull --ff-only` → `./build.sh` → 8K smoke →
 固定 prompt greedy token IDs 与基线一致。回归就回退该 commit。
 
 验收：
-- 删除清单内每一项可独立回退（一次提交一个组）；
+- 删除清单内每一项可独立回退（一次提交一个族）；
 - 目标路径的 8K/32K/120K smoke 与基线 token 序列一致；
-- `AGENTS.md`/`CONTRIBUTING.md` 的"every family / every platform"已按单目标改写；
+- `AGENTS.md`/`CONTRIBUTING.md` 的族清单按 `SCOPE.md` 改写（平台节保留 sm_86/89/120a）；
 - 仓库内不再有指向已删族的构建目标、测试、文档链接（`git diff --check` + 文档链接检查）。
 
 ### 阶段 2：KV 流式（MVP → 正确性 → 自适应 → 性能）

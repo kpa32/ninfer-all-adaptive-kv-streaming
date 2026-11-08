@@ -7,6 +7,14 @@
 
 ## 1. 环境与操作风险（已发生/已核实）
 
+### R0 越界删除（流程风险，最高优先级）— **所有者明确警告**
+
+- 所有者 2026-11-08：删减的只是**产品范围（其它模型）**，不是功能；27B 特性与 RTX 30/40/50 支持必须保留；
+  **未经审核的删除可被整体回滚，相关工作作废**。
+- 对本 agent 的约束：① 动手前先提交 `CUTLIST.md` 条目与理由；② 一条一个 commit；
+  ③ 不把“顺手清理”当成删减；④ 任何“看起来没人用”的代码先归 B 组。
+- 到本文件为止的审计只新增了 5 份根目录文档，未删除/修改任何源码、测试、脚本。
+
 ### R1 Linux 机器上的 git 根目录与脚本不一致 — **已核实**
 
 - 机器上 `/home/kpa/ninfer-fork` **不是** git 仓库；真正的仓库在
@@ -62,6 +70,12 @@
 | `linear/gguf/**` + `linear/q4,q5,q6,q8/**` | artifact 实际格式（见 `SCOPE.md` §2） | 目标模型加载失败 |
 | `linear_attention`、`gdn_*`、`dynamic_grouped_conv` | 48 个 GDN 层 | 模型数学不成立 |
 | `device_profiles.json` 的 4080 SUPER 条目 + `ninfer-calibrate` | `--device-profile auto` 依赖它 | 路由退回通用系数，性能不可解释 |
+| sm_86 / sm_89 / 120a 的架构分支与各自回退路径 | 所有者要求保留 RTX 30/40/50 支持 | 删了就是删功能（你的规则） |
+| 九种 `--kv-dtype` 格式与各自的 attention/codec 变体 | 27B 的可选特性，`docs/performance.md` 有实测 | 删了就是删功能 |
+| FP8 / NVFP4 / T2 / STQ 权重单元 | 同一个 27B 的其它 artifact + 120a 构建需要 | 无法加载那些 artifact |
+| Vision（`execution/vision*`、`load/vision*`、`program/vision_control*`、`src/media/decode`）| 所有者已确认永久保留；`start-mtp.sh` 在用 | 删了就是删功能 |
+| `core/tensor_parallel.*`、`stage_link`、`stage_plan`、pipeline CLI | 多卡是功能，不是“别的模型” | 删了就是删功能 |
+| `runtime/engine/context_cache/**` + `runtime/prefix_cache/**` | Legacy + Hybrid 两种 prefix cache | serving 的缓存模式失效 |
 
 ---
 
@@ -72,10 +86,9 @@
 
 | 删除动作 | 冲突面 | 缓解 |
 |---|---|---|
-| A1–A3（三族）| 上游对 `engine.cpp`、`registry.*`、`models/CMakeLists.txt`、`tests/CMakeLists.txt` 的任何改动都会冲突 | 把这三处改动集中在一个 commit（A4），冲突时整块取上游再重放删族 |
-| A5（权重格式）| `linear.cpp` dispatcher、`ops/CMakeLists.txt`、`tensor-formats.md` 是上游高频改动区 | 删格式的提交只动"格式枚举 + 源列表 + 文档表"，不动共享的 tile/launch 代码 |
-| A6/A7（架构）| `CMakeLists.txt` 顶部的架构门控被上游频繁调整（CUDA 版本、120a 限制） | 保留顶层结构，只删具体分支；冲突时以上游为准重放 |
-| `qwen3_5` 内部（B 组）| 最大冲突面 | 阶段 2 之后再动，且按"单一路径收敛"而不是"删分支" |
+| A1–A4（Gemma 4 / Flint / DeepSeek） | 上游对 `engine.cpp`、`registry.*`、`models/CMakeLists.txt`、`tests/CMakeLists.txt` 的任何改动都会冲突 | 登记点集中在一个 commit（A4），冲突时整块取上游再重放删族 |
+| 未来若要删 Flash-Next / MoE（B1/B2） | `engine.cpp`、`program/` 与 `ops/` 的共享层，冲突面最大 | 阶段 2 之后再评估；按“收敛到单一路径”而不是“删 if 分支”重写 |
+| 保留项（Vision、KV 格式、FP8/NVFP4、sm_70/75、TP/pipeline） | 不产生冲突：它们保持与上游同形 | — |
 
 非冲突面（安全）：`SCOPE.md` / `SPEC.md` / `CUTLIST.md` / `RISKS.md` 是本仓库新增文件，
 上游没有对应物。
@@ -86,9 +99,9 @@
 
 | 改动 | 为什么不能只靠编译通过 | 验证 |
 |---|---|---|
-| A5 删格式 | dispatcher 删错分支会让另一个格式静默走错 kernel | 固定 prompt greedy token IDs（8K/32K）+ `ninfer_tests` 的 linear/attention 目标子集 |
-| A6/A7 删架构 | 陷阱单元（trap）与回退路径共享宏；删错会让 89 编译出空实现 | 构建后跑 8K smoke + 一个长 prefill（32K）+ `--help` 启动 |
-| B2 删 KV 格式 | 每个格式有独立的 Op oracle 与 golden 行；`rk8v4` 与 `int8` 共享 key 编码 | `tests/ops/test_kv_cache_append.cpp`、`causal_cache.cpp` 的保留格式用例 + perplexity |
+| A1–A4 删族 | 注册点/前端方言删错会让另一个族静默退回 Qwen 语义 | 8K smoke 的 greedy token IDs 与基线比对 + `ninfer_tests` 的 qwen3_5 子集 |
+| 阶段 2 流式 | 页驻留改变的是“数据在哪”，必须是逐字节等价 | 同格式 on/off 的 greedy IDs 与 logprobs 一致；planted-code recall；perplexity |
+| （保留）改任何共享 kernel | 九种 KV 格式与 FP8/NVFP4 权重仍要可加载 | 对应 Op 测试 + 真实 artifact 启动 |
 | 阶段 2 流式 | 页驻留改变的是"数据在哪"，必须是逐字节等价 | 同格式 on/off 的 greedy IDs 与 logprobs 一致；planted-code recall；perplexity |
 
 注意：`CONTRIBUTING.md` 的 "lossless by default" 要求"同格式 streaming on/off 结果一致"是

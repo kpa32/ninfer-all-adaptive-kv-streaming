@@ -94,3 +94,6 @@ third_party/media-sources/
 
 # Local session state: the chat TODO plan and temporary task specs.
 .thinkrail/
+
+# KV streaming run records: prompts are large and regenerate from the campaign's recipe.
+bench/results/kv-stream/runs/**/prompt.json

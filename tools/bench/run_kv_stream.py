@@ -57,8 +57,9 @@ PROMPT_SENTENCE = (
     "window onto the device, so a round copies only the share the window lacks."
 )
 PROMPT_TAIL = (
-    "\n\nList the positive integers in order, ten per line, each line separated by a newline:\n"
-    "1 2 3 4 5 6 7 8 9 10\n11 12 13 14 15 16 17 18 19 20\n"
+    "\n\nContinue this list of positive integers, one number per line, from 21 up to 800. "
+    "Each line holds one number and nothing else: no commentary, no summary, and no line "
+    "before 800.\n"
 )
 CALIBRATION_POINTS = (100, 200)
 

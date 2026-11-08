@@ -268,6 +268,11 @@ void write_run_report(const std::filesystem::path& path, const RunReport& report
         {"kv_capacity", memory.kv_capacity},
         {"kv_capacity_page_groups", memory.kv_capacity_page_groups},
         {"kv_capacity_max_page_groups", memory.kv_capacity_max_page_groups},
+        {"load_seconds", report.load.load_seconds},
+        {"upload_seconds", report.load.upload_seconds},
+        {"artifact_bytes_read", report.load.artifact_bytes_read},
+        {"host_to_device_bytes", report.load.host_to_device_bytes},
+        {"pinned_weight_bytes", report.load.pinned_weight_bytes},
     };
 
     out["devices"] = json::array();

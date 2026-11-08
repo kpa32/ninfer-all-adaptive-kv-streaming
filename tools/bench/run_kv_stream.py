@@ -88,6 +88,8 @@ class Case:
     max_new: int
     variants: tuple[str, ...]
     oracle: str = "original"  # "original" records the base binary's ids, "self" ours
+    resident_flags: tuple[str, ...] = ()
+    streamed_flags: tuple[str, ...] = ()
 
 
 # The contexts both layouts can serve: the original with MTP3 stops starting above ~186 K, and the
@@ -125,6 +127,12 @@ CASES: dict[str, Case] = {
         capacity=184_064,
         max_new=512,
         variants=("resident", "streamed"),
+        # The all-resident exception needs the whole 1 GiB automatic headroom cut down to 16 MiB
+        # to fit its 3.99 GB reservation; the streamed run needs a pool smaller than the context,
+        # or the window would simply hold all 183 K tokens and nothing would stream. Both are
+        # memory-layout knobs: the arithmetic is the same either way.
+        resident_flags=("--kv-headroom-mib", "16"),
+        streamed_flags=("--kv-headroom-mib", "1400"),
     ),
     "stream-251k": Case(
         name="stream-251k",
@@ -436,6 +444,7 @@ def request_argv(
 ) -> list[str]:
     argv = [str(binary), str(model), "--messages", str(prompt_path)]
     argv += ["--max-context", str(case.capacity), *FIXED_FLAGS, "--max-new", str(case.max_new)]
+    argv += list(case.streamed_flags if variant == "streamed" else case.resident_flags)
     if variant == "streamed":
         argv.append("--kv-stream")
     return argv + ["--device", str(device)]
@@ -1069,6 +1078,85 @@ def command_bench(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def command_window(args: argparse.Namespace) -> int:
+    """Measure what window a pool leaves, so a streamed case can be given a pool it streams over.
+
+    The window is a startup fact (the pool minus the ring, divided over the layers), so a short
+    prompt is enough to read it. The scan is kept next to the calibration because a later case
+    picks its headroom from it instead of guessing.
+    """
+    require_idle_gpu(args.allow_busy)
+    work = args.results / "runs" / f"{timestamp(utc_now())}-window-{git_state()['short_head']}"
+    work.mkdir(parents=True, exist_ok=False)
+    prompt_path = write_prompt(work / "prompt", 64)
+    scan_path = args.results / "window-scan.json"
+    scan = json.loads(scan_path.read_text()) if scan_path.is_file() else []
+    model_sha = sha256_file(args.model)
+    ok = True
+    for headroom in args.headroom_mib:
+        case = Case(
+            name=f"window-{headroom}",
+            purpose="Read the stream window a pool leaves.",
+            kind="calibration",
+            target_tokens=0,
+            capacity=args.capacity,
+            max_new=1,
+            variants=("streamed",),
+            streamed_flags=("--kv-headroom-mib", str(headroom)),
+        )
+        print(f"window: capacity {args.capacity}, headroom {headroom} MiB ...", flush=True)
+        result = run_once(
+            args.binary,
+            args.model,
+            prompt_path,
+            case,
+            "streamed",
+            args.device,
+            work / f"headroom-{headroom}",
+            args.timeout,
+            with_report=True,
+        )
+        stream = result.report.get("stream", {}) if result.report else {}
+        entry = {
+            "measured_utc": iso(utc_now()),
+            "model_sha256": model_sha,
+            "git_head": git_state()["short_head"],
+            "capacity": args.capacity,
+            "headroom_mib": headroom,
+            "returncode": result.returncode,
+            "enabled": bool(stream.get("enabled")),
+            "resident_pages": stream.get("resident_pages"),
+            "pages_per_layer": stream.get("pages_per_layer"),
+            "window_tokens": (stream.get("resident_pages") or 0) * 64,
+            "host_bytes": stream.get("host_bytes"),
+            "device_bytes": stream.get("device_bytes"),
+            "page_groups": result.report.get("target", {}).get("kv_capacity_page_groups"),
+            "seconds": result.seconds,
+            "argv": result.argv,
+            "campaign": str(work.relative_to(REPO_ROOT)),
+        }
+        scan = [
+            row
+            for row in scan
+            if not (
+                row.get("model_sha256") == model_sha
+                and row.get("capacity") == args.capacity
+                and row.get("headroom_mib") == headroom
+            )
+        ]
+        scan.append(entry)
+        scan_path.write_text(json.dumps(scan, indent=2) + "\n")
+        if result.returncode != 0:
+            ok = False
+            print(f"  failed: {result.stderr_tail}")
+        else:
+            print(
+                f"  window {entry['window_tokens']} tokens ({entry['resident_pages']} pages x 64), "
+                f"{entry['pages_per_layer']} pages/layer, pool {entry['device_bytes']} B"
+            )
+    return 0 if ok else 1
+
+
 # ---------------------------------------------------------------------------------------------
 # The index and the comparison
 
@@ -1278,6 +1366,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     report = sub.add_parser("report", help="regenerate INDEX.md from the records")
     report.set_defaults(func=command_report, record_golden=False)
 
+    window = sub.add_parser("window", help="measure the stream window a capacity and headroom give")
+    window.add_argument("--capacity", type=int, required=True)
+    window.add_argument("--headroom-mib", type=int, nargs="+", required=True)
+    window.set_defaults(func=command_window, record_golden=False)
+
     compare = sub.add_parser("compare", help="print the metric deltas of two campaigns")
     compare.add_argument("left")
     compare.add_argument("right")
@@ -1290,7 +1383,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args.binary = args.binary.resolve()
     args.oracle = args.oracle.resolve()
     args.model = args.model.resolve()
-    if args.command in ("golden", "check", "bench", "calibrate"):
+    if args.command in ("golden", "check", "bench", "calibrate", "window"):
         if not args.binary.is_file():
             raise SystemExit(f"error: no binary at {args.binary}")
         if not args.model.is_file():

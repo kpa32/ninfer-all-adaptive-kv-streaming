@@ -70,6 +70,7 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
     if (!reservation) {
         throw std::invalid_argument("A streamed KV pool cannot reserve its slots");
     }
+    slot_leases_.reserve(slot_count);
     cache.page_pool().materialize(*reservation, slot_count, slot_leases_);
     slot_handles_.assign(slot_count, DeviceKVPageHandle{});
     for (const DeviceKVPageLease& lease : slot_leases_) {

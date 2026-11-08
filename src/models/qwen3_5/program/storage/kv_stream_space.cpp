@@ -1,5 +1,6 @@
 #include "models/qwen3_5/program/storage/kv_stream_space.h"
 
+#include <cstdlib>
 #include <stdexcept>
 
 namespace ninfer::models::qwen3_5 {
@@ -134,8 +135,17 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     const std::uint32_t reached   = active_pages > split_.resident_pages
                                       ? active_pages - split_.resident_pages
                                       : 0U;
-    const KVStreamRingGeometry geometry =
-        kv_stream_ring_geometry(split_.ring_pages, reached, layers_);
+    const KVStreamRingGeometry geometry = [&] {
+        auto planned = kv_stream_ring_geometry(split_.ring_pages, reached, layers_);
+        // TEMPORARY DIAGNOSTIC: force a depth to compare orderings at one pool size.
+        if (const char* forced = std::getenv("NINFER_KVSTREAM_DEPTH")) {
+            const std::uint32_t depth = static_cast<std::uint32_t>(std::atoi(forced));
+            if (depth >= 1 && depth <= layers_) {
+                planned = KVStreamRingGeometry{depth, split_.ring_pages / depth};
+            }
+        }
+        return planned;
+    }();
     if (geometry.depth != ring_.depth || geometry.stride != ring_.stride) {
         ring_ = geometry;
         if (active_ > split_.resident_pages) {

@@ -256,6 +256,23 @@ std::int32_t causal_attention_active_splits(std::int32_t q_heads, std::int32_t t
     });
 }
 
+CausalAttentionFramePlan causal_attention_frame_plan(
+    AttentionHeadGeometry geometry, std::int32_t width, std::int32_t batch,
+    std::int32_t window_tokens, std::int32_t splits_per_frame, KvCacheStorage storage,
+    CausalAttentionExecutionEnvelope envelope) {
+    const auto q_heads = static_cast<std::int32_t>(geometry.query_heads);
+    if (window_tokens <= 0 || splits_per_frame <= 0) { return {}; }
+    const std::int32_t active = causal_attention_active_splits(q_heads, width, batch,
+                                                               window_tokens, storage, envelope);
+    if (active <= 0) { return {}; }
+    const std::int32_t frames =
+        (active - 1) / splits_per_frame + 1;
+    // A frame's pages are the launch's page span rounded up: the caller copies this width and one
+    // spare page on each side, which covers a split that starts on a tile boundary mid-page.
+    const std::int32_t pages = 1 + (window_tokens - 1) / kPagedKVPageSize;
+    return {frames, (pages - 1) / frames + 1};
+}
+
 std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t tokens,
                                              KvCacheStorage cache_storage,
                                              CausalAttentionExecutionEnvelope envelope,

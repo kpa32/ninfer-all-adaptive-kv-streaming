@@ -228,6 +228,20 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
                               const CausalAttentionFrameHook* frames = nullptr);
 
 /**
+ * How a framed call divides its launches: `frames` launches of `pages` pages each over the call's
+ * `window_tokens` visible keys. A caller sizes its ring frames and its copies to this and does not
+ * re-derive the split geometry (design 5.13.2). Zero where the call has nothing to frame.
+ */
+struct CausalAttentionFramePlan {
+    std::int32_t frames = 0;
+    std::int32_t pages  = 0;
+};
+[[nodiscard]] CausalAttentionFramePlan causal_attention_frame_plan(
+    AttentionHeadGeometry geometry, std::int32_t width, std::int32_t batch,
+    std::int32_t window_tokens, std::int32_t splits_per_frame, KvCacheStorage storage,
+    CausalAttentionExecutionEnvelope envelope);
+
+/**
  * Position-split attention (--tensor-attention positions). Each rank of a position-split pool
  * holds some of a row's keys (PagedKVBatchLayerView::page_stride, page_residue): the stride and
  * residue select its physical pages, and causal_softmax_attention over that rank's view attends

@@ -78,6 +78,8 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     create_events(ready_, layers_);
     create_events(consumed_, layers_);
     create_events(dropped_, layers_);
+    create_events(ready_frame_, layers_ * kFrameSlots);
+    create_events(consumed_frame_, layers_ * kFrameSlots);
     region_layer_.assign(split_.ring_depth, kNoLayer);
     region_pages_.assign(split_.ring_depth, 0);
     round_.layers.resize(layers_);
@@ -95,6 +97,18 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
         create_timed(wait_end_);
         copy_pending_.assign(layers_, 0);
         wait_pending_.assign(layers_, 0);
+        // One timing pair per (layer, frame slot) for the framed decode path, which has several
+        // copies and several waits per layer.
+        const auto create_frame_timed = [&](std::vector<cudaEvent_t>& events) {
+            events.assign(layers_ * kFrameSlots, nullptr);
+            for (cudaEvent_t& event : events) { CUDA_CHECK(cudaEventCreate(&event)); }
+        };
+        create_frame_timed(frame_copy_begin_);
+        create_frame_timed(frame_copy_end_);
+        create_frame_timed(frame_wait_begin_);
+        create_frame_timed(frame_wait_end_);
+        frame_copy_pending_.assign(layers_ * kFrameSlots, 0);
+        frame_wait_pending_.assign(layers_ * kFrameSlots, 0);
     }
 }
 
@@ -102,10 +116,16 @@ StreamedKVSpace::~StreamedKVSpace() {
     destroy_events(ready_);
     destroy_events(consumed_);
     destroy_events(dropped_);
+    destroy_events(ready_frame_);
+    destroy_events(consumed_frame_);
     destroy_events(copy_begin_);
     destroy_events(copy_end_);
     destroy_events(wait_begin_);
     destroy_events(wait_end_);
+    destroy_events(frame_copy_begin_);
+    destroy_events(frame_copy_end_);
+    destroy_events(frame_wait_begin_);
+    destroy_events(frame_wait_end_);
 }
 
 void StreamedKVSpace::add_copy_seconds(std::uint32_t layer, double seconds) {
@@ -171,6 +191,17 @@ void StreamedKVSpace::collect_timings() {
         }
         if (const std::optional<double> seconds =
                 take_timing(wait_begin_[layer], wait_end_[layer], wait_pending_[layer])) {
+            add_exposed_seconds(layer, *seconds);
+        }
+    }
+    for (std::size_t index = 0; index < frame_copy_begin_.size(); ++index) {
+        const auto layer = static_cast<std::uint32_t>(index / kFrameSlots);
+        if (const std::optional<double> seconds = take_timing(
+                frame_copy_begin_[index], frame_copy_end_[index], frame_copy_pending_[index])) {
+            add_copy_seconds(layer, *seconds);
+        }
+        if (const std::optional<double> seconds = take_timing(
+                frame_wait_begin_[index], frame_wait_end_[index], frame_wait_pending_[index])) {
             add_exposed_seconds(layer, *seconds);
         }
     }
@@ -393,6 +424,78 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
         copy_pending_[layer] = 1;
     }
     CUDA_CHECK(cudaEventRecord(ready_[layer], copy));
+}
+
+cudaEvent_t StreamedKVSpace::consumed_frame_event(std::uint32_t layer,
+                                                  std::uint32_t frame) const {
+    if (layer >= layers_ || frame >= kFrameSlots) {
+        throw std::out_of_range("Streamed KV frame is out of range");
+    }
+    return consumed_frame_[layer * kFrameSlots + frame];
+}
+
+std::uint32_t StreamedKVSpace::upload_frame(std::uint32_t layer, std::uint32_t frame,
+                                           std::int32_t first_page, std::int32_t page_count,
+                                           cudaStream_t copy, bool seal) {
+    if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
+    if (frame >= kFrameSlots) { throw std::out_of_range("Streamed KV frame is out of range"); }
+    if (copy == nullptr) { throw std::invalid_argument("A streamed KV upload needs a copy stream"); }
+    const std::size_t index = static_cast<std::size_t>(layer) * kFrameSlots + frame;
+    // Only the pages below the window start are on the host; the rest are resident already.
+    const std::int32_t window = static_cast<std::int32_t>(window_start());
+    const std::int32_t first  = first_page < 0 ? 0 : (first_page > window ? window : first_page);
+    const std::int32_t last   = first_page + page_count < window ? first_page + page_count : window;
+    std::uint32_t moved       = 0;
+    if (report_ && !frame_copy_pending_[index]) {
+        CUDA_CHECK(cudaEventRecord(frame_copy_begin_[index], copy));
+        frame_copy_pending_[index] = 1;
+    }
+    if (last > first) {
+        // The ring slots these pages take are the ones the layer `ring_depth` back wrote, so the
+        // copy is ordered after that layer's consumption of the same frame - and after the host
+        // bytes of this round's dropped pages arrived.
+        const std::uint32_t source = (layer + layers_ - split_.ring_depth) % layers_;
+        CUDA_CHECK(cudaStreamWaitEvent(copy, consumed_frame_event(source, frame), 0));
+        CUDA_CHECK(cudaStreamWaitEvent(copy, dropped_[layer], 0));
+        const auto count = static_cast<std::uint32_t>(last - first);
+        cache_->page_pool().copy_from_host_pages(
+            host_pages(layer).subview(static_cast<std::uint32_t>(first), count).data(), host_layout_,
+            static_cast<std::int32_t>(ring_region(layer) + static_cast<std::uint32_t>(first)),
+            count, RankStreams(copy));
+        add_upload(layer, static_cast<std::uint64_t>(count) * page_bytes_);
+        moved = count;
+    }
+    if (seal) { seal_frame(layer, frame, copy); }
+    return moved;
+}
+
+void StreamedKVSpace::seal_frame(std::uint32_t layer, std::uint32_t frame, cudaStream_t copy) {
+    const std::size_t index = static_cast<std::size_t>(layer) * kFrameSlots + frame;
+    if (report_) {
+        CUDA_CHECK(cudaEventRecord(frame_copy_end_[index], copy));
+        frame_copy_pending_[index] = 1;
+    }
+    CUDA_CHECK(cudaEventRecord(ready_frame_[index], copy));
+}
+
+void StreamedKVSpace::wait_ready_frame(std::uint32_t layer, std::uint32_t frame,
+                                       cudaStream_t compute) {
+    if (layer >= layers_ || frame >= kFrameSlots) {
+        throw std::out_of_range("Streamed KV frame is out of range");
+    }
+    if (compute == nullptr) {
+        throw std::invalid_argument("A streamed KV wait needs a compute stream");
+    }
+    const std::size_t index = static_cast<std::size_t>(layer) * kFrameSlots + frame;
+    if (!report_) {
+        CUDA_CHECK(cudaStreamWaitEvent(compute, ready_frame_[index], 0));
+        return;
+    }
+    // The wait is measured: whatever it costs here is copy time this round could not hide.
+    CUDA_CHECK(cudaEventRecord(frame_wait_begin_[index], compute));
+    CUDA_CHECK(cudaStreamWaitEvent(compute, ready_frame_[index], 0));
+    CUDA_CHECK(cudaEventRecord(frame_wait_end_[index], compute));
+    frame_wait_pending_[index] = 1;
 }
 
 } // namespace ninfer::models::qwen3_5

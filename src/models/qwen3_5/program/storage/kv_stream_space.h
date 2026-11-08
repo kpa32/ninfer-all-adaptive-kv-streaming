@@ -100,6 +100,31 @@ public:
     // their regions without those pages being copied twice.
     void upload(std::uint32_t layer, cudaStream_t copy);
 
+    // The pages a decode round feeds one layer at a time: the call's keys are launched in frames,
+    // so its copies are issued in frame-sized runs instead of one layer-sized one, and a run can
+    // fill a gap between two launches that a whole layer's copy could not (design 5.13.2).
+    //
+    // `upload_frame` moves the streamed pages of `[first_page, first_page + page_count)` into their
+    // ring slots, for the frame index the caller's schedule uses: it waits for the layer that
+    // shared those slots `ring_depth` layers back, records `ready_frame`, and returns the pages it
+    // moved (zero when the range is entirely in the window). The caller may split a frame's range
+    // across several calls; it records what it waits on through `reserve_frame`/`seal_frame`.
+    static constexpr std::uint32_t kFrameSlots = 8;
+    std::uint32_t upload_frame(std::uint32_t layer, std::uint32_t frame, std::int32_t first_page,
+                               std::int32_t page_count, cudaStream_t copy, bool seal = true);
+
+    // Records `ready_frame` without copying, which is how a frame whose pages are all resident gets
+    // an event the consumer can wait on.
+    void seal_frame(std::uint32_t layer, std::uint32_t frame, cudaStream_t copy);
+
+    // Waits on `frame`'s ready event on the compute stream, measuring how much of the wait was
+    // copy time the round could not hide.
+    void wait_ready_frame(std::uint32_t layer, std::uint32_t frame, cudaStream_t compute);
+
+    // The event the consumer records once a frame's launch has read the ring.
+    [[nodiscard]] cudaEvent_t consumed_frame_event(std::uint32_t layer,
+                                                   std::uint32_t frame) const;
+
     // First slot of the ring region layer `layer`'s streamed pages occupy.
     [[nodiscard]] std::uint32_t ring_region(std::uint32_t layer) const noexcept {
         return ring_base_ + (layer % split_.ring_depth) *
@@ -202,6 +227,18 @@ private:
     HostKVAllocation host_;
     std::vector<cudaEvent_t> ready_;    std::vector<cudaEvent_t> consumed_;
     std::vector<cudaEvent_t> dropped_;
+    // One ready/consumed pair per (layer, frame slot): a frame's copy and the launch that reads it
+    // are ordered through these, and a slot is reused once `ring_depth` layers have consumed it.
+    std::vector<cudaEvent_t> ready_frame_;
+    std::vector<cudaEvent_t> consumed_frame_;
+    std::vector<cudaEvent_t> frame_copy_begin_;
+    std::vector<cudaEvent_t> frame_copy_end_;
+    std::vector<cudaEvent_t> frame_wait_begin_;
+    std::vector<cudaEvent_t> frame_wait_end_;
+    std::vector<std::uint8_t> frame_copy_pending_;
+    std::vector<std::uint8_t> frame_wait_pending_;
+    void add_frame_copy_seconds(std::uint32_t layer, double seconds);
+    void add_frame_exposed_seconds(std::uint32_t layer, double seconds);
     // Timing pairs, one per layer for each of the two phases of a round: the copy on the copy
     // stream and the wait for it on the compute stream.
     std::vector<cudaEvent_t> copy_begin_;

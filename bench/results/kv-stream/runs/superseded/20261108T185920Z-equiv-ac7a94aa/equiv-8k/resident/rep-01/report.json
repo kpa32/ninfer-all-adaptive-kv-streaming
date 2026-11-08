@@ -1,0 +1,272 @@
+{
+  "decode_rounds": {
+    "count": 6,
+    "sample_cap": 2048,
+    "samples": [
+      {
+        "seconds": 0.027596013000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024801468,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024813608,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.024712656000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024576025,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.024495193000000002,
+        "tokens": 1
+      }
+    ]
+  },
+  "devices": [
+    {
+      "compute_capability": "8.9",
+      "driver_version": "13.4",
+      "index": 0,
+      "memory_bytes": 16796745728,
+      "multiprocessors": 80,
+      "name": "NVIDIA GeForce RTX 4080 SUPER"
+    }
+  ],
+  "generation": {
+    "finish_reason": "output-limit",
+    "token_ids": [
+      1596,
+      1144,
+      4087,
+      1156,
+      579,
+      1622,
+      13,
+      2570,
+      3766,
+      264,
+      6552,
+      11173,
+      11316,
+      1179,
+      328,
+      760
+    ],
+    "tokens": 16
+  },
+  "kind": "ninfer-run-report",
+  "kv_transfer": {
+    "backend": {
+      "d2d_bytes": 0,
+      "d2d_pages": 0,
+      "d2h_bytes": 0,
+      "d2h_pages": 0,
+      "h2d_bytes": 0,
+      "h2d_pages": 0
+    },
+    "main": {
+      "d2d_bytes": 0,
+      "d2d_pages": 0,
+      "d2d_seconds": 0.0,
+      "d2h_bytes": 0,
+      "d2h_pages": 0,
+      "d2h_seconds": 0.0,
+      "h2d_bytes": 0,
+      "h2d_pages": 0,
+      "h2d_seconds": 0.0
+    },
+    "state": {
+      "d2d_bytes": 0,
+      "d2d_seconds": 0.0,
+      "d2h_bytes": 0,
+      "d2h_seconds": 0.0,
+      "h2d_bytes": 0,
+      "h2d_seconds": 0.0
+    }
+  },
+  "memory": {
+    "available_after_startup_bytes": 3598188544,
+    "available_after_weights_bytes": 4032299008,
+    "cuda_graph_allowance_bytes": 247463936,
+    "cuda_graph_measured_bytes": 37748736,
+    "devices": [],
+    "expert_cache_bytes": 0,
+    "host_cache_budget_bytes": 0,
+    "host_kv_capacity_bytes": 0,
+    "host_kv_occupied_bytes": 0,
+    "host_kv_page_group_bytes": 1146880,
+    "host_state_capacity_slots": 0,
+    "host_state_image_bytes": 78456832,
+    "host_state_occupied_slots": 0,
+    "kv_cache": "rotated-lloyd4g64-v4g32",
+    "kv_capacity": 8192,
+    "kv_capacity_headroom_bytes": 1073741824,
+    "kv_capacity_increment_bytes": 0,
+    "kv_capacity_max_page_groups": 128,
+    "kv_capacity_mode": "auto",
+    "kv_capacity_page_groups": 128,
+    "kv_payload_bytes": 156047360,
+    "max_context": 8192,
+    "minimum_runtime_reservation_bytes": 641647616,
+    "planned_slack_bytes": 3390651392,
+    "runtime_reservation_bytes": 641647616,
+    "sequence": {
+      "capacity_bytes": 285803264,
+      "peak_used_bytes": 285803264,
+      "used_bytes": 285803264
+    },
+    "weights": {
+      "capacity_bytes": 12481729536,
+      "peak_used_bytes": 12481729536,
+      "used_bytes": 12481729536
+    },
+    "workspace": {
+      "capacity_bytes": 108380416,
+      "peak_used_bytes": 105173248,
+      "used_bytes": 0
+    },
+    "workspace_logical_peak_bytes": 105173248
+  },
+  "prompt": {
+    "reused_tokens": 0,
+    "tokens": 8014
+  },
+  "run": {
+    "argv": [
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/build-sm89/apps/ninfer",
+      "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+      "--messages",
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T185920Z-equiv-ac7a94aa/equiv-8k/prompt.json",
+      "--max-context",
+      "8192",
+      "--kv-capacity",
+      "auto",
+      "--kv-dtype",
+      "rk4v4",
+      "--gdn-state-fp16",
+      "--prefill-chunk",
+      "256",
+      "--greedy",
+      "--seed",
+      "42",
+      "--invariant-attention",
+      "--spec",
+      "mtp",
+      "--draft-tokens",
+      "3",
+      "--max-new",
+      "16",
+      "--device",
+      "0",
+      "--print-token-ids",
+      "--report-json",
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T185920Z-equiv-ac7a94aa/equiv-8k/resident/rep-01/report.json"
+    ],
+    "build_id": "28787e68",
+    "finished_utc": "2026-11-08T18:59:58Z",
+    "started_utc": "2026-11-08T18:59:29Z",
+    "version": "untagged",
+    "wall_seconds": 28.941535466
+  },
+  "sampling": {
+    "frequency_penalty": 0.0,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "seed": 42,
+    "temperature": 0.0,
+    "top_k": 20,
+    "top_p": 0.949999988079071
+  },
+  "schema": 1,
+  "speculative": {
+    "acceptance_length": 2.8,
+    "acceptance_rate": 0.6923076923076923,
+    "accepted_per_position": [
+      3,
+      3,
+      3,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "accepted_tokens": 9,
+    "adaptive": false,
+    "backend": "mtp",
+    "draft_window": 3,
+    "drafted_tokens": 13,
+    "enabled": true,
+    "fallback_steps": 1,
+    "rounds": 5,
+    "rounds_per_window": [],
+    "window_transitions": 0
+  },
+  "stream": {
+    "enabled": false
+  },
+  "target": {
+    "architecture": "Qwen3_5ForCausalLM",
+    "artifact_bytes_read": 12495124010,
+    "cuda_graph_requested": true,
+    "device": 0,
+    "devices": [],
+    "host_to_device_bytes": 12481723392,
+    "invariant_attention": true,
+    "kv_cache": "rotated-lloyd4g64-v4g32",
+    "kv_capacity": 8192,
+    "kv_capacity_max_page_groups": 128,
+    "kv_capacity_mode": "auto",
+    "kv_capacity_page_groups": 128,
+    "kv_stream": false,
+    "kv_stream_report": false,
+    "load_seconds": 25.139632529,
+    "max_context": 8192,
+    "max_new": 16,
+    "model_name": "qwen3.8-27b",
+    "model_path": "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+    "pinned_weight_bytes": 0,
+    "prefill_chunk": 256,
+    "upload_seconds": 23.018467223,
+    "weight_formats": [
+      "bf16",
+      "fp32",
+      "gguf_iq1_m",
+      "gguf_iq2_s",
+      "gguf_iq2_xs",
+      "gguf_iq2_xxs",
+      "gguf_iq3_s",
+      "gguf_iq3_xxs",
+      "gguf_iq4_xs",
+      "gguf_q2_k",
+      "gguf_q4_k",
+      "gguf_q6_k",
+      "int32"
+    ]
+  },
+  "timings": {
+    "decode_seconds": 0.14820127600000002,
+    "decode_tokens_per_second": 101.21370345016462,
+    "model_seconds": 3.4918527630000002,
+    "overall_tokens_per_second": 4.582094688967846,
+    "prefill_seconds": 3.3436514870000003,
+    "prefill_tokens_per_second": 2396.780893929332,
+    "prepare_seconds": 0.003505187,
+    "total_seconds": 3.498736305,
+    "vision_seconds": 0.0
+  }
+}

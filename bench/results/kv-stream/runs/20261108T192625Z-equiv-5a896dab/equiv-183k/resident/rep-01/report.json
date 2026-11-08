@@ -1,0 +1,1283 @@
+{
+  "decode_rounds": {
+    "count": 134,
+    "sample_cap": 2048,
+    "samples": [
+      {
+        "seconds": 0.0413631,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037365551000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037324239,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037312749,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037361040000000005,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037328280000000005,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037344039,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037340040000000005,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.063997021,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.064023672,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.0639902,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.052272603,
+        "tokens": 8
+      },
+      {
+        "seconds": 0.037411781000000005,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.03732035,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.03734943,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037323760000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037344590000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037343959,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.03735543,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037345371,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037333649000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037320839,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037331220000000005,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.03731652,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037323569,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037323559,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.037356181,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037332259,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037337299000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037362320000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.063813347,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.064022831,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.064014761,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.06397771000000001,
+        "tokens": 10
+      },
+      {
+        "seconds": 0.037451481,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.037315989,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.0373264,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037328489,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037310039,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037348,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.03732162,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037319129,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037334030000000004,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037328909,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037308789,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.03733637,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037353790000000005,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037328129,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037316499,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.03733736,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037357639000000005,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037348779000000006,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.03732688,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037296919000000005,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037323119,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037312119000000005,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037342609000000006,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.037348440000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.03733054,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037336059000000005,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037315969000000004,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037313979000000004,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037343390000000004,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.03734002,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.03733016,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037325509,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.03732489,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037335309000000004,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037321730000000004,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.03731106,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037343389000000005,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037327579,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.03733509,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037342769000000005,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037360170000000005,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.03735506,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.03736383,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037338639,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.063804387,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.06402216100000001,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.064040602,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.06404887000000001,
+        "tokens": 14
+      },
+      {
+        "seconds": 0.037487582000000005,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037306820000000004,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037325759,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037338790000000004,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037330679000000005,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.03734731,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.03733719,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.03736852,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037338789000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037353039000000005,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037327209,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.06327674800000001,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037321399000000005,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.037337869,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037330129000000004,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037336289,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.03734796,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.03735989,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037339249000000005,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037320749,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037318499000000005,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037293089,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037292159000000005,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037319749,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037321369,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.037344429000000005,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.03735411,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037306439000000004,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.037323559,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.037328819,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037358100000000005,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.03733952,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037320469,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037303399,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037314389,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037296239,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.037317209000000004,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037310809,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037346229,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037323390000000005,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037288078,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037318669000000006,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037345630000000005,
+        "tokens": 2
+      },
+      {
+        "seconds": 0.037351629000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037346539000000005,
+        "tokens": 1
+      },
+      {
+        "seconds": 0.037314949,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037321229000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037322949,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.037300918,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.06380532700000001,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.063968439,
+        "tokens": 16
+      },
+      {
+        "seconds": 0.062729599,
+        "tokens": 9
+      }
+    ]
+  },
+  "devices": [
+    {
+      "compute_capability": "8.9",
+      "driver_version": "13.4",
+      "index": 0,
+      "memory_bytes": 16796745728,
+      "multiprocessors": 80,
+      "name": "NVIDIA GeForce RTX 4080 SUPER"
+    }
+  ],
+  "generation": {
+    "finish_reason": "output-limit",
+    "token_ids": [
+      1596,
+      1144,
+      4087,
+      1156,
+      579,
+      1622,
+      13,
+      2570,
+      3766,
+      6552,
+      11173,
+      11316,
+      1179,
+      16561,
+      25,
+      328,
+      826,
+      279,
+      6572,
+      24959,
+      303,
+      1906,
+      11,
+      5600,
+      791,
+      1500,
+      11,
+      1754,
+      1500,
+      18101,
+      539,
+      264,
+      37734,
+      25,
+      198,
+      16,
+      220,
+      17,
+      220,
+      18,
+      220,
+      19,
+      220,
+      20,
+      220,
+      21,
+      220,
+      22,
+      220,
+      23,
+      220,
+      24,
+      220,
+      16,
+      15,
+      198,
+      16,
+      16,
+      220,
+      16,
+      17,
+      220,
+      16,
+      18,
+      220,
+      16,
+      19,
+      220,
+      16,
+      20,
+      220,
+      16,
+      21,
+      220,
+      16,
+      22,
+      220,
+      16,
+      23,
+      220,
+      16,
+      24,
+      220,
+      17,
+      15,
+      1,
+      271,
+      22916,
+      22846,
+      12321,
+      2468,
+      30,
+      2302,
+      4222,
+      1318,
+      1103,
+      6572,
+      24959,
+      303,
+      1906,
+      11,
+      5600,
+      791,
+      1500,
+      11,
+      6970,
+      5732,
+      494,
+      220,
+      16,
+      30,
+      561,
+      3010,
+      4774,
+      1118,
+      1330,
+      4965,
+      13,
+      14235,
+      7936,
+      6970,
+      1599,
+      4965,
+      30,
+      561,
+      9640,
+      25,
+      328,
+      826,
+      279,
+      6572,
+      24959,
+      303,
+      1906,
+      11,
+      5600,
+      791,
+      1500,
+      11,
+      1754,
+      1500,
+      18101,
+      539,
+      264,
+      37734,
+      25,
+      198,
+      16,
+      220,
+      17,
+      220,
+      18,
+      220,
+      19,
+      220,
+      20,
+      220,
+      21,
+      220,
+      22,
+      220,
+      23,
+      220,
+      24,
+      220,
+      16,
+      15,
+      198,
+      16,
+      16,
+      220,
+      16,
+      17,
+      220,
+      16,
+      18,
+      220,
+      16,
+      19,
+      220,
+      16,
+      20,
+      220,
+      16,
+      21,
+      220,
+      16,
+      22,
+      220,
+      16,
+      23,
+      220,
+      16,
+      24,
+      220,
+      17,
+      15,
+      1,
+      1049,
+      2493,
+      381,
+      9859,
+      310,
+      2962,
+      30,
+      2441,
+      1066,
+      2468,
+      421,
+      30,
+      14235,
+      25705,
+      13,
+      16018,
+      381,
+      264,
+      1228,
+      310,
+      1436,
+      413,
+      567,
+      628,
+      2468,
+      8240,
+      13,
+      561,
+      11173,
+      443,
+      623,
+      776,
+      11316,
+      369,
+      11639,
+      13,
+      14235,
+      4222,
+      2468,
+      6572,
+      24959,
+      303,
+      1906,
+      5600,
+      791,
+      1500,
+      13,
+      1921,
+      1204,
+      1599,
+      30,
+      2233,
+      8156,
+      6608,
+      13,
+      16018,
+      2468,
+      53379,
+      11656,
+      13,
+      10380,
+      781,
+      1660,
+      1066,
+      279,
+      1330,
+      4965,
+      6625,
+      30,
+      561,
+      16629,
+      1238,
+      14458,
+      5469,
+      3010,
+      4965,
+      13,
+      10380,
+      781,
+      1318,
+      6681,
+      421,
+      30,
+      328,
+      826,
+      279,
+      6572,
+      24959,
+      303,
+      1906,
+      11,
+      5600,
+      791,
+      1500,
+      11,
+      1754,
+      1500,
+      18101,
+      539,
+      264,
+      37734,
+      25,
+      198,
+      16,
+      220,
+      17,
+      220,
+      18,
+      220,
+      19,
+      220,
+      20,
+      220,
+      21,
+      220,
+      22,
+      220,
+      23,
+      220,
+      24,
+      220,
+      16,
+      15,
+      198,
+      16,
+      16,
+      220,
+      16,
+      17,
+      220,
+      16,
+      18,
+      220,
+      16,
+      19,
+      220,
+      16,
+      20,
+      220,
+      16,
+      21,
+      220,
+      16,
+      22,
+      220,
+      16,
+      23,
+      220,
+      16,
+      24,
+      220,
+      17,
+      15,
+      1,
+      1049,
+      2493,
+      381,
+      264,
+      35358,
+      7359,
+      321,
+      781,
+      3766,
+      1118,
+      1330,
+      4965,
+      430,
+      12321,
+      30,
+      16018,
+      381,
+      9859,
+      310,
+      1103,
+      6572,
+      24959,
+      303,
+      1906,
+      11,
+      5600,
+      791,
+      1500,
+      11,
+      1754,
+      1500,
+      18101,
+      539,
+      37734,
+      11,
+      321,
+      1179,
+      4774,
+      1118,
+      1330,
+      4965,
+      430,
+      3010,
+      30,
+      1165,
+      1144,
+      9973,
+      1534,
+      4087,
+      13,
+      8439,
+      874,
+      1698,
+      11,
+      59661,
+      310,
+      2468,
+      264,
+      12891,
+      33093,
+      1103,
+      30,
+      1921,
+      328,
+      29492,
+      24959,
+      1,
+      23064,
+      13,
+      733,
+      1680,
+      8806,
+      11,
+      3428,
+      781,
+      1318,
+      6707,
+      1118,
+      443,
+      30,
+      1921,
+      874,
+      443,
+      13,
+      561,
+      3010,
+      4774,
+      685,
+      310,
+      220,
+      17,
+      15,
+      13,
+      10380,
+      781,
+      1318,
+      6681,
+      1782,
+      1330,
+      4965,
+      30,
+      561,
+      1156,
+      2640,
+      328,
+      826,
+      279,
+      6572,
+      24959,
+      303,
+      1906,
+      11,
+      5600,
+      791,
+      1500,
+      11,
+      1754,
+      1500,
+      18101,
+      539,
+      264,
+      37734,
+      25,
+      198,
+      16,
+      220,
+      17,
+      220,
+      18,
+      220,
+      19,
+      220,
+      20,
+      220,
+      21,
+      220,
+      22,
+      220,
+      23,
+      220,
+      24,
+      220,
+      16,
+      15,
+      198,
+      16,
+      16,
+      220,
+      16,
+      17,
+      220,
+      16,
+      18,
+      220,
+      16,
+      19,
+      220,
+      16,
+      20,
+      220
+    ],
+    "tokens": 512
+  },
+  "kind": "ninfer-run-report",
+  "kv_transfer": {
+    "backend": {
+      "d2d_bytes": 0,
+      "d2d_pages": 0,
+      "d2h_bytes": 0,
+      "d2h_pages": 0,
+      "h2d_bytes": 0,
+      "h2d_pages": 0
+    },
+    "main": {
+      "d2d_bytes": 0,
+      "d2d_pages": 0,
+      "d2d_seconds": 0.0,
+      "d2h_bytes": 0,
+      "d2h_pages": 0,
+      "d2h_seconds": 0.0,
+      "h2d_bytes": 0,
+      "h2d_pages": 0,
+      "h2d_seconds": 0.0
+    },
+    "state": {
+      "d2d_bytes": 0,
+      "d2d_seconds": 0.0,
+      "d2h_bytes": 0,
+      "d2h_seconds": 0.0,
+      "h2d_bytes": 0,
+      "h2d_seconds": 0.0
+    }
+  },
+  "memory": {
+    "available_after_startup_bytes": 249036800,
+    "available_after_weights_bytes": 4032299008,
+    "cuda_graph_allowance_bytes": 247463936,
+    "cuda_graph_measured_bytes": 37748736,
+    "devices": [],
+    "expert_cache_bytes": 0,
+    "host_cache_budget_bytes": 0,
+    "host_kv_capacity_bytes": 0,
+    "host_kv_occupied_bytes": 0,
+    "host_kv_page_group_bytes": 1146880,
+    "host_state_capacity_slots": 0,
+    "host_state_image_bytes": 78456832,
+    "host_state_occupied_slots": 0,
+    "kv_cache": "rotated-lloyd4g64-v4g32",
+    "kv_capacity": 184064,
+    "kv_capacity_headroom_bytes": 16777216,
+    "kv_capacity_increment_bytes": 0,
+    "kv_capacity_max_page_groups": 2876,
+    "kv_capacity_mode": "auto",
+    "kv_capacity_page_groups": 2876,
+    "kv_payload_bytes": 3504650240,
+    "max_context": 184064,
+    "minimum_runtime_reservation_bytes": 3990272512,
+    "planned_slack_bytes": 42026496,
+    "runtime_reservation_bytes": 3990272512,
+    "sequence": {
+      "capacity_bytes": 3634428160,
+      "peak_used_bytes": 3634428160,
+      "used_bytes": 3634428160
+    },
+    "weights": {
+      "capacity_bytes": 12481729536,
+      "peak_used_bytes": 12481729536,
+      "used_bytes": 12481729536
+    },
+    "workspace": {
+      "capacity_bytes": 108380416,
+      "peak_used_bytes": 105173248,
+      "used_bytes": 0
+    },
+    "workspace_logical_peak_bytes": 105173248
+  },
+  "prompt": {
+    "reused_tokens": 0,
+    "tokens": 183008
+  },
+  "run": {
+    "argv": [
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/build-sm89/apps/ninfer",
+      "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+      "--messages",
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T192625Z-equiv-5a896dab/equiv-183k/prompt.json",
+      "--max-context",
+      "184064",
+      "--kv-capacity",
+      "auto",
+      "--kv-dtype",
+      "rk4v4",
+      "--gdn-state-fp16",
+      "--prefill-chunk",
+      "256",
+      "--greedy",
+      "--seed",
+      "42",
+      "--invariant-attention",
+      "--spec",
+      "mtp",
+      "--draft-tokens",
+      "3",
+      "--max-new",
+      "512",
+      "--kv-headroom-mib",
+      "16",
+      "--device",
+      "0",
+      "--print-token-ids",
+      "--logprobs",
+      "--report-json",
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T192625Z-equiv-5a896dab/equiv-183k/resident/rep-01/report.json"
+    ],
+    "build_id": "cf90eaaf",
+    "finished_utc": "2026-11-08T19:30:58Z",
+    "started_utc": "2026-11-08T19:28:24Z",
+    "version": "untagged",
+    "wall_seconds": 154.19491092
+  },
+  "sampling": {
+    "frequency_penalty": 0.0,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "seed": 42,
+    "temperature": 0.0,
+    "top_k": 20,
+    "top_p": 0.949999988079071
+  },
+  "schema": 1,
+  "speculative": {
+    "acceptance_length": 3.8134328358208953,
+    "acceptance_rate": 0.6511226252158895,
+    "accepted_per_position": [
+      95,
+      69,
+      56,
+      15,
+      15,
+      15,
+      15,
+      14,
+      13,
+      12,
+      12,
+      12,
+      12,
+      11,
+      11
+    ],
+    "accepted_tokens": 377,
+    "adaptive": false,
+    "backend": "mtp",
+    "draft_window": 3,
+    "drafted_tokens": 579,
+    "enabled": true,
+    "fallback_steps": 0,
+    "rounds": 134,
+    "rounds_per_window": [],
+    "window_transitions": 0
+  },
+  "stream": {
+    "enabled": false
+  },
+  "target": {
+    "architecture": "Qwen3_5ForCausalLM",
+    "artifact_bytes_read": 12495124010,
+    "cuda_graph_requested": true,
+    "device": 0,
+    "devices": [],
+    "host_to_device_bytes": 12481723392,
+    "invariant_attention": true,
+    "kv_cache": "rotated-lloyd4g64-v4g32",
+    "kv_capacity": 184064,
+    "kv_capacity_max_page_groups": 2876,
+    "kv_capacity_mode": "auto",
+    "kv_capacity_page_groups": 2876,
+    "kv_stream": false,
+    "kv_stream_report": false,
+    "load_seconds": 25.176717436,
+    "max_context": 184064,
+    "max_new": 512,
+    "model_name": "qwen3.8-27b",
+    "model_path": "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+    "pinned_weight_bytes": 0,
+    "prefill_chunk": 256,
+    "upload_seconds": 23.040259839,
+    "weight_formats": [
+      "bf16",
+      "fp32",
+      "gguf_iq1_m",
+      "gguf_iq2_s",
+      "gguf_iq2_xs",
+      "gguf_iq2_xxs",
+      "gguf_iq3_s",
+      "gguf_iq3_xxs",
+      "gguf_iq4_xs",
+      "gguf_q2_k",
+      "gguf_q4_k",
+      "gguf_q6_k",
+      "int32"
+    ]
+  },
+  "timings": {
+    "decode_seconds": 5.4145053380000006,
+    "decode_tokens_per_second": 94.37611898056642,
+    "model_seconds": 128.62427295500007,
+    "overall_tokens_per_second": 3.9805861540545004,
+    "prefill_seconds": 123.20976761700007,
+    "prefill_tokens_per_second": 1485.3367840842286,
+    "prepare_seconds": 0.062501453,
+    "total_seconds": 128.696011446,
+    "vision_seconds": 0.0
+  }
+}

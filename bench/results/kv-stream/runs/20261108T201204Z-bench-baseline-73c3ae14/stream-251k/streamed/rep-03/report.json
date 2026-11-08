@@ -1,0 +1,2309 @@
+{
+  "decode_rounds": {
+    "count": 16,
+    "sample_cap": 2048,
+    "samples": [
+      {
+        "seconds": 0.06403014700000001,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.05686874,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056869559,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056830649000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056822809,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056908799,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056819799000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056807909000000004,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056822018,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.05689959000000001,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056841279,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056815099,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.05685072,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056806628000000005,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056847819,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.056236585000000006,
+        "tokens": 4
+      }
+    ]
+  },
+  "devices": [
+    {
+      "compute_capability": "8.9",
+      "driver_version": "13.4",
+      "index": 0,
+      "memory_bytes": 16796745728,
+      "multiprocessors": 80,
+      "name": "NVIDIA GeForce RTX 4080 SUPER"
+    }
+  ],
+  "generation": {
+    "finish_reason": "output-limit",
+    "token_ids": [
+      17,
+      16,
+      198,
+      17,
+      17,
+      198,
+      17,
+      18,
+      198,
+      17,
+      19,
+      198,
+      17,
+      20,
+      198,
+      17,
+      21,
+      198,
+      17,
+      22,
+      198,
+      17,
+      23,
+      198,
+      17,
+      24,
+      198,
+      18,
+      15,
+      198,
+      18,
+      16,
+      198,
+      18,
+      17,
+      198,
+      18,
+      18,
+      198,
+      18,
+      19,
+      198,
+      18,
+      20,
+      198,
+      18,
+      21,
+      198,
+      18,
+      22,
+      198,
+      18,
+      23,
+      198,
+      18,
+      24,
+      198,
+      19,
+      15,
+      198,
+      19,
+      16,
+      198,
+      19
+    ],
+    "tokens": 64
+  },
+  "kind": "ninfer-run-report",
+  "kv_transfer": {
+    "backend": {
+      "d2d_bytes": 0,
+      "d2d_pages": 0,
+      "d2h_bytes": 0,
+      "d2h_pages": 0,
+      "h2d_bytes": 0,
+      "h2d_pages": 0
+    },
+    "main": {
+      "d2d_bytes": 0,
+      "d2d_pages": 0,
+      "d2d_seconds": 0.0,
+      "d2h_bytes": 0,
+      "d2h_pages": 0,
+      "d2h_seconds": 0.0,
+      "h2d_bytes": 0,
+      "h2d_pages": 0,
+      "h2d_seconds": 0.0
+    },
+    "state": {
+      "d2d_bytes": 0,
+      "d2d_seconds": 0.0,
+      "d2h_bytes": 0,
+      "d2h_seconds": 0.0,
+      "h2d_bytes": 0,
+      "h2d_seconds": 0.0
+    }
+  },
+  "memory": {
+    "available_after_startup_bytes": 56098816,
+    "available_after_weights_bytes": 4032299008,
+    "cuda_graph_allowance_bytes": 0,
+    "cuda_graph_measured_bytes": 0,
+    "devices": [],
+    "expert_cache_bytes": 0,
+    "host_cache_budget_bytes": 0,
+    "host_kv_capacity_bytes": 0,
+    "host_kv_occupied_bytes": 0,
+    "host_kv_page_group_bytes": 71680,
+    "host_state_capacity_slots": 0,
+    "host_state_image_bytes": 78456832,
+    "host_state_occupied_slots": 0,
+    "kv_cache": "rotated-lloyd4g64-v4g32",
+    "kv_capacity": 262144,
+    "kv_capacity_headroom_bytes": 67108864,
+    "kv_capacity_increment_bytes": 71680,
+    "kv_capacity_max_page_groups": 65536,
+    "kv_capacity_mode": "auto",
+    "kv_capacity_page_groups": 47894,
+    "kv_payload_bytes": 3726714880,
+    "max_context": 262144,
+    "minimum_runtime_reservation_bytes": 825704448,
+    "planned_slack_bytes": 67153920,
+    "runtime_reservation_bytes": 3965145088,
+    "sequence": {
+      "capacity_bytes": 3856764672,
+      "peak_used_bytes": 3856764672,
+      "used_bytes": 3856764672
+    },
+    "weights": {
+      "capacity_bytes": 12481729536,
+      "peak_used_bytes": 12481729536,
+      "used_bytes": 12481729536
+    },
+    "workspace": {
+      "capacity_bytes": 108380416,
+      "peak_used_bytes": 105173248,
+      "used_bytes": 0
+    },
+    "workspace_logical_peak_bytes": 105173248
+  },
+  "prompt": {
+    "reused_tokens": 0,
+    "tokens": 250946
+  },
+  "run": {
+    "argv": [
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/build-sm89/apps/ninfer",
+      "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+      "--messages",
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T201204Z-bench-baseline-73c3ae14/stream-251k/prompt.json",
+      "--max-context",
+      "262144",
+      "--kv-capacity",
+      "auto",
+      "--kv-dtype",
+      "rk4v4",
+      "--gdn-state-fp16",
+      "--prefill-chunk",
+      "256",
+      "--greedy",
+      "--seed",
+      "42",
+      "--invariant-attention",
+      "--spec",
+      "mtp",
+      "--draft-tokens",
+      "3",
+      "--no-thinking",
+      "--max-new",
+      "64",
+      "--kv-stream",
+      "--device",
+      "0",
+      "--print-token-ids",
+      "--report-json",
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T201204Z-bench-baseline-73c3ae14/stream-251k/streamed/rep-03/report.json"
+    ],
+    "build_id": "cf90eaaf",
+    "finished_utc": "2026-11-08T20:23:21Z",
+    "started_utc": "2026-11-08T20:19:38Z",
+    "version": "untagged",
+    "wall_seconds": 222.294121734
+  },
+  "sampling": {
+    "frequency_penalty": 0.0,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "seed": 42,
+    "temperature": 0.0,
+    "top_k": 20,
+    "top_p": 0.800000011920929
+  },
+  "schema": 1,
+  "speculative": {
+    "acceptance_length": 3.9375,
+    "acceptance_rate": 0.9791666666666666,
+    "accepted_per_position": [
+      16,
+      16,
+      15,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "accepted_tokens": 47,
+    "adaptive": false,
+    "backend": "mtp",
+    "draft_window": 3,
+    "drafted_tokens": 48,
+    "enabled": true,
+    "fallback_steps": 0,
+    "rounds": 16,
+    "rounds_per_window": [],
+    "window_transitions": 0
+  },
+  "stream": {
+    "copy_busy_seconds": 6.692105955254755,
+    "device_bytes": 3433041920,
+    "download_bytes": 1247805440,
+    "enabled": true,
+    "exposed_seconds": 0.25207366384891633,
+    "host_bytes": 4697620480,
+    "layers": 16,
+    "page_bytes": 71680,
+    "pages_per_layer": 4096,
+    "prefill": {
+      "copy_seconds": 5.875059811764286,
+      "download_bytes": 1246658560,
+      "exposed_seconds": 0.025168511895810788,
+      "upload_bytes": 115212124160
+    },
+    "resident_pages": 2835,
+    "ring_bytes": 181637120,
+    "ring_depth": 2,
+    "rounds": 16,
+    "rounds_series": [
+      {
+        "copy_seconds": 0.05077206420898437,
+        "download_bytes": 0,
+        "exposed_seconds": 0.01696569597581402,
+        "layers": [
+          {
+            "copy_seconds": 0.0032939839363098143,
+            "download_bytes": 0,
+            "exposed_seconds": 0.002909183979034424,
+            "layer": 0,
+            "upload_bytes": 155832320
+          },
+          {
+            "copy_seconds": 0.0031956799030303956,
+            "download_bytes": 0,
+            "exposed_seconds": 4.0959999896585945e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0034085760116577147,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0003389439880847931,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032518720626831055,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001393664002418518,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032524800300598143,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013189760446548461,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00325382399559021,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012328959703445436,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030980160236358644,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010158079862594605,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031051840782165526,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010455039739608765,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003099423885345459,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001078271985054016,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031244800090789795,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009512959718704224,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003120448112487793,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000954367995262146,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031186881065368654,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009953280091285705,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031146240234375,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009328640103340149,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031112000942230223,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009185280203819275,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031091840267181395,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000942080020904541,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031143999099731445,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009338880181312561,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1324574720
+      },
+      {
+        "copy_seconds": 0.05111292789201252,
+        "download_bytes": 0,
+        "exposed_seconds": 0.014029824039083906,
+        "layers": [
+          {
+            "copy_seconds": 0.0035725118897389618,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032246720790863035,
+            "download_bytes": 0,
+            "exposed_seconds": 4.0959999896585945e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00340995192527771,
+            "download_bytes": 0,
+            "exposed_seconds": 0.00033792001008987427,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032627201080322266,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0014018559455871583,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032397758960723876,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001311743974685669,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032785279750823975,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012533760070800781,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030974719524383544,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010219520330429076,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003105952024459839,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010383360385894775,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003100287914276123,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001070080041885376,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031228480339050295,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009482240080833435,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031206080913543702,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000954367995262146,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003119103908538818,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000980992019176483,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003117120027542114,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009379839897155762,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031138880252838137,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009072639942169189,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031122241020202636,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009297919869422913,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031152639389038085,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009308159947395325,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.05109907204844057,
+        "download_bytes": 0,
+        "exposed_seconds": 0.014003199993283488,
+        "layers": [
+          {
+            "copy_seconds": 0.003579135963693261,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003227776050567627,
+            "download_bytes": 0,
+            "exposed_seconds": 3.0720001086592673e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003406559944152832,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000347135990858078,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003242527961730957,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013742079734802245,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032646079063415527,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013434879779815675,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032667839527130127,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012431360483169556,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003098272085189819,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001005568027496338,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003105407953262329,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010383360385894775,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003101248025894165,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001078271985054016,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003122944116592407,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031177918910980226,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009533439874649048,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031166720390319825,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009799680113792418,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003112544059753418,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009226239919662476,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003113312005996704,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009062399864196777,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003110016107559204,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000936959981918335,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031134719848632812,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009308159947395325,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.051090815632371236,
+        "download_bytes": 0,
+        "exposed_seconds": 0.01397248001967091,
+        "layers": [
+          {
+            "copy_seconds": 0.003591359941987321,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003230463981628418,
+            "download_bytes": 0,
+            "exposed_seconds": 4.0959999896585945e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003406559944152832,
+            "download_bytes": 0,
+            "exposed_seconds": 0.00032972800731658934,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032412159442901612,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013772799968719482,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032432959079742433,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013199360370635986,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032601919174194338,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012369920015335083,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030994880199432372,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010127359628677368,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031064319610595702,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010383360385894775,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003097887992858887,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001070080041885376,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031238720417022703,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009461759924888611,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031194241046905518,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009441279768943787,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003118079900741577,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009881600141525269,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031144320964813232,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009277439713478088,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003110975980758667,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009154559969902039,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031102399826049803,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000936959981918335,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003116895914077759,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009236479997634888,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.051052735824370754,
+        "download_bytes": 0,
+        "exposed_seconds": 0.013959168037516064,
+        "layers": [
+          {
+            "copy_seconds": 0.003565120000625029,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003220031976699829,
+            "download_bytes": 0,
+            "exposed_seconds": 4.0959999896585945e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003413343906402588,
+            "download_bytes": 0,
+            "exposed_seconds": 0.00032972800731658934,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032366719245910643,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013752319812774657,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003242111921310425,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013178880214691161,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032588798999786377,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012369920015335083,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003097408056259155,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010065920352935792,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031063039302825926,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010383360385894775,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030981121063232424,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001078271985054016,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031244161128997803,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009410560131072998,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003120543956756592,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009523199796676636,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003118623971939087,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009881600141525269,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031134719848632812,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009328640103340149,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031140480041503904,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0008980479836463929,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031112000942230223,
+            "download_bytes": 0,
+            "exposed_seconds": 0.00092876797914505,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00311244797706604,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009297919869422913,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.051125087887863636,
+        "download_bytes": 0,
+        "exposed_seconds": 0.014052352031809276,
+        "layers": [
+          {
+            "copy_seconds": 0.003561920077423565,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032269439697265624,
+            "download_bytes": 0,
+            "exposed_seconds": 4.0959999896585945e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003413856029510498,
+            "download_bytes": 0,
+            "exposed_seconds": 0.00033792001008987427,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00325980806350708,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001405951976776123,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003271039962768555,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013332480192184447,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032736639976501465,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012533760070800781,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003099679946899414,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010127359628677368,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003105600118637085,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010393600463867187,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00309987211227417,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010690560340881347,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031233599185943603,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003118527889251709,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009625599980354309,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031182079315185546,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000971776008605957,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031142079830169677,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031137919425964357,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009072639942169189,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031091840267181395,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009451519846916199,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031154239177703857,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009308159947395325,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.05104668817773927,
+        "download_bytes": 0,
+        "exposed_seconds": 0.013991935959318655,
+        "layers": [
+          {
+            "copy_seconds": 0.0035665279413806274,
+            "download_bytes": 0,
+            "exposed_seconds": 2.0479999948292972e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003203104019165039,
+            "download_bytes": 0,
+            "exposed_seconds": 3.0720001086592673e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0034069759845733643,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0003389439880847931,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032363519668579103,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013772799968719482,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032479679584503174,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013178880214691161,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003260672092437744,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012369920015335083,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003097248077392578,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010117119550704956,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031051840782165526,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010383360385894775,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003102112054824829,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001078271985054016,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003127583980560303,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031229760646820067,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009533439874649048,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00312006402015686,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009799680113792418,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003112832069396973,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009318400025367737,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003112735986709595,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009062399864196777,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031102399826049803,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009461759924888611,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031141119003295897,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009308159947395325,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.05102432022709399,
+        "download_bytes": 0,
+        "exposed_seconds": 0.013979647984844632,
+        "layers": [
+          {
+            "copy_seconds": 0.0035627840580418706,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032065598964691163,
+            "download_bytes": 0,
+            "exposed_seconds": 4.0959999896585945e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0034105598926544188,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0003389439880847931,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032327361106872557,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001368064045906067,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032348480224609374,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013096959590911865,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032612481117248533,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001227776050567627,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030958080291748047,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001013759970664978,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031090240478515623,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010373120307922363,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003100192070007324,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001078271985054016,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031221120357513427,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000936959981918335,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031190080642700194,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009615359902381897,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031167359352111818,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009789440035820008,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031143040657043456,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009308159947395325,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031127679347991944,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009082880020141601,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00311027193069458,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009451519846916199,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031153600215911865,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.05105407968244981,
+        "download_bytes": 0,
+        "exposed_seconds": 0.013982719956547953,
+        "layers": [
+          {
+            "copy_seconds": 0.003568607956985943,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032178239822387694,
+            "download_bytes": 0,
+            "exposed_seconds": 3.0720001086592673e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003405280113220215,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0003389439880847931,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003252095937728882,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013895679712295531,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032405440807342528,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013004800081253052,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003250943899154663,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012349439859390258,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003098207950592041,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010117119550704956,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003106368064880371,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010383360385894775,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030998079776763917,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001070080041885376,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003125855922698975,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031171519756317137,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009625599980354309,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003119103908538818,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009871360063552857,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031160640716552733,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009308159947395325,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031109440326690676,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009062399864196777,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031092479228973387,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000936959981918335,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031160318851470945,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009318400025367737,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.05110070410452317,
+        "download_bytes": 0,
+        "exposed_seconds": 0.014002175896079279,
+        "layers": [
+          {
+            "copy_seconds": 0.003558880002121441,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032452800273895265,
+            "download_bytes": 0,
+            "exposed_seconds": 3.0720001086592673e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0034103360176086428,
+            "download_bytes": 0,
+            "exposed_seconds": 0.00034508800506591797,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003235584020614624,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013690880537033082,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00324783992767334,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013271039724349976,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032776000499725342,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012523519992828369,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003099423885345459,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010147839784622192,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031069440841674806,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010291199684143066,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003098176002502441,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001078271985054016,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031276159286499025,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009472000002861023,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031209280490875242,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009441279768943787,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031182401180267333,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009789440035820008,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003116447925567627,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000936959981918335,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003114176034927368,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009052159786224366,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003109600067138672,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031136319637298585,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009308159947395325,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.051061344173504046,
+        "download_bytes": 0,
+        "exposed_seconds": 0.014009344032267109,
+        "layers": [
+          {
+            "copy_seconds": 0.003564224031521007,
+            "download_bytes": 0,
+            "exposed_seconds": 2.0479999948292972e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032180800437927246,
+            "download_bytes": 0,
+            "exposed_seconds": 3.0720001086592673e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0034098880290985107,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000347135990858078,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003226975917816162,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013690880537033082,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003248703956604004,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013271039724349976,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032744319438934326,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012267520427703858,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030974719524383544,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010219520330429076,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003106175899505615,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010414079427719116,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003101344108581543,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001070080041885376,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003125760078430176,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009400320053100586,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031172800064086913,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009533439874649048,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00311843204498291,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009789440035820008,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031134400367736816,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009379839897155762,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003114527940750122,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009144319891929626,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031098880767822267,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009461759924888611,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003114720106124878,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009297919869422913,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.051054111703531815,
+        "download_bytes": 0,
+        "exposed_seconds": 0.013964287957292982,
+        "layers": [
+          {
+            "copy_seconds": 0.003571135982172564,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003215872049331665,
+            "download_bytes": 0,
+            "exposed_seconds": 4.0959999896585945e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003411007881164551,
+            "download_bytes": 0,
+            "exposed_seconds": 0.00033689600229263304,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003243839979171753,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001358847975730896,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003238784074783325,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013086719512939453,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003254591941833496,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012267520427703858,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030975360870361328,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001013759970664978,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031058239936828614,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010383360385894775,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031005759239196777,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010690560340881347,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031249918937683104,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009461759924888611,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00312009596824646,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009615359902381897,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003119328022003174,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009871360063552857,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003112287998199463,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009308159947395325,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003114975929260254,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009062399864196777,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003109760046005249,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009451519846916199,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003113503932952881,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009297919869422913,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.05108825614745729,
+        "download_bytes": 0,
+        "exposed_seconds": 0.014000127999694087,
+        "layers": [
+          {
+            "copy_seconds": 0.00356406405265443,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032165119647979737,
+            "download_bytes": 0,
+            "exposed_seconds": 3.0720001086592673e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0034083840847015383,
+            "download_bytes": 0,
+            "exposed_seconds": 0.00033792001008987427,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032562880516052244,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001393664002418518,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003252671957015991,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013178880214691161,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032742719650268553,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012523519992828369,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003099679946899414,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010035200119018555,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003103679895401001,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010301439762115479,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031000959873199465,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010690560340881347,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031266560554504396,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009379839897155762,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003118783950805664,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009533439874649048,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031179521083831785,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009881600141525269,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031132800579071044,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031119039058685304,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0008970239758491516,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003109312057495117,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009359359741210937,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003114720106124878,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009400320053100586,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.051039327951846646,
+        "download_bytes": 0,
+        "exposed_seconds": 0.01396838399639819,
+        "layers": [
+          {
+            "copy_seconds": 0.003566527935443446,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032057919502258302,
+            "download_bytes": 0,
+            "exposed_seconds": 3.0720001086592673e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00340665602684021,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0003461120128631592,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003242016077041626,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013783040046691894,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032430078983306885,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013199360370635986,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.00325763201713562,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001227776050567627,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030963199138641356,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010117119550704956,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003106911897659302,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010414079427719116,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003099168062210083,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010690560340881347,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003125407934188843,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009308159947395325,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031184000968933106,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000954367995262146,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031159040927886965,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009789440035820008,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003113152027130127,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003115583896636963,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009072639942169189,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003113152027130127,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009297919869422913,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003113696098327637,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009297919869422913,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.05108227204682771,
+        "download_bytes": 1146880,
+        "exposed_seconds": 0.013996032109600494,
+        "layers": [
+          {
+            "copy_seconds": 0.00356927990319673,
+            "download_bytes": 71680,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003216799974441528,
+            "download_bytes": 71680,
+            "exposed_seconds": 4.0959999896585945e-06,
+            "layer": 1,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0034174399375915526,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0003389439880847931,
+            "layer": 2,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032497599124908447,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.001385472059249878,
+            "layer": 3,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003260096073150635,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0013332480192184447,
+            "layer": 4,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0032542080879211428,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0012267520427703858,
+            "layer": 5,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030988800525665284,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0010209280252456666,
+            "layer": 6,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031092801094055175,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0010209280252456666,
+            "layer": 7,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0030984001159667968,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.001078271985054016,
+            "layer": 8,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031252479553222656,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 9,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031185600757598878,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0009625599980354309,
+            "layer": 10,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031163198947906493,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0009799680113792418,
+            "layer": 11,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031121280193328856,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0009226239919662476,
+            "layer": 12,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003112159967422485,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0009052159786224366,
+            "layer": 13,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.0031093440055847167,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0009379839897155762,
+            "layer": 14,
+            "upload_bytes": 77916160
+          },
+          {
+            "copy_seconds": 0.003114367961883545,
+            "download_bytes": 71680,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 15,
+            "upload_bytes": 77916160
+          }
+        ],
+        "upload_bytes": 1246658560
+      },
+      {
+        "copy_seconds": 0.051242335781455046,
+        "download_bytes": 0,
+        "exposed_seconds": 0.014027775963884779,
+        "layers": [
+          {
+            "copy_seconds": 0.0036922879070043564,
+            "download_bytes": 0,
+            "exposed_seconds": 1.0239999974146486e-06,
+            "layer": 0,
+            "upload_bytes": 78059520
+          },
+          {
+            "copy_seconds": 0.00320963191986084,
+            "download_bytes": 0,
+            "exposed_seconds": 4.0959999896585945e-06,
+            "layer": 1,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.0034108800888061524,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0003461120128631592,
+            "layer": 2,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.0032546238899230956,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001388543963432312,
+            "layer": 3,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.00325711989402771,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0013332480192184447,
+            "layer": 4,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.0032733759880065917,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0012369920015335083,
+            "layer": 5,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.003100895881652832,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010147839784622192,
+            "layer": 6,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.003107680082321167,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0010383360385894775,
+            "layer": 7,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.0031036479473114014,
+            "download_bytes": 0,
+            "exposed_seconds": 0.001078271985054016,
+            "layer": 8,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.003127135992050171,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009390079975128174,
+            "layer": 9,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.0031238720417022703,
+            "download_bytes": 0,
+            "exposed_seconds": 0.000954367995262146,
+            "layer": 10,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.0031198079586029054,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009881600141525269,
+            "layer": 11,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.0031164159774780273,
+            "download_bytes": 0,
+            "exposed_seconds": 0.00092876797914505,
+            "layer": 12,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.0031150081157684324,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009052159786224366,
+            "layer": 13,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.0031121280193328856,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009472000002861023,
+            "layer": 14,
+            "upload_bytes": 77987840
+          },
+          {
+            "copy_seconds": 0.0031178240776062014,
+            "download_bytes": 0,
+            "exposed_seconds": 0.0009236479997634888,
+            "layer": 15,
+            "upload_bytes": 77987840
+          }
+        ],
+        "upload_bytes": 1247877120
+      }
+    ],
+    "streamed_pages": 1088,
+    "timing": {
+      "lost": 1,
+      "samples": 21487
+    },
+    "upload_bytes": 135237795840,
+    "window_bytes": 3251404800
+  },
+  "target": {
+    "architecture": "Qwen3_5ForCausalLM",
+    "artifact_bytes_read": 12495124010,
+    "cuda_graph_requested": true,
+    "device": 0,
+    "devices": [],
+    "host_to_device_bytes": 12481723392,
+    "invariant_attention": true,
+    "kv_cache": "rotated-lloyd4g64-v4g32",
+    "kv_capacity": 262144,
+    "kv_capacity_max_page_groups": 65536,
+    "kv_capacity_mode": "auto",
+    "kv_capacity_page_groups": 47894,
+    "kv_stream": true,
+    "kv_stream_report": true,
+    "load_seconds": 25.374460542,
+    "max_context": 262144,
+    "max_new": 64,
+    "model_name": "qwen3.8-27b",
+    "model_path": "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+    "pinned_weight_bytes": 0,
+    "prefill_chunk": 256,
+    "upload_seconds": 23.009630267,
+    "weight_formats": [
+      "bf16",
+      "fp32",
+      "gguf_iq1_m",
+      "gguf_iq2_s",
+      "gguf_iq2_xs",
+      "gguf_iq2_xxs",
+      "gguf_iq3_s",
+      "gguf_iq3_xxs",
+      "gguf_iq4_xs",
+      "gguf_q2_k",
+      "gguf_q4_k",
+      "gguf_q6_k",
+      "int32"
+    ]
+  },
+  "timings": {
+    "decode_seconds": 0.9130198009999999,
+    "decode_tokens_per_second": 69.00178937083096,
+    "model_seconds": 196.54474340300004,
+    "overall_tokens_per_second": 0.3256256000129847,
+    "prefill_seconds": 195.63172360200005,
+    "prefill_tokens_per_second": 1282.7469664916578,
+    "prepare_seconds": 0.08455106,
+    "total_seconds": 196.641215193,
+    "vision_seconds": 0.0
+  }
+}

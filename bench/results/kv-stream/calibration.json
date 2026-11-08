@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "kind": "kv-stream-prompt-calibration",
+  "model_sha256": "29e54467ca0ddae7e9aac04439f72ad20dbf6dc8fb5e84833b41ec7de9c46750",
+  "recipe_sha256": "04726b96e643d1b72461495d69563a89e5ebadad7f5f26ce37341f89dab0d939",
+  "sentence": "NInfer keeps every KV page of the context in pinned host memory and streams the newest window onto the device, so a round copies only the share the window lacks.",
+  "tail": "\n\nContinue this list of positive integers, one number per line, from 21 up to 800. Each line holds one number and nothing else: no commentary, no summary, and no line before 800.\n",
+  "points": [
+    {
+      "sentences": 100,
+      "tokens": 3500
+    },
+    {
+      "sentences": 200,
+      "tokens": 6900
+    }
+  ],
+  "fit": {
+    "tokens_per_sentence": 34.0,
+    "tail_tokens": 100.0
+  },
+  "measured_utc": "2026-11-08T19:52:44Z",
+  "argv": [
+    "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/build-sm89/apps/ninfer",
+    "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+    "--messages",
+    "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T195152Z-calibrate-a22e86c2/sentences-200/prompt.json",
+    "--max-context",
+    "16384",
+    "--kv-capacity",
+    "auto",
+    "--kv-dtype",
+    "rk4v4",
+    "--gdn-state-fp16",
+    "--prefill-chunk",
+    "256",
+    "--greedy",
+    "--seed",
+    "42",
+    "--invariant-attention",
+    "--spec",
+    "none",
+    "--max-new",
+    "1",
+    "--device",
+    "0",
+    "--report-json",
+    "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T195152Z-calibrate-a22e86c2/sentences-200/report.json"
+  ]
+}

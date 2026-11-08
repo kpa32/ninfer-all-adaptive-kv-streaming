@@ -1,0 +1,1261 @@
+{
+  "decode_rounds": {
+    "count": 129,
+    "sample_cap": 2048,
+    "samples": [
+      {
+        "seconds": 0.027325163000000003,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.024552455,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024539836000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024505056,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024499816,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024489685,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024470605000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024496795000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024465336,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024470765000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024476876,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024475886000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024472796,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024491645000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024468446,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024490145,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024465985000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024485566,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024475456000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024474126000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024486575,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024485416000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024494585000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024456226,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024473025000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024470106000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024479396,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024473735,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024474206000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024480136000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024491725000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024488156,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024490305,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024473056,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024491486,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024497276000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024473426000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024489637,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024471375,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024479755000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024488946,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024495556,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024471576000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024476376,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024474247,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024481206000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024478985,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024495646000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024463606000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024483817,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024487415000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024468067000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024490266,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024466855000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024487856000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024478146000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024483447000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024481955000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024484917000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024475786000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024479306000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024495195,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024522806,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024494657000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024480806,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024481826,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024494066000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024490226,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024484696,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024503636000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024487885,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024482416,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024483216000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024489876,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024490496,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024493827000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024479437000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024501085000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024480506000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024486767000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024488166000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024498416000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024487937,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024512877000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024475586,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024482126,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024496216,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024490686,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024481487000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024478786000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024508267,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024481926,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024498027000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024476125,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024498586000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024481537,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024489426,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024474306,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024485717,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024503217,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024500226,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024490366000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024489256,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024494636,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024476307000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024493416,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024488497,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024501496,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024475347,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024502606000000003,
+        "tokens": 3
+      },
+      {
+        "seconds": 0.024475456000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024489447,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024478006,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024493316,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024481247,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024487747,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024488397000000002,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024491846,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024480387000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024485667000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024490397,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024480387000000003,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024494867,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024498267,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024497417,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024502926,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024498576,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024442787,
+        "tokens": 4
+      },
+      {
+        "seconds": 0.024294027000000003,
+        "tokens": 1
+      }
+    ]
+  },
+  "devices": [
+    {
+      "compute_capability": "8.9",
+      "driver_version": "13.4",
+      "index": 0,
+      "memory_bytes": 16796745728,
+      "multiprocessors": 80,
+      "name": "NVIDIA GeForce RTX 4080 SUPER"
+    }
+  ],
+  "generation": {
+    "finish_reason": "output-limit",
+    "token_ids": [
+      17,
+      16,
+      198,
+      17,
+      17,
+      198,
+      17,
+      18,
+      198,
+      17,
+      19,
+      198,
+      17,
+      20,
+      198,
+      17,
+      21,
+      198,
+      17,
+      22,
+      198,
+      17,
+      23,
+      198,
+      17,
+      24,
+      198,
+      18,
+      15,
+      198,
+      18,
+      16,
+      198,
+      18,
+      17,
+      198,
+      18,
+      18,
+      198,
+      18,
+      19,
+      198,
+      18,
+      20,
+      198,
+      18,
+      21,
+      198,
+      18,
+      22,
+      198,
+      18,
+      23,
+      198,
+      18,
+      24,
+      198,
+      19,
+      15,
+      198,
+      19,
+      16,
+      198,
+      19,
+      17,
+      198,
+      19,
+      18,
+      198,
+      19,
+      19,
+      198,
+      19,
+      20,
+      198,
+      19,
+      21,
+      198,
+      19,
+      22,
+      198,
+      19,
+      23,
+      198,
+      19,
+      24,
+      198,
+      20,
+      15,
+      198,
+      20,
+      16,
+      198,
+      20,
+      17,
+      198,
+      20,
+      18,
+      198,
+      20,
+      19,
+      198,
+      20,
+      20,
+      198,
+      20,
+      21,
+      198,
+      20,
+      22,
+      198,
+      20,
+      23,
+      198,
+      20,
+      24,
+      198,
+      21,
+      15,
+      198,
+      21,
+      16,
+      198,
+      21,
+      17,
+      198,
+      21,
+      18,
+      198,
+      21,
+      19,
+      198,
+      21,
+      20,
+      198,
+      21,
+      21,
+      198,
+      21,
+      22,
+      198,
+      21,
+      23,
+      198,
+      21,
+      24,
+      198,
+      22,
+      15,
+      198,
+      22,
+      16,
+      198,
+      22,
+      17,
+      198,
+      22,
+      18,
+      198,
+      22,
+      19,
+      198,
+      22,
+      20,
+      198,
+      22,
+      21,
+      198,
+      22,
+      22,
+      198,
+      22,
+      23,
+      198,
+      22,
+      24,
+      198,
+      23,
+      15,
+      198,
+      23,
+      16,
+      198,
+      23,
+      17,
+      198,
+      23,
+      18,
+      198,
+      23,
+      19,
+      198,
+      23,
+      20,
+      198,
+      23,
+      21,
+      198,
+      23,
+      22,
+      198,
+      23,
+      23,
+      198,
+      23,
+      24,
+      198,
+      24,
+      15,
+      198,
+      24,
+      16,
+      198,
+      24,
+      17,
+      198,
+      24,
+      18,
+      198,
+      24,
+      19,
+      198,
+      24,
+      20,
+      198,
+      24,
+      21,
+      198,
+      24,
+      22,
+      198,
+      24,
+      23,
+      198,
+      24,
+      24,
+      198,
+      16,
+      15,
+      15,
+      198,
+      16,
+      15,
+      16,
+      198,
+      16,
+      15,
+      17,
+      198,
+      16,
+      15,
+      18,
+      198,
+      16,
+      15,
+      19,
+      198,
+      16,
+      15,
+      20,
+      198,
+      16,
+      15,
+      21,
+      198,
+      16,
+      15,
+      22,
+      198,
+      16,
+      15,
+      23,
+      198,
+      16,
+      15,
+      24,
+      198,
+      16,
+      16,
+      15,
+      198,
+      16,
+      16,
+      16,
+      198,
+      16,
+      16,
+      17,
+      198,
+      16,
+      16,
+      18,
+      198,
+      16,
+      16,
+      19,
+      198,
+      16,
+      16,
+      20,
+      198,
+      16,
+      16,
+      21,
+      198,
+      16,
+      16,
+      22,
+      198,
+      16,
+      16,
+      23,
+      198,
+      16,
+      16,
+      24,
+      198,
+      16,
+      17,
+      15,
+      198,
+      16,
+      17,
+      16,
+      198,
+      16,
+      17,
+      17,
+      198,
+      16,
+      17,
+      18,
+      198,
+      16,
+      17,
+      19,
+      198,
+      16,
+      17,
+      20,
+      198,
+      16,
+      17,
+      21,
+      198,
+      16,
+      17,
+      22,
+      198,
+      16,
+      17,
+      23,
+      198,
+      16,
+      17,
+      24,
+      198,
+      16,
+      18,
+      15,
+      198,
+      16,
+      18,
+      16,
+      198,
+      16,
+      18,
+      17,
+      198,
+      16,
+      18,
+      18,
+      198,
+      16,
+      18,
+      19,
+      198,
+      16,
+      18,
+      20,
+      198,
+      16,
+      18,
+      21,
+      198,
+      16,
+      18,
+      22,
+      198,
+      16,
+      18,
+      23,
+      198,
+      16,
+      18,
+      24,
+      198,
+      16,
+      19,
+      15,
+      198,
+      16,
+      19,
+      16,
+      198,
+      16,
+      19,
+      17,
+      198,
+      16,
+      19,
+      18,
+      198,
+      16,
+      19,
+      19,
+      198,
+      16,
+      19,
+      20,
+      198,
+      16,
+      19,
+      21,
+      198,
+      16,
+      19,
+      22,
+      198,
+      16,
+      19,
+      23,
+      198,
+      16,
+      19,
+      24,
+      198,
+      16,
+      20,
+      15,
+      198,
+      16,
+      20,
+      16,
+      198,
+      16,
+      20,
+      17,
+      198,
+      16,
+      20,
+      18,
+      198,
+      16,
+      20,
+      19,
+      198,
+      16,
+      20,
+      20,
+      198,
+      16,
+      20,
+      21,
+      198,
+      16,
+      20,
+      22,
+      198,
+      16,
+      20,
+      23,
+      198,
+      16,
+      20,
+      24,
+      198,
+      16,
+      21,
+      15,
+      198,
+      16,
+      21,
+      16,
+      198,
+      16,
+      21,
+      17,
+      198,
+      16,
+      21,
+      18,
+      198,
+      16,
+      21,
+      19,
+      198,
+      16,
+      21,
+      20,
+      198,
+      16,
+      21,
+      21,
+      198,
+      16,
+      21,
+      22,
+      198,
+      16,
+      21,
+      23
+    ],
+    "tokens": 512
+  },
+  "kind": "ninfer-run-report",
+  "kv_transfer": {
+    "backend": {
+      "d2d_bytes": 0,
+      "d2d_pages": 0,
+      "d2h_bytes": 0,
+      "d2h_pages": 0,
+      "h2d_bytes": 0,
+      "h2d_pages": 0
+    },
+    "main": {
+      "d2d_bytes": 0,
+      "d2d_pages": 0,
+      "d2d_seconds": 0.0,
+      "d2h_bytes": 0,
+      "d2h_pages": 0,
+      "d2h_seconds": 0.0,
+      "h2d_bytes": 0,
+      "h2d_pages": 0,
+      "h2d_seconds": 0.0
+    },
+    "state": {
+      "d2d_bytes": 0,
+      "d2d_seconds": 0.0,
+      "d2h_bytes": 0,
+      "d2h_seconds": 0.0,
+      "h2d_bytes": 0,
+      "h2d_seconds": 0.0
+    }
+  },
+  "memory": {
+    "available_after_startup_bytes": 3442999296,
+    "available_after_weights_bytes": 4032299008,
+    "cuda_graph_allowance_bytes": 247463936,
+    "cuda_graph_measured_bytes": 37748736,
+    "devices": [],
+    "expert_cache_bytes": 0,
+    "host_cache_budget_bytes": 0,
+    "host_kv_capacity_bytes": 0,
+    "host_kv_occupied_bytes": 0,
+    "host_kv_page_group_bytes": 1146880,
+    "host_state_capacity_slots": 0,
+    "host_state_image_bytes": 78456832,
+    "host_state_occupied_slots": 0,
+    "kv_cache": "rotated-lloyd4g64-v4g32",
+    "kv_capacity": 16384,
+    "kv_capacity_headroom_bytes": 1073741824,
+    "kv_capacity_increment_bytes": 0,
+    "kv_capacity_max_page_groups": 256,
+    "kv_capacity_mode": "auto",
+    "kv_capacity_page_groups": 256,
+    "kv_payload_bytes": 312023040,
+    "max_context": 16384,
+    "minimum_runtime_reservation_bytes": 797624320,
+    "planned_slack_bytes": 3234674688,
+    "runtime_reservation_bytes": 797624320,
+    "sequence": {
+      "capacity_bytes": 441779968,
+      "peak_used_bytes": 441779968,
+      "used_bytes": 441779968
+    },
+    "weights": {
+      "capacity_bytes": 12481729536,
+      "peak_used_bytes": 12481729536,
+      "used_bytes": 12481729536
+    },
+    "workspace": {
+      "capacity_bytes": 108380416,
+      "peak_used_bytes": 105173248,
+      "used_bytes": 0
+    },
+    "workspace_logical_peak_bytes": 105173248
+  },
+  "prompt": {
+    "reused_tokens": 0,
+    "tokens": 7948
+  },
+  "run": {
+    "argv": [
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/build-sm89/apps/ninfer",
+      "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+      "--messages",
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T195400Z-bench-73c3ae14/prompt-shape/prompt.json",
+      "--max-context",
+      "16384",
+      "--kv-capacity",
+      "auto",
+      "--kv-dtype",
+      "rk4v4",
+      "--gdn-state-fp16",
+      "--prefill-chunk",
+      "256",
+      "--greedy",
+      "--seed",
+      "42",
+      "--invariant-attention",
+      "--spec",
+      "mtp",
+      "--draft-tokens",
+      "3",
+      "--no-thinking",
+      "--max-new",
+      "512",
+      "--device",
+      "0",
+      "--print-token-ids",
+      "--report-json",
+      "/home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming/bench/results/kv-stream/runs/20261108T195400Z-bench-73c3ae14/prompt-shape/resident/rep-01/report.json"
+    ],
+    "build_id": "cf90eaaf",
+    "finished_utc": "2026-11-08T19:54:41Z",
+    "started_utc": "2026-11-08T19:54:09Z",
+    "version": "untagged",
+    "wall_seconds": 31.961719684
+  },
+  "sampling": {
+    "frequency_penalty": 0.0,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "seed": 42,
+    "temperature": 0.0,
+    "top_k": 20,
+    "top_p": 0.800000011920929
+  },
+  "schema": 1,
+  "speculative": {
+    "acceptance_length": 3.984375,
+    "acceptance_rate": 0.9947916666666666,
+    "accepted_per_position": [
+      128,
+      128,
+      126,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "accepted_tokens": 382,
+    "adaptive": false,
+    "backend": "mtp",
+    "draft_window": 3,
+    "drafted_tokens": 384,
+    "enabled": true,
+    "fallback_steps": 1,
+    "rounds": 128,
+    "rounds_per_window": [],
+    "window_transitions": 0
+  },
+  "stream": {
+    "enabled": false
+  },
+  "target": {
+    "architecture": "Qwen3_5ForCausalLM",
+    "artifact_bytes_read": 12495124010,
+    "cuda_graph_requested": true,
+    "device": 0,
+    "devices": [],
+    "host_to_device_bytes": 12481723392,
+    "invariant_attention": true,
+    "kv_cache": "rotated-lloyd4g64-v4g32",
+    "kv_capacity": 16384,
+    "kv_capacity_max_page_groups": 256,
+    "kv_capacity_mode": "auto",
+    "kv_capacity_page_groups": 256,
+    "kv_stream": false,
+    "kv_stream_report": false,
+    "load_seconds": 25.137487987,
+    "max_context": 16384,
+    "max_new": 512,
+    "model_name": "qwen3.8-27b",
+    "model_path": "/home/kpa/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer",
+    "pinned_weight_bytes": 0,
+    "prefill_chunk": 256,
+    "upload_seconds": 23.01537961,
+    "weight_formats": [
+      "bf16",
+      "fp32",
+      "gguf_iq1_m",
+      "gguf_iq2_s",
+      "gguf_iq2_xs",
+      "gguf_iq2_xxs",
+      "gguf_iq3_s",
+      "gguf_iq3_xxs",
+      "gguf_iq4_xs",
+      "gguf_q2_k",
+      "gguf_q4_k",
+      "gguf_q6_k",
+      "int32"
+    ]
+  },
+  "timings": {
+    "decode_seconds": 3.156773191000001,
+    "decode_tokens_per_second": 161.87415727454453,
+    "model_seconds": 6.512168335000002,
+    "overall_tokens_per_second": 78.6220462465978,
+    "prefill_seconds": 3.355395144000001,
+    "prefill_tokens_per_second": 2368.7225077536195,
+    "prepare_seconds": 0.003490718,
+    "total_seconds": 6.522613951,
+    "vision_seconds": 0.0
+  }
+}

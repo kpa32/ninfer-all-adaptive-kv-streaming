@@ -164,6 +164,13 @@ public:
     // residual after the embedding and after each write to it (ops::steer_residual).
     void set_steering(const SteeringView* steering) noexcept { steering_ = steering; }
 
+    // A streaming text cache: the space whose per-layer pages stream, and the stream that carries
+    // them. Null when every page is resident, which is every configuration but --kv-stream.
+    void set_kv_stream(StreamedKVSpace* space, cudaStream_t copy) noexcept {
+        kv_stream_space_ = space;
+        kv_stream_copy_  = copy;
+    }
+
     void set_prefill_split_frontier(std::int64_t position) noexcept {
         prefill_split_frontier_ = position;
     }
@@ -278,16 +285,9 @@ private:
     void run_layers(Tensor& x, Phase phase);
     template <class Tap>
     void run_layers(Tensor& x, Phase phase, Tap& tap);
-    // A streaming text cache: the space whose per-layer pages stream, and the stream that carries
-    // them. Null when every page is resident, which is every configuration but --kv-stream.
-    void set_kv_stream(StreamedKVSpace* space, cudaStream_t copy) noexcept {
-        kv_stream_space_ = space;
-        kv_stream_copy_  = copy;
-    }
-
     // Issues one round's per-layer uploads, each ordered against the previous layer's consumption.
-    // A streaming round does not run from a captured graph, so the waits and records below are
-    // ordinary stream ordering.
+    // A streaming round does not run from a captured graph, so its waits and records are ordinary
+    // stream ordering.
     void issue_kv_stream_uploads();
 
     // The layers one stage owns, on the device that stage's context is currently bound to.

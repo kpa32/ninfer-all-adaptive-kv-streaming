@@ -26,6 +26,7 @@
 // TEMPORARY DIAGNOSTIC: print the stack behind every C++ throw, so a failure deep inside a header
 // can be located without rebuilding the tree around it. Removed once the streaming path runs.
 #include <cstdio>
+#include <cstdlib>
 #include <dlfcn.h>
 #include <execinfo.h>
 
@@ -40,6 +41,18 @@ extern "C" [[noreturn]] void __cxa_throw(void* thrown, void* type, void (*destru
     real(thrown, type, destruct);
     __builtin_unreachable();
 }
+
+namespace {
+
+void print_terminate_stack() noexcept {
+    void* frames[40];
+    const int count = backtrace(frames, 40);
+    std::fputs("TERMINATE-STACK\n", stderr);
+    backtrace_symbols_fd(frames, count, fileno(stderr));
+    std::abort();
+}
+
+} // namespace
 
 namespace {
 
@@ -342,6 +355,7 @@ void print_generation_summary(const ninfer::GenerationResult& result,
 } // namespace
 
 int main(int argc, char** argv) {
+    std::set_terminate(print_terminate_stack);
     ninfer::cli::Options cli;
     try {
         cli = ninfer::cli::parse_options(argc, argv);

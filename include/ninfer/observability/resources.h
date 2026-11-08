@@ -172,15 +172,59 @@ struct ExpertResidencyStats {
 // every round; `upload_bytes` is what that traffic came to. `exposed_seconds` counts the time the
 // compute stream spent waiting for those copies, so it is the scheduling headroom the streaming
 // loop has left: a round whose copies the compute path hides shows almost none.
+// One layer's share of one round's streamed traffic: how many pages that layer's block moved
+// and what the link spent on them. `exposed_seconds` is the compute stream's wait for that exact
+// block, so a record can name the layer that stalled instead of only the round's total.
+struct StreamedKvLayerSample {
+    std::uint32_t layer    = 0;
+    std::uint64_t upload_bytes   = 0;
+    std::uint64_t download_bytes = 0;
+    double copy_seconds          = 0.0;
+    double exposed_seconds       = 0.0;
+};
+
+// One decode round of the streaming loop, in order. The space appends one entry per round even
+// when nothing moved, so index `i` here is decode round `i` of RuntimeStats::decode_round_samples.
+struct StreamedKvRoundSample {
+    std::uint64_t upload_bytes   = 0; // host to device: the pages attention will read
+    std::uint64_t download_bytes = 0; // device to host: the pages the window dropped
+    double copy_seconds          = 0.0;
+    double exposed_seconds       = 0.0;
+    // The layers whose pages moved this round, in layer order; empty when nothing moved.
+    std::vector<StreamedKvLayerSample> layers;
+};
+
+// What the streamed text cache moved over the whole request: the physical space it holds on both
+// sides of the link, the per-round series of the decode loop, and the prompt-time traffic that has
+// no round of its own.
 struct StreamedKvStats {
     bool enabled                 = false;
-    std::uint32_t resident_pages = 0;
-    std::uint32_t streamed_pages = 0;
+    std::uint32_t resident_pages = 0; // window pages per layer
+    std::uint32_t streamed_pages = 0; // pages outside the window at the last round
     std::uint32_t layers         = 0;
-    std::uint64_t rounds         = 0;
-    std::uint64_t upload_bytes   = 0;
-    double copy_busy_seconds     = 0.0;
-    double exposed_seconds       = 0.0;
+    std::uint32_t ring_depth     = 0;
+    std::uint32_t pages_per_layer = 0; // logical pages of one layer at the planned capacity
+    std::uint64_t page_bytes      = 0; // one page of one layer, every plane
+    std::uint64_t host_bytes      = 0; // pinned authority: every page of every layer
+    std::uint64_t device_bytes    = 0; // pool slots this space owns
+    std::uint64_t window_bytes    = 0; // device bytes the resident windows hold
+    std::uint64_t ring_bytes      = 0; // device_bytes - window_bytes
+    std::uint64_t rounds          = 0;
+    std::uint64_t upload_bytes    = 0;
+    std::uint64_t download_bytes  = 0;
+    double copy_busy_seconds      = 0.0;
+    double exposed_seconds        = 0.0;
+    // Prompt-time traffic: the loop's round accounting starts at the first decode round.
+    std::uint64_t prefill_upload_bytes   = 0;
+    std::uint64_t prefill_download_bytes = 0;
+    double prefill_copy_seconds          = 0.0;
+    double prefill_exposed_seconds       = 0.0;
+    // Copy and wait pairs whose duration was read, and pairs a later copy overwrote before they
+    // could be read. A nonzero `timing_lost` means the times above under-report, never that the
+    // copies were cheaper.
+    std::uint64_t timing_samples = 0;
+    std::uint64_t timing_lost    = 0;
+    std::vector<StreamedKvRoundSample> round_samples;
 };
 
 } // namespace ninfer

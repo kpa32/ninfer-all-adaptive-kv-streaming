@@ -757,7 +757,7 @@ ExpertResidencyStats Program::expert_residency_stats() const {
     return out;
 }
 
-StreamedKvStats Program::streamed_kv_stats() const {
+StreamedKvStats Program::streamed_kv_stats() {
     StreamedKvStats out;
     if (!impl_->text_stream_space) { return out; }
     const StreamedKVSpace::TransferStats stats = impl_->text_stream_space->transfer_stats();
@@ -765,10 +765,26 @@ StreamedKvStats Program::streamed_kv_stats() const {
     out.resident_pages = stats.resident_pages;
     out.streamed_pages = stats.streamed_pages;
     out.layers         = stats.layers;
-    out.rounds         = stats.rounds;
-    out.upload_bytes   = stats.upload_bytes;
+    out.ring_depth     = stats.ring_depth;
+    out.pages_per_layer = stats.pages_per_layer;
+    out.page_bytes      = stats.page_bytes;
+    out.host_bytes      = stats.host_bytes;
+    out.device_bytes    = stats.device_bytes;
+    out.window_bytes    = static_cast<std::uint64_t>(stats.resident_pages) * stats.page_bytes *
+                       stats.layers;
+    out.ring_bytes       = stats.device_bytes - out.window_bytes;
+    out.rounds           = stats.rounds;
+    out.upload_bytes     = stats.upload_bytes;
+    out.download_bytes   = stats.download_bytes;
     out.copy_busy_seconds = stats.copy_busy_seconds;
     out.exposed_seconds   = stats.exposed_seconds;
+    out.prefill_upload_bytes   = stats.prefill_upload_bytes;
+    out.prefill_download_bytes = stats.prefill_download_bytes;
+    out.prefill_copy_seconds     = stats.prefill_copy_seconds;
+    out.prefill_exposed_seconds  = stats.prefill_exposed_seconds;
+    out.timing_samples = stats.timing_samples;
+    out.timing_lost    = stats.timing_lost;
+    out.round_samples  = stats.round_samples;
     return out;
 }
 

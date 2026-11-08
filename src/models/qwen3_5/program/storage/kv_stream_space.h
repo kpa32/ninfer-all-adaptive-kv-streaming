@@ -4,10 +4,12 @@
 #include "core/kv_stream_layout.h"
 #include "core/paged_kv_cache.h"
 #include "models/qwen3_5/state/decoder_state.h"
+#include "ninfer/observability/resources.h"
 
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -104,13 +106,12 @@ public:
                                 kv_stream_ring_extent(split_, layers_);
     }
 
-    // Device bytes one layer's streamed pages move in one upload, and what a round of every layer
-    // moves, for the round's plan and its reporting.
-    [[nodiscard]] std::uint64_t layer_upload_bytes() const noexcept {
-        return static_cast<std::uint64_t>(window_start()) * page_bytes_;
+    // The physical space on each side of the link this cache holds for its lifetime.
+    [[nodiscard]] std::uint64_t host_bytes() const noexcept {
+        return page_bytes_ * pages_per_layer_ * layers_;
     }
-    [[nodiscard]] std::uint64_t uploaded_bytes() const noexcept {
-        return layer_upload_bytes() * layers_;
+    [[nodiscard]] std::uint64_t device_bytes() const noexcept {
+        return page_bytes_ * slot_count_;
     }
 
     // The per-layer events a round orders its copies and its consumers with. `ready(layer)` is
@@ -121,36 +122,71 @@ public:
     [[nodiscard]] cudaEvent_t consumed_event(std::uint32_t layer) const;
     [[nodiscard]] cudaEvent_t dropped_event(std::uint32_t layer) const;
 
+    // One decode round as the link saw it. One entry per started round, oldest first, even when
+    // nothing moved: index `i` is decode round `i` of RuntimeStats::decode_round_samples.
+    using RoundSample = StreamedKvRoundSample;
+
     // What one request's streaming asked of the PCIe link, and what the compute stream waited for.
     // `exposed_seconds` is the number that decides whether scheduling work can still buy anything:
     // it counts the time the compute stream spent on a `wait_ready` whose copy had not landed.
+    // Byte counts are measured page moves, not a formula over the frontier, so a prefetched page
+    // the region already holds is not counted twice.
     struct TransferStats {
-        std::uint32_t resident_pages = 0;
-        std::uint32_t streamed_pages = 0;
-        std::uint32_t layers         = 0;
-        std::uint64_t rounds         = 0;
-        std::uint64_t upload_bytes   = 0;
-        double copy_busy_seconds     = 0.0;
-        double exposed_seconds       = 0.0;
+        std::uint32_t resident_pages  = 0;
+        std::uint32_t streamed_pages  = 0;
+        std::uint32_t layers          = 0;
+        std::uint32_t ring_depth      = 0;
+        std::uint32_t pages_per_layer = 0;
+        std::uint64_t page_bytes      = 0;
+        std::uint64_t host_bytes      = 0;
+        std::uint64_t device_bytes    = 0;
+        std::uint64_t rounds          = 0;
+        std::uint64_t upload_bytes    = 0;
+        std::uint64_t download_bytes  = 0;
+        double copy_busy_seconds      = 0.0;
+        double exposed_seconds        = 0.0;
+        // The prompt's traffic, which has no decode round of its own.
+        std::uint64_t prefill_upload_bytes   = 0;
+        std::uint64_t prefill_download_bytes = 0;
+        double prefill_copy_seconds          = 0.0;
+        double prefill_exposed_seconds       = 0.0;
+        std::uint64_t timing_samples         = 0;
+        std::uint64_t timing_lost            = 0;
+        std::vector<RoundSample> round_samples;
     };
 
-    // Marks the first layer of a decode round: the previous round's copies are complete by now, so
-    // their measured times are collected and the round counts.
+    // Starts a decode round: the previous round's copies are complete by now, so their measured
+    // times are collected and the previous round is closed.
     void begin_round();
 
     // Waits on `layer`'s ready event on the compute stream and measures how much of that wait was
     // real, which is the copy time this round could not hide.
     void wait_ready(std::uint32_t layer, cudaStream_t compute);
 
-    [[nodiscard]] TransferStats transfer_stats() const;
+    // Reads every timing pair the device has finished, closes the round in flight and returns the
+    // series. Safe to call repeatedly: a pair is counted once.
+    [[nodiscard]] TransferStats transfer_stats();
 
 private:
     void publish_slot(std::uint32_t layer, std::uint32_t page, std::int32_t slot,
                       RankStreams streams);
-    // Adds every complete pair of timing events to the accumulators. A pair whose events have not
-    // completed yet is left for a later call; a re-recorded pair overwrites the pending one.
+    // Reads every complete pair of timing events into the round in flight (or the prompt's
+    // accumulators before the first round). A pair whose events are not finished is left pending;
+    // the copy that overwrites it counts as `timing_lost`.
     void collect_timings();
-    void add_timing(cudaEvent_t begin, cudaEvent_t end, std::uint8_t& pending, double& into);
+    [[nodiscard]] std::optional<double> take_timing(cudaEvent_t begin, cudaEvent_t end,
+                                                    std::uint8_t& pending);
+    // Accounts for a pair a re-recorded copy is about to overwrite: its time if the device
+    // finished it, otherwise one lost sample.
+    void close_timing(std::uint8_t& pending, cudaEvent_t begin, cudaEvent_t end,
+                      std::uint32_t layer, bool copy);
+    void add_copy_seconds(std::uint32_t layer, double seconds);
+    void add_exposed_seconds(std::uint32_t layer, double seconds);
+    void reset_round();
+    [[nodiscard]] RoundSample snapshot_round() const;
+    void close_round();
+    void add_upload(std::uint32_t layer, std::uint64_t bytes);
+    void add_download(std::uint32_t layer, std::uint64_t bytes);
 
     PagedKVCache* cache_               = nullptr;
     // The host authority's pages, allocated for this cache alone: the retention arena belongs to a
@@ -177,8 +213,23 @@ private:
     bool report_                 = false;
     std::uint64_t rounds_        = 0;
     std::uint64_t upload_bytes_  = 0;
+    std::uint64_t download_bytes_ = 0;
     double copy_seconds_         = 0.0;
     double exposed_seconds_      = 0.0;
+    std::uint64_t prefill_upload_bytes_   = 0;
+    std::uint64_t prefill_download_bytes_ = 0;
+    double prefill_copy_seconds_          = 0.0;
+    double prefill_exposed_seconds_       = 0.0;
+    std::uint64_t timing_samples_         = 0;
+    std::uint64_t timing_lost_            = 0;
+    // The round in flight. `layers` is pre-sized to `layers_` so a sample costs no allocation;
+    // closing the round keeps only the layers that moved something.
+    RoundSample round_;
+    // One sample per started round, oldest first, capped: a run past the cap keeps exact totals and
+    // `rounds_` still tells how many rounds there were. The cap matches
+    // RuntimeStats::kDecodeRoundSampleCap so index `i` stays the same round in both series.
+    static constexpr std::size_t kRoundSampleCap = 2048;
+    std::vector<RoundSample> round_samples_;
     // The streamed pages one round moved, recorded when the round started: the frontier resets with
     // the request, so the live value is not what a finished request moved.
     std::uint32_t round_streamed_pages_ = 0;

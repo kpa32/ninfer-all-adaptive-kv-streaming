@@ -1063,6 +1063,33 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
                            runtime::kQwen35RopeScaling)
                            .summary;
 
+    // The cards this run uses, as the runtime reports them. A record places a measurement on a
+    // device by what the device is, not by what the command line claimed.
+    {
+        std::vector<int> used = options.devices;
+        if (used.empty()) { used.push_back(options.device); }
+        int driver = 0;
+        (void) cudaDriverGetVersion(&driver);
+        const std::string driver_version =
+            std::to_string(driver / 1000) + "." + std::to_string((driver % 1000) / 10);
+        for (const int index : used) {
+            cudaDeviceProp properties{};
+            if (cudaGetDeviceProperties(&properties, index) != cudaSuccess) {
+                (void) cudaGetLastError();
+                continue;
+            }
+            LoadSummary::DeviceIdentity identity;
+            identity.index             = index;
+            identity.name              = properties.name;
+            identity.driver_version    = driver_version;
+            identity.compute_major     = properties.major;
+            identity.compute_minor     = properties.minor;
+            identity.multiprocessors   = properties.multiProcessorCount;
+            identity.memory_bytes      = properties.totalGlobalMem;
+            summary.devices.push_back(std::move(identity));
+        }
+    }
+
     // Static /v1/models metadata: the model identity and dimension facts come from the loaded
     // model; the parameters, weight bytes, and weights profile are pure functions of the
     // artifact's tensor inventory.

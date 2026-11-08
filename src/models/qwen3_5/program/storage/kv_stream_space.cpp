@@ -80,6 +80,8 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     create_events(dropped_, layers_);
     region_layer_.assign(split_.ring_depth, kNoLayer);
     region_pages_.assign(split_.ring_depth, 0);
+    round_.layers.resize(layers_);
+    for (std::uint32_t layer = 0; layer < layers_; ++layer) { round_.layers[layer].layer = layer; }
     // Timing events keep their times, so they are created without the disable-timing flag, and
     // only when this run asks to be timed.
     if (report_) {
@@ -106,35 +108,138 @@ StreamedKVSpace::~StreamedKVSpace() {
     destroy_events(wait_end_);
 }
 
-void StreamedKVSpace::add_timing(cudaEvent_t begin, cudaEvent_t end, std::uint8_t& pending,
-                                 double& into) {
-    if (!pending) { return; }
+void StreamedKVSpace::add_copy_seconds(std::uint32_t layer, double seconds) {
+    copy_seconds_ += seconds;
+    if (rounds_ == 0) {
+        prefill_copy_seconds_ += seconds;
+        return;
+    }
+    round_.copy_seconds += seconds;
+    round_.layers[layer].copy_seconds += seconds;
+}
+
+void StreamedKVSpace::add_exposed_seconds(std::uint32_t layer, double seconds) {
+    exposed_seconds_ += seconds;
+    if (rounds_ == 0) {
+        prefill_exposed_seconds_ += seconds;
+        return;
+    }
+    round_.exposed_seconds += seconds;
+    round_.layers[layer].exposed_seconds += seconds;
+}
+
+std::optional<double> StreamedKVSpace::take_timing(cudaEvent_t begin, cudaEvent_t end,
+                                                   std::uint8_t& pending) {
+    if (!pending) { return std::nullopt; }
     if (cudaEventQuery(end) != cudaSuccess) {
         // Not finished yet; the query cleared any error it reported, and the pair stays pending.
         (void)cudaGetLastError();
-        return;
+        return std::nullopt;
     }
     float milliseconds = 0.0F;
     if (cudaEventElapsedTime(&milliseconds, begin, end) != cudaSuccess) {
         (void)cudaGetLastError();
+        return std::nullopt;
+    }
+    pending = 0;
+    ++timing_samples_;
+    return static_cast<double>(milliseconds) / 1000.0;
+}
+
+void StreamedKVSpace::close_timing(std::uint8_t& pending, cudaEvent_t begin, cudaEvent_t end,
+                                   std::uint32_t layer, bool copy) {
+    if (!pending) { return; }
+    if (const std::optional<double> seconds = take_timing(begin, end, pending)) {
+        if (copy) {
+            add_copy_seconds(layer, *seconds);
+        } else {
+            add_exposed_seconds(layer, *seconds);
+        }
         return;
     }
-    into += static_cast<double>(milliseconds) / 1000.0;
-    pending = false;
+    // The pair is about to be recorded again, so its duration is gone: count it as lost rather than
+    // silently reporting less copy time than the link carried.
+    pending = 0;
+    ++timing_lost_;
 }
 
 void StreamedKVSpace::collect_timings() {
     for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-        add_timing(copy_begin_[layer], copy_end_[layer], copy_pending_[layer], copy_seconds_);
-        add_timing(wait_begin_[layer], wait_end_[layer], wait_pending_[layer], exposed_seconds_);
+        if (const std::optional<double> seconds =
+                take_timing(copy_begin_[layer], copy_end_[layer], copy_pending_[layer])) {
+            add_copy_seconds(layer, *seconds);
+        }
+        if (const std::optional<double> seconds =
+                take_timing(wait_begin_[layer], wait_end_[layer], wait_pending_[layer])) {
+            add_exposed_seconds(layer, *seconds);
+        }
     }
 }
 
+void StreamedKVSpace::reset_round() {
+    round_.upload_bytes   = 0;
+    round_.download_bytes = 0;
+    round_.copy_seconds   = 0.0;
+    round_.exposed_seconds = 0.0;
+    for (StreamedKvLayerSample& sample : round_.layers) {
+        sample.upload_bytes   = 0;
+        sample.download_bytes = 0;
+        sample.copy_seconds   = 0.0;
+        sample.exposed_seconds = 0.0;
+    }
+}
+
+StreamedKVSpace::RoundSample StreamedKVSpace::snapshot_round() const {
+    RoundSample closed;
+    closed.upload_bytes    = round_.upload_bytes;
+    closed.download_bytes  = round_.download_bytes;
+    closed.copy_seconds    = round_.copy_seconds;
+    closed.exposed_seconds = round_.exposed_seconds;
+    for (const StreamedKvLayerSample& sample : round_.layers) {
+        if (sample.upload_bytes != 0 || sample.download_bytes != 0 || sample.copy_seconds != 0.0 ||
+            sample.exposed_seconds != 0.0) {
+            closed.layers.push_back(sample);
+        }
+    }
+    return closed;
+}
+
+void StreamedKVSpace::close_round() {
+    if (round_samples_.size() < kRoundSampleCap) { round_samples_.push_back(snapshot_round()); }
+    reset_round();
+}
+
+void StreamedKVSpace::add_upload(std::uint32_t layer, std::uint64_t bytes) {
+    upload_bytes_ += bytes;
+    if (rounds_ == 0) {
+        prefill_upload_bytes_ += bytes;
+        return;
+    }
+    if (!report_) { return; }
+    round_.upload_bytes += bytes;
+    round_.layers[layer].upload_bytes += bytes;
+}
+
+void StreamedKVSpace::add_download(std::uint32_t layer, std::uint64_t bytes) {
+    download_bytes_ += bytes;
+    if (rounds_ == 0) {
+        prefill_download_bytes_ += bytes;
+        return;
+    }
+    if (!report_) { return; }
+    round_.download_bytes += bytes;
+    round_.layers[layer].download_bytes += bytes;
+}
+
 void StreamedKVSpace::begin_round() {
+    // The per-round series is only built when the run asked to be timed: a normal run pays nothing
+    // for it beyond the counters above.
+    if (report_) {
+        collect_timings();
+        if (rounds_ != 0) { close_round(); }
+    }
     ++rounds_;
-    upload_bytes_ += uploaded_bytes();
     round_streamed_pages_ = window_start();
-    if (report_) { collect_timings(); }
 }
 
 void StreamedKVSpace::wait_ready(std::uint32_t layer, cudaStream_t compute) {
@@ -146,22 +251,46 @@ void StreamedKVSpace::wait_ready(std::uint32_t layer, cudaStream_t compute) {
         CUDA_CHECK(cudaStreamWaitEvent(compute, ready_[layer], 0));
         return;
     }
+    // The wait pair the device had not finished by this round is overwritten here; if it completed
+    // in the meantime its time is taken now, otherwise it is counted as lost.
+    close_timing(wait_pending_[layer], wait_begin_[layer], wait_end_[layer], layer, false);
     CUDA_CHECK(cudaEventRecord(wait_begin_[layer], compute));
     CUDA_CHECK(cudaStreamWaitEvent(compute, ready_[layer], 0));
     CUDA_CHECK(cudaEventRecord(wait_end_[layer], compute));
     wait_pending_[layer] = 1;
 }
 
-StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() const {
-    return TransferStats{
-        .resident_pages      = split_.resident_pages,
-        .streamed_pages      = round_streamed_pages_,
-        .layers              = layers_,
-        .rounds              = rounds_,
-        .upload_bytes        = upload_bytes_,
-        .copy_busy_seconds   = copy_seconds_,
-        .exposed_seconds     = exposed_seconds_,
-    };
+StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
+    if (report_) { collect_timings(); }
+    TransferStats out;
+    out.resident_pages  = split_.resident_pages;
+    out.streamed_pages  = round_streamed_pages_;
+    out.layers          = layers_;
+    out.ring_depth      = split_.ring_depth;
+    out.pages_per_layer = pages_per_layer_;
+    out.page_bytes      = page_bytes_;
+    out.host_bytes      = host_bytes();
+    out.device_bytes    = device_bytes();
+    out.rounds          = rounds_;
+    out.upload_bytes    = upload_bytes_;
+    out.download_bytes  = download_bytes_;
+    out.copy_busy_seconds    = copy_seconds_;
+    out.exposed_seconds      = exposed_seconds_;
+    out.prefill_upload_bytes   = prefill_upload_bytes_;
+    out.prefill_download_bytes = prefill_download_bytes_;
+    out.prefill_copy_seconds     = prefill_copy_seconds_;
+    out.prefill_exposed_seconds  = prefill_exposed_seconds_;
+    out.timing_samples = timing_samples_;
+    out.timing_lost    = timing_lost_;
+    if (report_) {
+        out.round_samples = round_samples_;
+        // The round in flight is returned as a copy, not closed: publication may read this between
+        // rounds, and the next `begin_round` is what pushes it into the series.
+        if (rounds_ != 0 && round_samples_.size() == rounds_ - 1) {
+            out.round_samples.push_back(snapshot_round());
+        }
+    }
+    return out;
 }
 
 HostKVAllocationView StreamedKVSpace::host_pages(std::uint32_t layer) noexcept {
@@ -217,6 +346,7 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
             const std::int32_t dropped_slot = kv_stream_window_slot(layer, dropped, split_);
             cache_->page_pool().copy_to_host_pages(
                 dropped_slot, 1, host_pages(layer).subview(dropped, 1), streams);
+            add_download(layer, page_bytes_);
             publish_slot(layer, dropped, kv_stream_ring_slot(layer, dropped, split_, layers_), streams);
         }
     }
@@ -242,10 +372,11 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (report_) {
         // A prefetched copy was recorded for this layer and never collected: take its time before
         // the pair is recorded again, or the round would report less traffic than it moved.
-        add_timing(copy_begin_[layer], copy_end_[layer], copy_pending_[layer], copy_seconds_);
+        close_timing(copy_pending_[layer], copy_begin_[layer], copy_end_[layer], layer, true);
         CUDA_CHECK(cudaEventRecord(copy_begin_[layer], copy));
     }
     if (count > already) {
+        add_upload(layer, static_cast<std::uint64_t>(count - already) * page_bytes_);
         // The pages `[already, count)` of this layer, into the ring slots they map to; the pool
         // turns the run into one strided transfer per plane. The host copies a round's window
         // dropped are ordered on the compute stream, so the uploads that read them wait first.

@@ -2955,9 +2955,22 @@ private:
         auto pending = instance_.program->decode(
             membership.sequence_span(), membership.budget_span(), &program_call.failed_timing());
         program_call.finish(pending.execution_timing());
-        cumulative_stats_.decode_seconds_total +=
+        const std::uint64_t tokens_before = cumulative_stats_.committed_decode_tokens;
+        const double round_seconds =
             static_cast<double>(pending.execution_timing().elapsed_ns()) * 1e-9;
+        cumulative_stats_.decode_seconds_total += round_seconds;
         commit_pending(std::move(pending), membership.lane_span(), true, cancelled_at_unit_start);
+        // The round's own sample, next to the totals it belongs to: the series is what a record
+        // plots, and the exact totals stay correct when it hits its cap.
+        if (cumulative_stats_.decode_round_samples.size() <
+            RuntimeStats::kDecodeRoundSampleCap) {
+            cumulative_stats_.decode_round_samples.push_back(
+                RuntimeStats::DecodeRoundSample{
+                    .seconds = round_seconds,
+                    .tokens  = static_cast<std::uint32_t>(
+                        cumulative_stats_.committed_decode_tokens - tokens_before),
+                });
+        }
         publish_runtime_stats();
     }
 

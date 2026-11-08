@@ -68,6 +68,16 @@ struct RuntimeStats {
     // Decode batch executions and the sum of their batch sizes.
     std::uint64_t decode_rounds             = 0;
     std::uint64_t decode_row_rounds         = 0;
+    // One entry per decode round: the round's wall time and the tokens it committed. The series
+    // stops growing at kDecodeRoundSampleCap; decode_rounds then exceeds its size, which is how a
+    // consumer tells a capped series from a short run. Index `i` matches
+    // StreamedKvStats::round_samples[i] when the streamed loop is what ran the round.
+    struct DecodeRoundSample {
+        double seconds        = 0.0;
+        std::uint32_t tokens  = 0;
+    };
+    static constexpr std::size_t kDecodeRoundSampleCap = 2048;
+    std::vector<DecodeRoundSample> decode_round_samples;
     // Prefill passes that computed the last prompt chunks of several requests at once, and the
     // sum of the requests in them.
     std::uint64_t shared_prefill_passes     = 0;
@@ -317,6 +327,19 @@ struct LoadSummary {
     std::string architecture;
     std::string model_name;
     std::string cuda_sync_mode;
+    // The CUDA devices this Engine runs on, as the runtime reports them: what a record needs to
+    // place a measurement on a card instead of trusting the command line.
+    struct DeviceIdentity {
+        int index               = 0;
+        std::string name;
+        // The driver's CUDA API version, "major.minor".
+        std::string driver_version;
+        int compute_major       = 0;
+        int compute_minor       = 0;
+        int multiprocessors     = 0;
+        std::uint64_t memory_bytes = 0;
+    };
+    std::vector<DeviceIdentity> devices;
     std::vector<std::string> weight_formats;
     std::string prefill_signature;
     // SHA-256 (hex) over the control vectors every request runs with (EngineOptions::

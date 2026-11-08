@@ -28,6 +28,29 @@ Qwen3.5 的 drafter 融合 op 只吃 Q8 row-split。这种产物在第一次草�
 `linear dynamic grouped conv add: invalid projection_weight`——那是产物与家族不匹配，不是流式、
 不是显存、也不是旗标。
 
+## 白拿的显存：`--embedding-residency host`
+
+输入嵌入表 `text/token_embedding` 是 `gguf_iq2_s`、248 320 × 5 120 = **407 244 800 B（388.4 MiB）**，
+且产物 `tie_word_embeddings: false`，所以可以整表放在 pinned 主机内存里，gather 就地过总线读。
+`text/output_head`（`gguf_q4_k`，682 MiB）每 token 都要算，必须留在设备上。
+
+这 388 MiB 直接进窗口。换算用 M-11 的实测汇率（1 页 = 1 146 880 B = 64 token）：
+
+| 项 | 值 |
+|---|---:|
+| 释放显存 | 388.4 MiB |
+| → 窗口 | **355 页 = 22 720 token** |
+| → 251 K 尾部少搬 | 407 MB ≈ 15.4 ms/轮 |
+| → 251 K 每轮 | 56.7 ms → ≈41 ms |
+| → decode | 69.2 → ≈95 tok/s |
+
+**最后两行是外推，没有实测。** 用的时候有两条前提：
+
+- **必须让池子自动分配**（`--kv-capacity auto`，不要写死容量），否则搬走的内存不会变成窗口。
+- prefill 的 gather 要在总线上把用到的嵌入行读一遍：251 K 提示约 640 MB ≈ +24 ms 一次，
+  摊进 196 s 的 prefill 是 0.01%；decode 每 token 只读一行（≈2.5 KB）。
+- 输出不变（文档原话 "output is unchanged"）：表字节没动，只换了位置。
+
 ## 金标是谁
 
 | 角色 | 二进制 | 用途 |

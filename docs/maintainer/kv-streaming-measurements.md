@@ -289,3 +289,20 @@ DFlash2 每轮便宜 9.3 ms（131 K 时 11.2 ms，且接受率 0.27 vs 0.22）�
 
 **没有测的**：本卡（RTX 4080 SUPER 16 GB）上 DFlash2 的绝对速度。上表是 4090、24 GB 卡、
 无流式；比值可用于判断方向，绝对值不能引用。
+
+### M-11 补充：`--embedding-residency host` 是这份产物上最便宜的一笔显存（2026-11-08，外推）
+
+产物核对（`python3 -m tools.artifact.inspect <artifact> --bindings --objects`）：
+
+| 张量 | 格式 | 形状 | 字节 | 结论 |
+|---|---|---|---:|---|
+| `text/token_embedding` | `gguf_iq2_s` | 248 320 × 5 120 | 407 244 800 = **388.4 MiB** | 可搬主机（`tie_word_embeddings: false`） |
+| `text/output_head` | `gguf_q4_k` | 248 320 × 5 120 | 715 161 600 = 682 MiB | 必须留设备 |
+
+按 M-11 的汇率（1 页 = 1 146 880 B = 64 token）：388.4 MiB = **355 页 = 22 720 token** 的窗口；
+251 K 上下文下尾部短 22 720 token，每轮少搬 407 MB ≈ 15.4 ms，**预测**每轮 56.7 → ≈41 ms、
+decode 69.2 → ≈95 tok/s（+38%）。
+
+前提：`--kv-capacity` 必须自动（写死容量则搬走的内存不会进窗口）；prefill 的 gather 多走
+≈640 MB 总线（251 K 提示，一次性，≈+24 ms）。**以上两行加速是外推，没有实测**——测法只差
+一个 footprint 变体，见 `bench/results/kv-stream/README.md`「白拿的显存」。

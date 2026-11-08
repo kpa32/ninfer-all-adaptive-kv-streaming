@@ -990,3 +990,110 @@ RTX 5070 Ti 16 GB、`Qwen3.8-27B` `UD-Q3_XL`、262 144 上下文、Q8_0 K / Q4_0
 4. **不能兑现的期待**：`80–120 tok/s` 是**全驻留**的数（本卡 `rk8v4`+MTP 的上限约 99 K token）。
    262 144 上没有任何配置能让 KV 不再过 PCIe；参考实现用同一套机制在更快的总线上拿 ~10 tok/s。
    “每轮只拼一部分”在参考实现里不存在，也没有对应的算法——稠密 attention 一个 token 就要读全历史。
+
+## 5.13 span 级流水：环按"一段"而非"一层"（设计，未实现，2026-11-09）
+
+§5.12 的结论是"暴露与环深无关，再拿回要跨轮预取"。读完注意力的发射代码后，这个读法要改：
+**暴露不是轮首轮末，是稳态饥饿**，而饥饿的根源是**环的粒度和计算的粒度差 26 倍**。
+
+### 代码事实（2026-11-09 核对）
+
+1. 稠密注意力**本来就是 split-KV**，段界是页的整数倍
+   （`src/ops/softmax_attention/dense/causal_cache/small_t.cuh:180-192`）：
+   `pages = div_up(div_up(window, kPagedKVPageSize), active); start = split * pages * 64`。
+   251 K 窗口下 `CausalD256H24Kv4`（`SmallTSplitScale = 1`、`kCausalSmallTSplitKeyLimit = 3 968`、
+   `SmallTMaximumSplits = 85`）得到 **85 段，每段 46 页 = 2 953 key**。
+2. reduce 按**段号**处理 partial（`small_t_k8v4.cuh:707-717` 的 `reduce_output_kernel`：
+   先对 85 个 partial 取最大 `m`，再算 `weights`，再 `causal_weighted_split_sum` 按 split 序号累加）。
+   ⇒ 输出是"partial 集合 + 段号顺序"的纯函数，**与谁在什么时候算出来无关**。
+3. 我们的流式页 = 64 token = `kPagedKVPageSize`，所以一段的流式页正好是整页的连续区间。
+
+### 为什么这样拆是逐位相同的
+
+同一批 partial、同一次 reduce ⇒ 同样的字节。要保证的是三件事不变：
+
+- `window`、`visible_capacity`、`positions` 传原值。`causal_small_t_quantized_active_splits(window,
+  …)` 按 window 算段数，传 span 的 key 区间会让段界变化，逐位相同立刻失效。
+- partial 槽位仍按**总段数 85**步进（`causal_partial_*_index(..., split_count, ...)`），
+  所以发射参数要新增 `split_begin`，而 `split_count` 仍是总数（今天它取自 `gridDim.y`）。
+- 每层仍只做**一次** reduce，且顺序不变。
+
+这与 `--invariant-attention`（`CausalKeyPartition::segment_keys`）是同一类保证：段是 key 空间的函数。
+**不需要新金标，也不算质量变更。**
+
+### 现状的浪费
+
+| | 现状 |
+|---|---:|
+| 环 | `2 × 1 227 页 = 176 MB` |
+| 计算每层实际消费粒度 | 46 页 |
+| 过配倍数 | 26× |
+| 每层拷贝 / 两层间可用计算 | 2.97 ms / 1.98 ms |
+| 每层饥饿 | 0.99 ms × 16 = **15.8 ms/轮** |
+
+那 176 MB 本可以是窗口：`2 454 槽 ÷ 16 层 = 153 页/层 = 9 800 token`。
+
+### 容量算术（`16R + depth × span_pages ≤ 48 358`，P = 4 096，层 = 16）
+
+| span | depth | 环槽 | 窗口 token | 尾部 | 每轮拷贝 | 每轮（含发射税） | decode |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 整层（现状） | 2 | 2 454 | 183 616 | 67 384 | 47.5 ms | 56.7 ms | 69.2 |
+| 4 段（184 页） | 3 | 552 | 191 232 | 59 768 | 42.8 | 43.5–44.2 | 88–90 |
+| 2 段（92 页） | 3 | 276 | 192 320 | 58 680 | 42.1 | 44.9 | 87 |
+| 1 段（46 页） | 3 | 138 | 192 832 | 58 168 | 41.7 | 47.3（税 5.4） | 83 |
+| 1 段（无发射税） | 3 | 138 | 192 832 | 58 168 | 41.7 | **41.9** | **93.6（+35%）** |
+
+发射税按每次 4 µs、85 段/层 × 16 层 = 1 360 次/轮估算；流式现在**不开 CUDA Graph**，
+所以这一项必须靠"恢复流式图"消掉（handoff §4 第 4 项）。**保守口径 +25~35%，全部预测值，未实测。**
+
+> 修订 §11.3 第 3 项：那里按"每轮 4.56 GB 不变"估了 +13%。字节其实会降（环变小、窗口变大），
+> 所以预测上修到 +25~35%。
+
+### 要改的三处
+
+1. **`small_t_k8v4` 发射**：新增 `split_begin` 参数，`split` 由它推出；`split_count` 仍传总数。
+   `causal_small_t_partition_range` 的 `window`/`active` 不变。
+2. **`plan_kv_stream_split`**：环改为 `depth × span_pages`，窗口不再受 `depth·P` 约束；
+   `advance`/`upload`/`kv_stream_ring_slot` 按段滚动（段内页连续，一次 DMA 约 8 MB，粒度健康）。
+3. **Program 侧**（`src/models/qwen3_5/execution/text.cpp` 的流式分支）：每层按 span
+   `upload → wait_ready(span) → 发射该 span → 记 consumed`；层末一次 reduce。事件数 16 → 16 × spans。
+
+### 风险
+
+| 项 | 说明 |
+|---|---|
+| 发射税 | 最大一项（−8~13%），靠恢复流式 CUDA Graph 吃掉 |
+| 跨窗口边界的 span | 一段可能一半在窗口、一半在尾部；只等它的流式页 |
+| 段数 85 未经日志确认 | 来自 `default_splits(251 000) → clamp 85` 的推导，跑一次读 `round_samples` 即可 |
+| 图捕获 | 每 span 一次发射，图里节点数 ×spans；稳态每轮形状固定，可按页边界重捕 |
+
+### 验收口径
+
+1. **等价性**：`check --suite equiv` 仍 4/4 PASS（尤其 183 K 的 512 token 逐 id 相同）——
+   这是这条设计"不算质量变更"的唯一凭据。
+2. **速度**：`bench --case stream-251k`，比 56.7 ms 的基线。
+3. 若逐 id 变了，说明三件不变量之一被破坏，先修不变量，不要调参。
+
+## 5.14 主机侧注意力分担：算术上先出局（设计候选，不推荐）
+
+想法：尾巴（窗口外 58–67 K token）每轮过总线，让 CPU 线程直接算这部分注意力，GPU 只算窗口，
+按 online-softmax 合并（fp64 权重）。与 `--expert-dma-share`（CPU 算一部分专家）同构。
+
+**它死在 FLOPs，不是死在精确性。** 每个（key, 层, query）要 `2 × 24 heads × 256 dim = 12 288` MAC，
+对应 1 120 字节（rk4v4 每层每 token）⇒ 强度约 22 FLOP/字节；一轮 3.92 个 query 共享同一批字节，
+有效强度约 86 FLOP/字节。
+
+| | 数值 |
+|---|---:|
+| 一轮尾巴注意力 | `58 168 × 16 × 3.92 × 24 576 ≈ 90 GFLOP` |
+| 一轮总时长（拷贝受限） | 41.7 ms |
+| GPU 需要的持续算力 | ≈ 2.1 TFLOP/s（全窗口约 15 TFLOP/s） |
+| 16 核 AVX-512 fp32 实际 | ≈ 0.1 TFLOP/s |
+| **CPU 能接的比例** | **≈ 3%** |
+
+即使用满 FP32 峰值也只有个位数百分比，收益可以忽略、工程量却是全表中最大的（要新增 CPU 端的
+rk4v4 反量化 + QK^T/PV 核，还要和 DMA 抢内存带宽）。**结论：不做。**
+
+顺带纠正一个说法：这条**不是**"降精度"。同样的反量化值、fp64 合并、分段更短反而更接近真值，
+token 差异只会出现在近乎并列的位置——按"KLD / 智商不变"的判据它是可接受的；它出局的原因纯粹是
+算力对不上带宽。真正被这条判据否决的是**尾部降精度**（改的是 KV 的表示），不是这条。

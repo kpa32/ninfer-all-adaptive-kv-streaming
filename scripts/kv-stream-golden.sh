@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
-# Records or checks the generated token ids of the streaming equivalence cases
-# (docs/maintainer/kv-stream-golden/MANIFEST.md).
+# The streaming equivalence check: a streamed KV cache must answer exactly like the original
+# NInfer binary that has no streaming at all.
 #
-# The check this exists for: a streamed KV cache must answer exactly like an all-resident one.
-# Both configurations run the same binary and the same prompt; the ids of every case are kept in
-# this repository, so a later change is judged by comparing against them instead of re-running the
-# other side of the comparison every time.
+# The oracle is the *original* build - `/home/kpa/ninfer/ninfer-all/build-sm89/apps/ninfer`, the
+# user's own prebuilt binary. It is borrowed read-only for test runs: never built, never written,
+# never configured (`--record` only *executes* it). Its token ids are recorded in
+# docs/maintainer/kv-stream-golden/, so a later change is judged against them instead of re-running
+# the other side of the comparison every time.
 #
-#   scripts/kv-stream-golden.sh --record [case...]   # write (or overwrite) the recorded ids
-#   scripts/kv-stream-golden.sh [case...]            # compare against the recorded ids
+#   scripts/kv-stream-golden.sh --record [case...]   # record the ORIGINAL binary's ids
+#   scripts/kv-stream-golden.sh [case...]            # run this build, compare with the records
 #
-# Cases pin every flag that moves the arithmetic (--prefill-chunk included: chunking changes the
-# batched shapes and therefore the tokens), so a comparison never mixes two different questions.
+# Every flag that moves the arithmetic is pinned, `--prefill-chunk` included: chunking changes the
+# batched shapes and was measured to move the tokens (measurements M-08), so a comparison never
+# mixes two questions.
+#
+# The cases are the contexts both layouts can serve. Above roughly 186K the all-resident layout
+# with MTP does not start on this card, and below the streamed window (181 440 tokens at
+# `rk4v4` + MTP3) streaming takes no part - 184K is the range where one is possible and the other
+# engaged, which is why it is the case that matters.
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-BIN=${NINFER_BIN:-$ROOT/build-sm89/apps/ninfer}
+OURS=${NINFER_BIN:-$ROOT/build-sm89/apps/ninfer}
+BASE=${NINFER_BASE_BIN:-/home/kpa/ninfer/ninfer-all/build-sm89/apps/ninfer}
 MODEL=${NINFER_KV_STREAM_MODEL:-$HOME/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer}
 GOLDEN=$ROOT/docs/maintainer/kv-stream-golden
 WORK=${TMPDIR:-/tmp}/kv-stream-golden
+STREAM_FLOOR=$((184000))   # words; every case at or above this streams in the --kv-stream run
 
 record=0
 if [[ ${1:-} == --record ]]; then
@@ -26,8 +35,12 @@ if [[ ${1:-} == --record ]]; then
     shift
 fi
 
-if [[ ! -x $BIN ]]; then
-    echo "error: no binary at $BIN (build build-sm89, or set NINFER_BIN)" >&2
+if [[ $record == 1 && ! -x $BASE ]]; then
+    echo "error: the original binary is not at $BASE (the oracle; set NINFER_BASE_BIN)" >&2
+    exit 2
+fi
+if [[ $record == 0 && ! -x $OURS ]]; then
+    echo "error: no build to compare at $OURS (build build-sm89, or set NINFER_BIN)" >&2
     exit 2
 fi
 if [[ ! -f $MODEL ]]; then
@@ -35,15 +48,15 @@ if [[ ! -f $MODEL ]]; then
     exit 2
 fi
 
-mkdir -p "$WORK" "$GOLDEN"
+mkdir -p "$WORK" ${record:+"$GOLDEN"}
 
-# A prompt of `words` repeated sentences plus a sharply predictable tail: the recorded ids are only
-# a fair oracle where the model's next token is not a near tie.
+# A prompt built from varied sentences plus a sharply predictable tail: recorded ids are only a fair
+# oracle where the model's next token is not a near tie.
 prompt() {
     local words=$1 path=$2
     python3 - "$words" "$path" <<'PY'
 import json, sys
-words, path = int(sys.argv[1]), sys.argv[2]
+words, path = int(sys.argv[1]), int(sys.argv[2])
 sentence = ("NInfer keeps every KV page of the context in pinned host memory and streams the newest "
             "window onto the device, so a round copies only the share the window lacks. ")
 body, count = [], 0
@@ -56,66 +69,80 @@ json.dump([{"role": "user", "content": text}], open(path, "w"))
 PY
 }
 
-# case: name words capacity extra flags...
-case_words() { case $1 in equivalence-184k) echo 183500 ;; streamed-246k) echo 246600 ;; esac; }
-case_capacity() { case $1 in equivalence-184k) echo 184064 ;; streamed-246k) echo 262144 ;; esac; }
-case_extra() {
-    case $1 in
-        # All resident: the pool holds the whole context, so streaming takes no part.
-        equivalence-184k) echo "--kv-headroom-mib 8" ;;
-        equivalence-184k-streamed) echo "--kv-stream" ;;
-        # Streamed: the same prompt, but the pool cannot hold it and every layer streams.
-        streamed-246k) echo "--kv-stream" ;;
-        *) return 1 ;;
-    esac
+case_words()    { case $1 in 8k) echo 8000 ;; 100k) echo 100000 ;; 184k) echo 184000 ;; esac; }
+case_capacity() { case $1 in 8k) echo 8192 ;; 100k) echo 100000 ;; 184k) echo 184064 ;; esac; }
+
+# Runs one configuration and writes its ids to $WORK/$tag.ids.
+run_case() {
+    local tag=$1 binary=$2 words=$3 capacity=$4
+    shift 4
+    local log=$WORK/$tag.log
+    echo "=== $tag: $(basename "$(dirname "$(dirname "$binary")")") capacity $capacity, $words words, $*"
+    "$binary" "$MODEL" --messages "$WORK/$words.json" --max-context "$capacity" \
+        --kv-capacity auto --kv-dtype rk4v4 --gdn-state-fp16 --prefill-chunk 256 \
+        --greedy --seed 42 --invariant-attention --max-new 16 \
+        --spec mtp --draft-tokens 3 --print-token-ids "$@" >/dev/null 2>"$log"
+    local rc=$?
+    local ids
+    ids=$(grep -o 'generated ids.*' "$log" | head -1 | sed 's/generated ids *//')
+    if [[ $rc != 0 || -z $ids ]]; then
+        echo "    FAILED (exit $rc); last line: $(tail -1 "$log")"
+        return 1
+    fi
+    printf '%s\n' "$ids" >"$WORK/$tag.ids"
+    grep -E 'prompt tokens|decode speed|page groups|stream window|stream ring' "$log" |
+        sed 's/^summary *//' | sed 's/^/    /'
+    return 0
 }
 
 cases=("$@")
 if [[ ${#cases[@]} -eq 0 ]]; then
-    cases=(equivalence-184k equivalence-184k-streamed streamed-246k)
+    cases=(8k 100k 184k)
 fi
 
+failures=0
 for name in "${cases[@]}"; do
-    extra=$(case_extra "$name") || { echo "error: unknown case $name" >&2; exit 2; }
-    words=$(case_words "$name")
+    words=$(case_words "$name") || { echo "error: unknown case $name" >&2; exit 2; }
     capacity=$(case_capacity "$name")
     prompt "$words" "$WORK/$words.json"
-    log=$WORK/$name.log
-    echo "=== $name (capacity $capacity, $words words) $extra"
-    NINFER_KV_STREAM_REPORT=${NINFER_KV_STREAM_REPORT:-0} \
-    "$BIN" "$MODEL" --messages "$WORK/$words.json" --max-context "$capacity" \
-        --kv-capacity auto --kv-dtype rk4v4 --gdn-state-fp16 --prefill-chunk 256 \
-        --greedy --seed 42 --invariant-attention --max-new 16 \
-        --spec mtp --draft-tokens 3 --print-token-ids $extra >/dev/null 2>"$log"
-    ids=$(grep -o 'generated ids.*' "$log" | head -1 | sed 's/generated ids *//')
-    if [[ -z $ids ]]; then
-        echo "error: $name produced no token ids; see $log" >&2
-        exit 1
-    fi
-    echo "$ids" >"$WORK/$name.ids"
-    grep -E 'prompt tokens|decode speed|stream window|stream ring' "$log" | sed 's/^summary *//' | sed 's/^/    /'
+
     if ((record)); then
-        cp "$WORK/$name.ids" "$GOLDEN/$name.ids"
+        # The oracle: the original binary, all resident, exactly as the user built it.
+        run_case "base-$name" "$BASE" "$words" "$capacity" || { failures=$((failures + 1)); continue; }
+        cp "$WORK/base-$name.ids" "$GOLDEN/$name.ids"
         echo "    recorded $GOLDEN/$name.ids"
-    elif [[ -f $GOLDEN/$name.ids ]]; then
-        if diff -q "$GOLDEN/$name.ids" "$WORK/$name.ids" >/dev/null; then
-            echo "    MATCHES the recorded ids"
-        else
-            echo "    DIFFERS from the recorded ids:"
-            diff <(tr ' ' '\n' <"$GOLDEN/$name.ids") <(tr ' ' '\n' <"$WORK/$name.ids") | head -20 | sed 's/^/      /'
-        fi
-    else
-        echo "    no recorded ids for $name (run with --record)"
+        continue
     fi
+
+    if [[ ! -f $GOLDEN/$name.ids ]]; then
+        echo "=== $name: no recorded ids (run --record against the original first)"
+        failures=$((failures + 1))
+        continue
+    fi
+    # Our build, the same configuration, and - where the context is past the window - the streamed
+    # layout as well. Both must answer like the original.
+    variants=(resident)
+    (( words >= STREAM_FLOOR )) && variants+=(streamed)
+    for variant in "${variants[@]}"; do
+        extra=()
+        [[ $variant == streamed ]] && extra=(--kv-stream)
+        if run_case "$name-$variant" "$OURS" "$words" "$capacity" "${extra[@]}"; then
+            if diff -q "$GOLDEN/$name.ids" "$WORK/$name-$variant.ids" >/dev/null; then
+                echo "    $variant: MATCHES the original's ids"
+            else
+                echo "    $variant: DIFFERS from the original's ids"
+                diff <(tr ' ' '\n' <"$GOLDEN/$name.ids") <(tr ' ' '\n' <"$WORK/$name-$variant.ids") |
+                    head -10 | sed 's/^/      /'
+                failures=$((failures + 1))
+            fi
+        else
+            failures=$((failures + 1))
+        fi
+    done
 done
 
-# The equivalence itself: the same prompt answered by an all-resident and a streamed cache.
-if [[ -f $WORK/equivalence-184k.ids && -f $WORK/equivalence-184k-streamed.ids ]]; then
-    if diff -q "$WORK/equivalence-184k.ids" "$WORK/equivalence-184k-streamed.ids" >/dev/null; then
-        echo "=== equivalence-184k: all-resident and streamed ids are identical"
-    else
-        echo "=== equivalence-184k: all-resident and streamed ids DIFFER"
-        diff <(tr ' ' '\n' <"$WORK/equivalence-184k.ids") \
-             <(tr ' ' '\n' <"$WORK/equivalence-184k-streamed.ids") | head -20
-    fi
+if ((failures != 0)); then
+    echo "=== $failures case(s) failed or differed"
+    exit 1
 fi
+echo "=== every case answered like the original binary"

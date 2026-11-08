@@ -121,3 +121,40 @@ python3 -c 'import json;json.dump([{"role":"user","content":("alpha "*246600).st
 | 跨轮预取（轮末发下一轮头 `depth` 层的上载） | 每轮最多 −11 ms（−19%） | M-04 的暴露与环深无关，是轮首/轮末 |
 | 流式段更小的页（质量合同变更，需批准） | 最多 +40% | 拷贝量与页大小成正比，M-03 里拷贝已占 84% 的轮时间 |
 | 更大窗口（拿回环的区域代价） | 每页/层 = 0.24 ms/轮 | 每页 71 680 B ÷ 25.2 GB/s |
+
+## M-06 跨轮预取：轮末为下一轮头几层发上载
+
+- 时间：2026-11-09T01:50±+08:00
+- 提交：`47f14a7c`
+- 命令：通用命令 + `--kv-stream-report`（246 652 token 提示、容量 262 144、环深 2）
+- 结果：每轮 54.1 ms、上载 1.09 GiB、接受长度 2.24。同一提示下环深 2 无预取为 56.9 ms。
+- **未验证**：等价性（逐 token 与原版一致）。这是 1 号待办，见交接文档 §4。
+
+## M-07 环深 2 的重复性（3 次）
+
+- 时间：2026-11-09T00:5x
+- 提交：`a60647b1`
+- 结果：每轮 56.8 / 56.6 / 56.9 ms，拷贝占用 47.57 / 47.37 / 47.76 ms，
+  暴露 11.60 / 11.32 / 11.78 ms。轮时间稳定在 ±0.3%，tok/s 的浮动全部来自接受长度
+  （2.74 / 3.00 / 2.86）。
+
+## M-08 数值脆弱性探针：`--prefill-chunk` 会改变 token
+
+- 时间：2026-11-09T02:5x
+- 提交：`47f14a7c`（同一二进制、同一 `--seed 42 --greedy --invariant-attention`）
+- 命令：通用命令 + `--print-token-ids`，只改 `--prefill-chunk 256` ↔ `128`
+- 结果：两次的 `generated ids` md5 不同（`6f616f42…` vs `fdd87141…`）。
+- 含义两条：
+  1. **比较必须固定 `--prefill-chunk`**，否则问的不是同一个问题；
+  2. 246 K 的 α 重复提示词对数值扰动极其敏感（近 tie 的贪心选择），**不能用作等价性 oracle**。
+     等价性金标改用 `scripts/kv-stream-golden.sh` 的 8k / 100k / 184k 三个 case。
+- 同时确认：同一二进制、同一命令行连跑两次，ids 完全相同（确定性成立）。
+
+## M-09 全驻留 190K + MTP3 在这张卡上装不下（复现 M-5.9）
+
+- 时间：2026-11-09T02:2x
+- 命令：`--max-context 190016 --kv-capacity auto --kv-headroom-mib 8 --spec mtp --draft-tokens 3`
+- 结果：`error: minimum Engine runtime reservation requires 4103599616 bytes in addition to
+  8388608 bytes of automatic headroom, but only 4032299008 bytes are available after weights`
+- 含义：全驻留 + MTP 的上限约 186 K；流式窗口在 `rk4v4`+MTP3 下是 2 835 页 = 181 440 token。
+  两者重叠区间只有 ~184 K，**等价性 case 只能放在那里**。

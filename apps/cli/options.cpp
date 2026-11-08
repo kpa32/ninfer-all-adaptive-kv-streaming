@@ -355,6 +355,9 @@ std::string usage_text(const char* argv0) {
            "  --json-schema FILE            enforce a supported JSON schema\n"
            "  --raw-output                  print the raw generated text without framing\n"
            "  --print-token-ids             also print the generated token ids\n"
+           "  --logprobs                    also report each generated token's log\n"
+           "                                probability and its top alternatives; sampling\n"
+           "                                is unaffected\n"
            "\n"
            "VISION (off by default)\n"
            "  --vision                      accept images and video and load the Vision GPU\n"
@@ -575,6 +578,8 @@ Options parse_options(int argc, char** argv) {
             options.raw_output = true;
         } else if (arg == "--print-token-ids") {
             options.print_token_ids = true;
+        } else if (arg == "--logprobs") {
+            options.logprobs = true;
         } else if (arg == "--log-colours") {
             const std::string_view mode = value(arg);
             if (mode == "on") {

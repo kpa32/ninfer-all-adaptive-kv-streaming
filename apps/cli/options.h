@@ -86,6 +86,9 @@ struct Options {
 
     bool raw_output      = false;
     bool print_token_ids = false;
+    // Ask for every generated content token's log probability and its top alternatives: the
+    // record's equivalence evidence pairs with the ids, and sampling is unaffected.
+    bool logprobs = false;
     std::optional<bool> log_colours; // --log-colours on|off: colour the statistics (unset = off)
     std::optional<bool> enable_thinking;
     std::optional<std::uint32_t> thinking_budget;

@@ -57,8 +57,8 @@ def sample_report() -> dict:
             "window_bytes": 3_250_000_000,
             "ring_bytes": 100_000_000,
             "rounds": 200,
-            "upload_bytes": 200 * 2**20 * 100,
-            "download_bytes": 200 * 2**20 * 10,
+            "upload_bytes": 2**30 + 200 * 2**20 * 100,
+            "download_bytes": 2**30 + 200 * 2**20 * 10,
             "copy_busy_seconds": 4.0,
             "exposed_seconds": 2.0,
             "prefill": {"upload_bytes": 2**30, "download_bytes": 2**30},
@@ -96,6 +96,8 @@ def test_metrics_carry_the_round_and_link_accounting() -> None:
     assert metrics["rounds_sampled"] == 200
     assert close(metrics["round_ms_median"], 50.0)
     assert close(metrics["tokens_per_round"], 2.5)
+    # The prompt's own traffic has no round; per-round figures must be the decode loop's only.
+    assert close(metrics["stream_prefill_upload_mib"], 1024.0)
     assert close(metrics["stream_upload_mib_per_round"], 100.0)
     assert close(metrics["stream_download_mib_per_round"], 10.0)
     assert close(metrics["stream_copy_ms_per_round"], 20.0)
@@ -104,6 +106,25 @@ def test_metrics_carry_the_round_and_link_accounting() -> None:
     assert metrics["stream_timing_lost"] == 0
     assert metrics["stream_series_len"] == 200
     assert metrics["device_name"] == "NVIDIA GeForce RTX 4080 SUPER"
+
+
+def test_metrics_without_a_round_report_no_per_round_figure() -> None:
+    report = sample_report()
+    report["stream"]["rounds"] = 0
+    report["stream"]["rounds_series"] = []
+    metrics = metrics_from_report(report)
+    assert "stream_upload_mib_per_round" not in metrics
+    assert metrics["stream_decode_upload_mib"] > 0
+
+
+def test_logprobability_digest_is_order_independent_and_content_sensitive() -> None:
+    report = {"generation": {"logprobs": [{"id": 1, "logprob": -0.5, "top_ids": [1, 2]}]}}
+    same = {"generation": {"logprobs": [{"top_ids": [1, 2], "logprob": -0.5, "id": 1}]}}
+    other = {"generation": {"logprobs": [{"id": 1, "logprob": -0.50000006, "top_ids": [1, 2]}]}}
+    empty = {"generation": {}}
+    assert run_kv_stream.logprobs_digest(report) == run_kv_stream.logprobs_digest(same)
+    assert run_kv_stream.logprobs_digest(report) != run_kv_stream.logprobs_digest(other)
+    assert run_kv_stream.logprobs_digest(empty) == ""
 
 
 def test_median_metrics_ignores_labels_and_takes_the_median() -> None:

@@ -304,6 +304,19 @@ void write_run_report(const std::filesystem::path& path, const RunReport& report
     json generation{{"tokens", generated},
                     {"finish_reason", finish_reason_name(result.finish_reason)},
                     {"token_ids", result.generated_token_ids}};
+    // The distribution record: for every content token, its log probability and those of its most
+    // likely alternatives. Two runs that differ only in where the KV pages live must reproduce
+    // these bit for bit, so a record compares the array itself, not a tolerance.
+    if (!result.content_logprobs.empty()) {
+        json logprobs = json::array();
+        for (const TokenLogprob& record : result.content_logprobs) {
+            json entry{{"id", record.id}, {"logprob", record.logprob}};
+            entry["top_ids"]    = record.top_ids;
+            entry["top_values"] = record.top_values;
+            logprobs.push_back(std::move(entry));
+        }
+        generation["logprobs"] = std::move(logprobs);
+    }
     out["generation"] = std::move(generation);
     json timings{{"prepare_seconds", result.timings.prepare_seconds},
                  {"vision_seconds", result.timings.vision_seconds},

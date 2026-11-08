@@ -47,14 +47,19 @@ DEFAULT_MODEL = Path.home() / "ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninf
 DEFAULT_BINARY = REPO_ROOT / "build-sm89/apps/ninfer"
 DEFAULT_ORACLE = Path("/home/kpa/ninfer/ninfer-all/build-sm89/apps/ninfer")
 
-# The prompt is a fixed recipe: the same sentence repeated, then a predictable tail. Repeated
-# identical sentences make the token count linear in the repetition count, which is what lets two
-# short calibration runs place a 183 K-token prompt exactly.
+# The prompt is a fixed recipe: the same sentence repeated, then a tail that makes the model keep
+# writing. A fixed tail also makes the token count linear in the repetition count, which is what lets
+# two short calibration runs place a 183 K-token prompt exactly. The tail asks for a numbered list:
+# greedy decoding then continues the list instead of closing the answer, so a case that wants 512
+# generated tokens really gets them (an assistant-style tail hits the stop token after a few dozen).
 PROMPT_SENTENCE = (
     "NInfer keeps every KV page of the context in pinned host memory and streams the newest "
     "window onto the device, so a round copies only the share the window lacks."
 )
-PROMPT_TAIL = "\n\nThe capital of France is"
+PROMPT_TAIL = (
+    "\n\nList the positive integers in order, ten per line, each line separated by a newline:\n"
+    "1 2 3 4 5 6 7 8 9 10\n11 12 13 14 15 16 17 18 19 20\n"
+)
 CALIBRATION_POINTS = (100, 200)
 
 # Every flag that moves the arithmetic. --prefill-chunk changes the batched shapes and was
@@ -90,6 +95,9 @@ class Case:
     oracle: str = "original"  # "original" records the base binary's ids, "self" ours
     resident_flags: tuple[str, ...] = ()
     streamed_flags: tuple[str, ...] = ()
+    # A case whose purpose names a full-length generation must not silently stop early: the record
+    # then shows the model closed the answer instead of the window sliding.
+    require_full_generation: bool = False
 
 
 # The contexts both layouts can serve: the original with MTP3 stops starting above ~186 K, and the
@@ -106,6 +114,7 @@ CASES: dict[str, Case] = {
         capacity=8192,
         max_new=16,
         variants=("resident",),
+        require_full_generation=True,
     ),
     "equiv-100k": Case(
         name="equiv-100k",
@@ -115,6 +124,7 @@ CASES: dict[str, Case] = {
         capacity=100_096,
         max_new=16,
         variants=("resident",),
+        require_full_generation=True,
     ),
     "equiv-183k": Case(
         name="equiv-183k",
@@ -134,6 +144,7 @@ CASES: dict[str, Case] = {
         # memory-layout knobs; the arithmetic is the same either way.
         resident_flags=("--kv-headroom-mib", "16"),
         streamed_flags=("--kv-headroom-mib", "1008"),
+        require_full_generation=True,
     ),
     "stream-251k": Case(
         name="stream-251k",
@@ -147,6 +158,7 @@ CASES: dict[str, Case] = {
         max_new=64,
         variants=("streamed",),
         oracle="self",
+        require_full_generation=True,
     ),
     "resident-8k": Case(
         name="resident-8k",
@@ -157,10 +169,26 @@ CASES: dict[str, Case] = {
         max_new=64,
         variants=("resident",),
         oracle="self",
+        require_full_generation=True,
+    ),
+    "prompt-shape": Case(
+        name="prompt-shape",
+        purpose=(
+            "Cheap guard on the prompt recipe itself: at 8 K it must generate the full 512 tokens "
+            "without hitting the stop token, which is what makes the 183 K case exercise page "
+            "slides during decode."
+        ),
+        kind="perf",
+        target_tokens=8000,
+        capacity=8192,
+        max_new=512,
+        variants=("resident",),
+        oracle="self",
+        require_full_generation=True,
     ),
 }
 EQUIVALENCE_SUITE = ("equiv-8k", "equiv-100k", "equiv-183k")
-PERF_SUITE = ("stream-251k", "resident-8k")
+PERF_SUITE = ("prompt-shape", "stream-251k", "resident-8k")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -340,6 +368,10 @@ def write_prompt(directory: Path, sentences: int) -> Path:
     return path
 
 
+def prompt_recipe_digest() -> str:
+    return sha256_text(PROMPT_SENTENCE + "\n" + PROMPT_TAIL)
+
+
 @dataclass(frozen=True)
 class Calibration:
     model_sha256: str
@@ -361,6 +393,10 @@ def load_calibration(path: Path) -> Optional[Calibration]:
     if not path.is_file():
         return None
     data = json.loads(path.read_text())
+    # A calibration belongs to one model and one prompt recipe: changing the sentence or the tail
+    # changes the offset, and a stale fit would silently place the prompt somewhere else.
+    if data.get("recipe_sha256") != prompt_recipe_digest():
+        return None
     return Calibration(
         model_sha256=data["model_sha256"],
         tokens_per_sentence=data["fit"]["tokens_per_sentence"],
@@ -379,6 +415,7 @@ def save_calibration(path: Path, calibration: Calibration) -> None:
                 "schema": 1,
                 "kind": "kv-stream-prompt-calibration",
                 "model_sha256": calibration.model_sha256,
+                "recipe_sha256": prompt_recipe_digest(),
                 "sentence": PROMPT_SENTENCE,
                 "tail": PROMPT_TAIL,
                 "points": calibration.points,
@@ -461,10 +498,13 @@ def run_once(
     directory: Path,
     timeout: float,
     with_report: bool,
+    with_logprobs: bool = False,
 ) -> RepResult:
     directory.mkdir(parents=True, exist_ok=False)
     argv = request_argv(binary, model, prompt_path, case, variant, device)
     argv.append("--print-token-ids")
+    if with_logprobs:
+        argv.append("--logprobs")
     report_path = directory / "report.json"
     if with_report:
         argv += ["--report-json", str(report_path)]
@@ -560,8 +600,12 @@ def metrics_from_report(report: Mapping[str, Any]) -> dict[str, Any]:
         count = stream.get("rounds") or 0
         upload = stream.get("upload_bytes") or 0
         download = stream.get("download_bytes") or 0
+        prompt = stream.get("prefill", {})
+        prompt_upload = prompt.get("upload_bytes") or 0
+        prompt_download = prompt.get("download_bytes") or 0
         busy = stream.get("copy_busy_seconds") or 0.0
         exposed = stream.get("exposed_seconds") or 0.0
+        series = stream.get("rounds_series", [])
         metrics.update(
             {
                 "stream_host_mib": (stream.get("host_bytes") or 0) / 2**20,
@@ -572,26 +616,29 @@ def metrics_from_report(report: Mapping[str, Any]) -> dict[str, Any]:
                 "stream_page_bytes": stream.get("page_bytes"),
                 "stream_upload_mib": upload / 2**20,
                 "stream_download_mib": download / 2**20,
+                "stream_decode_upload_mib": (upload - prompt_upload) / 2**20,
+                "stream_decode_download_mib": (download - prompt_download) / 2**20,
                 "stream_copy_busy_s": busy,
                 "stream_exposed_s": exposed,
-                "stream_prefill_upload_mib": (stream.get("prefill", {}).get("upload_bytes") or 0)
-                / 2**20,
-                "stream_prefill_download_mib": (stream.get("prefill", {}).get("download_bytes") or 0)
-                / 2**20,
+                "stream_prefill_upload_mib": prompt_upload / 2**20,
+                "stream_prefill_download_mib": prompt_download / 2**20,
+                "stream_series_upload_mib": sum(int(row["upload_bytes"]) for row in series) / 2**20,
                 "stream_timing_lost": stream.get("timing", {}).get("lost"),
             }
         )
         if count:
+            # Per-round figures are the decode loop's, never the grand total divided by its rounds:
+            # the prompt's own traffic has no round and would otherwise inflate every one of them.
             metrics.update(
                 {
-                    "stream_upload_mib_per_round": upload / 2**20 / count,
-                    "stream_download_mib_per_round": download / 2**20 / count,
+                    "stream_upload_mib_per_round": (upload - prompt_upload) / 2**20 / count,
+                    "stream_download_mib_per_round": (download - prompt_download) / 2**20 / count,
                     "stream_copy_ms_per_round": 1e3 * busy / count,
                     "stream_exposed_ms_per_round": 1e3 * exposed / count,
                 }
             )
         if busy > 0.0:
-            metrics["stream_link_gib_s"] = upload / busy / 2**30
+            metrics["stream_link_gib_s"] = (upload - prompt_upload) / busy / 2**30
     return metrics
 
 
@@ -716,7 +763,14 @@ def compare_ids(golden: Sequence[int], actual: Sequence[int]) -> dict[str, Any]:
     }
 
 
-def record_rep(entry: dict[str, Any], result: RepResult, variant: str) -> None:
+def logprobs_digest(report: Mapping[str, Any]) -> str:
+    records = report.get("generation", {}).get("logprobs")
+    if not records:
+        return ""
+    return sha256_text(json.dumps(records, sort_keys=True, separators=(",", ":")))
+
+
+def record_rep(entry: dict[str, Any], result: RepResult, variant: str, case: Case) -> None:
     metrics = metrics_from_report(result.report) if result.report else {}
     rep = {
         "argv": result.argv,
@@ -727,16 +781,28 @@ def record_rep(entry: dict[str, Any], result: RepResult, variant: str) -> None:
         "ids": result.ids,
         "ids_sha256": sha256_text(" ".join(str(token) for token in result.ids)),
         "ids_count": len(result.ids),
+        "logprobs_sha256": logprobs_digest(result.report) if result.report else "",
         "stderr_tail": result.stderr_tail,
     }
     if result.report:
         checks = entry.setdefault("checks", {})
+        generation = result.report.get("generation", {})
         round_series = result.report.get("decode_rounds", {}).get("samples", [])
         stream_series = result.report.get("stream", {}).get("rounds_series", [])
         checks["stream_series_aligned"] = not stream_series or len(stream_series) == len(
             round_series
         )
+        if case.require_full_generation:
+            checks["generated_all_requested"] = generation.get("tokens") == case.max_new
         stream = result.report.get("stream", {})
+        if stream.get("enabled") and stream_series:
+            decoded = (stream.get("upload_bytes") or 0) - (
+                stream.get("prefill", {}).get("upload_bytes") or 0
+            )
+            series = sum(int(row["upload_bytes"]) for row in stream_series)
+            # The per-round series must account for exactly the decode traffic: otherwise a
+            # per-round figure would be hiding a share of the request's bytes.
+            checks["stream_series_matches_total"] = abs(series - decoded) <= max(decoded * 0.01, 1)
         if variant == "streamed":
             window_tokens = (stream.get("resident_pages") or 0) * 64
             checks["stream_window_tokens"] = window_tokens
@@ -752,7 +818,7 @@ def record_rep(entry: dict[str, Any], result: RepResult, variant: str) -> None:
                     abs(parsed - reported) / max(parsed, 1e-9) < 0.02
                 )
         printed = parse_ids(result.directory.joinpath("stderr.log").read_text(errors="replace"))
-        report_ids = [int(token) for token in result.report.get("generation", {}).get("token_ids", [])]
+        report_ids = [int(token) for token in generation.get("token_ids", [])]
         if printed and report_ids:
             checks["printed_ids_match_report"] = printed == report_ids
     entry["reps"].append(rep)
@@ -809,6 +875,16 @@ def read_golden(results: Path, case: Case) -> list[int]:
     return [int(token) for token in text.split()] if text else []
 
 
+def read_golden_meta(results: Path, case: Case) -> dict[str, Any]:
+    _, meta_path = golden_paths(results, case)
+    if not meta_path.is_file():
+        return {}
+    try:
+        return json.loads(meta_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def record_golden(results: Path, case: Case, entry: dict[str, Any], rep: Mapping[str, Any]) -> None:
     ids_path, meta_path = golden_paths(results, case)
     ids_path.parent.mkdir(parents=True, exist_ok=True)
@@ -829,6 +905,7 @@ def record_golden(results: Path, case: Case, entry: dict[str, Any], rep: Mapping
                 "capacity": case.capacity,
                 "max_new": case.max_new,
                 "ids_sha256": rep["ids_sha256"],
+                "logprobs_sha256": rep.get("logprobs_sha256", ""),
                 "recorded_utc": iso(utc_now()),
                 "argv": rep["argv"],
                 "summary": rep["summary"],
@@ -875,19 +952,27 @@ def run_case(
 ) -> bool:
     prompt_path = write_prompt(campaign.directory / case.name, sentences)
     golden = read_golden(args.results, case)
+    golden_meta = read_golden_meta(args.results, case)
     record = (
         args.record_golden
-        and not golden
+        and (not golden or args.force)
         and (
             (case.oracle == "original" and program == "oracle")
             or (case.oracle == "self" and program == "ours")
         )
     )
     ok = True
+    entries: list[dict[str, Any]] = []
     for variant in case.variants:
         entry = case_entry(case, variant, program)
         entry["sentences"] = sentences
         entry["prompt_sha256"] = sha256_text(prompt_text(sentences))
+        if golden_meta:
+            # A golden recorded for a different prompt is not evidence about this one: the recipe
+            # changed and the ids must be recorded again instead of matching an older question.
+            entry["checks"]["golden_prompt_matches"] = (
+                golden_meta.get("prompt_sha256") == entry["prompt_sha256"]
+            )
         for rep_index in range(1, reps + 1):
             print(f"{case.name}/{variant}: rep {rep_index}/{reps} ...", flush=True)
             result = run_once(
@@ -900,11 +985,13 @@ def run_case(
                 campaign.directory / case.name / variant / f"rep-{rep_index:02d}",
                 args.timeout,
                 with_report=program == "ours",
+                with_logprobs=program == "ours" and args.logprobs,
             )
-            record_rep(entry, result, variant)
+            record_rep(entry, result, variant, case)
             if result.returncode != 0:
                 print(f"  exit {result.returncode}: {result.stderr_tail}")
         finish_entry(entry, golden)
+        entries.append(entry)
         campaign.data["cases"].append(entry)
         campaign.save()
         print_entry(entry)
@@ -913,6 +1000,20 @@ def run_case(
         if record and entry["reps"] and entry["reps"][-1]["ids"]:
             record_golden(args.results, case, entry, entry["reps"][-1])
             print(f"  recorded golden ids for {case.name}")
+
+    # SPEC completion condition 2: the streamed layout's greedy ids and log probabilities must be
+    # the same as the resident layout's, exactly - not within a tolerance. Both are in this build,
+    # so the comparison is between two runs of the same binary with one flag apart.
+    if len(entries) > 1 and program == "ours" and args.logprobs:
+        digests = {entry["variant"]: entry["reps"][-1].get("logprobs_sha256", "") for entry in entries}
+        distinct = {value for value in digests.values() if value}
+        matched = len(distinct) == 1 and all(digests.values())
+        for entry in entries:
+            entry["checks"]["logprobs_match_across_layouts"] = matched
+            if not matched:
+                entry["verdict"] = "FAIL"
+                ok = False
+        campaign.save()
     return ok
 
 
@@ -1353,44 +1454,59 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=3600.0)
     parser.add_argument("--allow-busy", action="store_true", help="run even if the card is in use")
+    parser.add_argument(
+        "--no-logprobs",
+        action="store_true",
+        help=(
+            "skip the log-probability comparison of `check`/`golden` (faster; the ids are still "
+            "compared). SPEC condition 2 wants the streamed and resident layouts' log "
+            "probabilities identical, so it is on by default there and off for `bench`."
+        ),
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     calibrate = sub.add_parser("calibrate", help="measure the prompt recipe's tokens per sentence")
     calibrate.add_argument("--force", action="store_true")
-    calibrate.set_defaults(func=command_calibrate, record_golden=False)
+    calibrate.set_defaults(func=command_calibrate, record_golden=False, force=False)
 
     golden = sub.add_parser("golden", help="record the oracle's ids (or a regression baseline)")
     golden.add_argument("--suite", choices=("equiv", "perf"), default="equiv")
     golden.add_argument("--case", nargs="*", default=None)
     golden.add_argument("--tag", default="")
+    golden.add_argument(
+        "--force", action="store_true", help="record again even when golden ids already exist"
+    )
     golden.set_defaults(func=command_golden, record_golden=True)
 
     check = sub.add_parser("check", help="run our build and compare it with the golden ids")
     check.add_argument("--suite", choices=("equiv",), default="equiv")
     check.add_argument("--case", nargs="*", default=list(EQUIVALENCE_SUITE))
     check.add_argument("--tag", default="")
-    check.set_defaults(func=command_check, record_golden=False)
+    check.set_defaults(func=command_check, record_golden=False, force=False)
 
     bench = sub.add_parser("bench", help="record performance repetitions of a case")
     bench.add_argument("--case", nargs="*", default=None)
     bench.add_argument("--reps", type=int, default=1)
     bench.add_argument("--tag", default="")
-    bench.set_defaults(func=command_bench, record_golden=False)
+    bench.set_defaults(func=command_bench, record_golden=False, force=False)
 
     report = sub.add_parser("report", help="regenerate INDEX.md from the records")
-    report.set_defaults(func=command_report, record_golden=False)
+    report.set_defaults(func=command_report, record_golden=False, force=False)
 
     window = sub.add_parser("window", help="measure the stream window a capacity and headroom give")
     window.add_argument("--capacity", type=int, required=True)
     window.add_argument("--headroom-mib", type=int, nargs="+", required=True)
-    window.set_defaults(func=command_window, record_golden=False)
+    window.set_defaults(func=command_window, record_golden=False, force=False)
 
     compare = sub.add_parser("compare", help="print the metric deltas of two campaigns")
     compare.add_argument("left")
     compare.add_argument("right")
-    compare.set_defaults(func=command_compare, record_golden=False)
+    compare.set_defaults(func=command_compare, record_golden=False, force=False)
 
     args = parser.parse_args(argv)
+    # Correctness commands compare the distribution as well as the ids; a timing run must not pay
+    # for log probabilities it does not read.
+    args.logprobs = args.command in ("check", "golden") and not args.no_logprobs
     if args.command == "golden" and args.case is None:
         args.case = list(EQUIVALENCE_SUITE if args.suite == "equiv" else PERF_SUITE)
     args.results = args.results.resolve()

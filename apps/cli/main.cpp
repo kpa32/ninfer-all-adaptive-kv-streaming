@@ -380,6 +380,7 @@ int main(int argc, char** argv) {
         request.stop.token_ids                    = cli.stop_token_ids;
         request.stop.strings                      = cli.stop_strings;
         request.output.raw                        = cli.raw_output;
+        request.execution.logprobs                = cli.logprobs;
 
         ninfer::EngineOptions engine_options;
         engine_options.artifact_path            = cli.artifact_path;

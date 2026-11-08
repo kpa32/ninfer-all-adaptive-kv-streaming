@@ -72,8 +72,10 @@ python tools/bench/run_kv_stream.py compare runs/<A> runs/<B>
 prefill。现在写法是让模型接着数数，并把"生成数 == --max-new"变成硬检查。
 
 所有 case 固定：`--kv-capacity auto --kv-dtype rk4v4 --gdn-state-fp16 --prefill-chunk 256
---greedy --seed 42 --invariant-attention --spec mtp --draft-tokens 3`。`--prefill-chunk` 会移动
-token（M-08），所以比对从不混两个问题。
+--greedy --seed 42 --invariant-attention --spec mtp --draft-tokens 3 --no-thinking`。
+`--prefill-chunk` 会移动 token（M-08），所以比对从不混两个问题。
+`--no-thinking` 是判据要的：思考请求发布的是 reasoning，而 Engine 只为 content token 保留
+logprob，开着思考会拿到空的 logprob 数组（ids 照样能比），关掉才有可逐位比较的分布。
 
 ## 判定（这就是"标注"）
 

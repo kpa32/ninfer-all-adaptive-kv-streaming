@@ -80,6 +80,10 @@ FIXED_FLAGS: tuple[str, ...] = (
     "mtp",
     "--draft-tokens",
     "3",
+    # A thinking request publishes reasoning, and the Engine keeps log probabilities for content
+    # tokens only: the ids would still compare, but SPEC wants the distributions too, so the
+    # benchmark asks for the answer instead of the reasoning.
+    "--no-thinking",
 )
 
 
@@ -1007,14 +1011,14 @@ def run_case(
     # so the comparison is between two runs of the same binary with one flag apart.
     if len(entries) > 1 and program == "ours" and args.logprobs:
         digests = {entry["variant"]: entry["reps"][-1].get("logprobs_sha256", "") for entry in entries}
-        distinct = {value for value in digests.values() if value}
-        matched = len(distinct) == 1 and all(digests.values())
-        for entry in entries:
-            entry["checks"]["logprobs_match_across_layouts"] = matched
-            if not matched:
-                entry["verdict"] = "FAIL"
-                ok = False
-        campaign.save()
+        if all(digests.values()):
+            matched = len(set(digests.values())) == 1
+            for entry in entries:
+                entry["checks"]["logprobs_match_across_layouts"] = matched
+                if not matched:
+                    entry["verdict"] = "FAIL"
+                    ok = False
+                campaign.save()
     return ok
 
 

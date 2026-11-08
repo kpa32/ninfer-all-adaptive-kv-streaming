@@ -95,6 +95,14 @@ std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t 
                                              CausalAttentionExecutionEnvelope envelope,
                                              std::int32_t batch_size = 1);
 
+// The splits a small-T call over `window_tokens` visible keys actually launches: the capacity above
+// capped by the geometry's policy for that window, which is what the kernel computes on the device.
+// A caller that feeds a layer's keys in frames needs it to know each frame's page range.
+std::int32_t causal_attention_active_splits(std::int32_t q_heads, std::int32_t tokens,
+                                            std::int32_t batch_size, std::int32_t window_tokens,
+                                            KvCacheStorage cache_storage,
+                                            CausalAttentionExecutionEnvelope envelope);
+
 CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::int32_t width,
                                                     std::int32_t batch_size, KvCacheStorage storage,
                                                     CausalAttentionExecutionEnvelope envelope);
@@ -111,7 +119,8 @@ void causal_attention_small_t_launch(const Tensor& q, const Tensor& k, const Ten
                                      std::int32_t column_begin, std::int32_t width,
                                      Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
                                      Tensor& out, cudaStream_t stream, const void* gate = nullptr,
-                                     float* partial_out = nullptr, CausalSplitRange splits = {});
+                                     float* partial_out = nullptr, CausalSplitRange splits = {},
+                                     const CausalAttentionFrameHook* frames = nullptr);
 
 // Parallel query tiles for a single row's chunked small-T width over an INT8-family cache: the
 // tile width (0 when off) whose tiles run as the batch rows of one split-KV launch and one reduce,
@@ -181,7 +190,8 @@ void causal_attention_small_t_k8v4_launch(
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
     Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream,
-    float* partial_out = nullptr, CausalSplitRange splits = {});
+    float* partial_out = nullptr, CausalSplitRange splits = {},
+    const CausalAttentionFrameHook* frames = nullptr);
 
 void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& positions,
                                                  float scale, const PagedKVLayerView& cache,

@@ -189,13 +189,43 @@ void packed_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
  * elementwise kernel inside the Op. Either way the result is bit-identical to calling sigmoid_mul
  * on the ungated output, so no caller has to know which route it landed on.
  */
+/**
+ * How a streaming caller feeds one layer's keys to the call in pieces.
+ *
+ * A dense layer's keys otherwise have to be on the device all at once: the call launches every
+ * split of its key window in one grid, so a caller that copies keys in as it goes can only overlap
+ * a copy with the attention of *another* layer. With a frame hook the call launches its splits in
+ * ascending key order, `frame_keys` keys at a time, calling `wait(frame, first_page, page_count)`
+ * before each launch and `consumed(...)` after it, and still reduces once at the end - so the
+ * output is bit-identical to the one launch over every split (design 5.13).
+ *
+ * `first_page`/`page_count` are the keys the launch reads, in kPagedKVPageSize pages, so the caller
+ * copies exactly that range and no other; a launch whose keys are all resident reports a count of
+ * zero. Both callbacks run on the caller's thread, in launch order, and are how the caller turns
+ * "this launch needs those pages" into a stream wait and a stream copy.
+ */
+struct CausalAttentionFrameHook {
+    // The keys this call sees, `positions[0] + tokens`: the caller owns the frontier and states it
+    // rather than this Op reading device metadata back.
+    std::int32_t window_tokens = 0;
+    // Splits per launch: `sms / kv_heads` of the call's geometry fills a device, which is what a
+    // streaming caller sizes its ring frames to. Zero launches every split at once.
+    std::int32_t splits_per_frame = 0;
+    void (*wait)(void* context, std::int32_t frame, std::int32_t first_page,
+                 std::int32_t page_count) = nullptr;
+    void (*consumed)(void* context, std::int32_t frame, std::int32_t first_page,
+                     std::int32_t page_count) = nullptr;
+    void* context = nullptr;
+};
+
 void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
                               const Tensor& positions, const Tensor& valid_columns,
                               const Tensor& kv_table_rows, AttentionHeadGeometry geometry,
                               float scale, PagedKVBatchLayerView cache,
                               CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
                               Tensor& out, cudaStream_t stream, const Tensor* gate = nullptr,
-                              Tensor* partial = nullptr);
+                              Tensor* partial = nullptr,
+                              const CausalAttentionFrameHook* frames = nullptr);
 
 /**
  * Position-split attention (--tensor-attention positions). Each rank of a position-split pool

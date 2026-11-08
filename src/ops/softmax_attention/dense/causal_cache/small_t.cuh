@@ -114,7 +114,7 @@ __host__ __device__ __forceinline__ int causal_small_t_tile_window(int first_pos
 }
 
 template <typename Geometry>
-__device__ __forceinline__ int causal_small_t_default_splits(int window) {
+__host__ __device__ __forceinline__ int causal_small_t_default_splits(int window) {
     int target_keys_per_split = 480 / Geometry::SmallTSplitScale;
     if (window <= 4096) {
         target_keys_per_split = 64 / Geometry::SmallTSplitScale;
@@ -274,7 +274,7 @@ __device__ __forceinline__ int causal_small_t_owned_tile_page(const std::int32_t
 // causal_small_t_split_count in small_t.cu), so the request is gone rather than the grant
 // extended, and this now agrees with the host by construction.
 template <typename Geometry>
-__device__ __forceinline__ int
+__host__ __device__ __forceinline__ int
 causal_small_t_quantized_active_splits(int window, int launch_capacity, int tokens) {
     (void)tokens;
     const int splits = causal_small_t_default_splits<Geometry>(window);

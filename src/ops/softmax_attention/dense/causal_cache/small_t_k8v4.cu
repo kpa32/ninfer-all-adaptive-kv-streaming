@@ -19,17 +19,12 @@ template <typename Geometry, int TokenTile, bool MultiBatch, bool Masked, typena
 void launch_k8v4_partial(const Tensor& q, CacheInput input, const Tensor& positions, float scale,
                          PagedKVBatchLayerView cache, const CausalSmallTInvocation& invocation,
                          std::int32_t logical_capacity, std::int32_t splits, Tensor& partial_acc,
-                         Tensor& partial_m, Tensor& partial_l, cudaStream_t stream) {
-    // The splits this launch covers, and the capacity their partial slots step by. A whole-range
-    // launch is `[0, splits)` with the capacity equal to the grid width, exactly as before.
-    const std::int32_t split_begin = invocation.split_begin < 0 ||
-                                             invocation.split_begin > splits
-                                         ? splits
-                                         : invocation.split_begin;
-    const std::int32_t split_end = invocation.split_end <= 0 || invocation.split_end > splits
-                                       ? splits
-                                       : invocation.split_end;
-    const std::int32_t span      = split_end - split_begin;
+                         Tensor& partial_m, Tensor& partial_l, cudaStream_t stream,
+                         std::int32_t split_begin, std::int32_t split_end) {
+    // The splits this launch covers, and the capacity their partial slots step by (`splits`). A
+    // whole-range launch is `[0, splits)` with the capacity equal to the grid width, exactly as a
+    // launch that covered every split before a caller could ask for a range.
+    const std::int32_t span = split_end - split_begin;
     if (span <= 0) { return; }
 #if defined(NINFER_TIER_VOLTA)
     if (current_device_volta()) {
@@ -150,64 +145,117 @@ void causal_attention_small_t_k8v4_launch_for(const Tensor& q, CacheInput input,
                                               const CausalSmallTInvocation& invocation,
                                               CausalAttentionExecutionEnvelope envelope,
                                               Tensor& partial_acc, Tensor& partial_m,
-                                              Tensor& partial_l, Tensor& out, cudaStream_t stream) {
+                                              Tensor& partial_l, Tensor& out, cudaStream_t stream,
+                                              const CausalAttentionFrameHook* frames) {
     const auto logical_capacity = static_cast<std::int32_t>(envelope.max_visible_keys);
     const auto splits = causal_attention_split_capacity(q.ne[1], invocation.width, cache.storage,
                                                         envelope, invocation.batch_size);
 
-    const auto launch_partial = [&]<int Tokens, bool MultiBatch, bool Masked>() {
-        launch_k8v4_partial<Geometry, Tokens, MultiBatch, Masked>(
-            q, input, positions, scale, cache, invocation, logical_capacity, splits, partial_acc,
-            partial_m, partial_l, stream);
+    // The splits this call covers, and the keys each of them reads, as pages of
+    // kPagedKVPageSize: a split's key range is the geometry's, and a frame asks for the pages of
+    // the splits it launches. The bound is conservative by a page on each side - a split starts on
+    // a 32-key tile boundary, not a page one - and a page copied twice costs nothing while a page
+    // not copied is a wrong result.
+    const std::int32_t window_tokens = frames == nullptr ? 0 : frames->window_tokens;
+    const std::int32_t active_splits =
+        window_tokens <= 0
+            ? splits
+            : causal_attention_active_splits(q.ne[1], invocation.width, invocation.batch_size,
+                                             window_tokens, cache.storage, envelope);
+    const auto frame_page_range = [&](std::int32_t begin, std::int32_t end, std::int32_t& first,
+                                      std::int32_t& count) {
+        // Key bounds of the splits' span, in pages, with one page of slack on both sides.
+        const auto key_at = [&](std::int32_t split) {
+            return static_cast<std::int64_t>(split) * window_tokens / active_splits;
+        };
+        const std::int64_t lo = key_at(begin) - kPagedKVPageSize;
+        const std::int64_t hi = key_at(end) + kPagedKVPageSize;
+        const std::int64_t first_page = lo <= 0 ? 0 : lo / kPagedKVPageSize;
+        const std::int64_t last_page  = (hi - 1) / kPagedKVPageSize;
+        first                         = static_cast<std::int32_t>(first_page);
+        count                         = static_cast<std::int32_t>(last_page - first_page + 1);
     };
-    const auto dispatch_metadata = [&]<int Tokens>() {
-        const bool masked = invocation.valid_columns != nullptr;
-        if (invocation.batch_size == 1) {
-            if (masked) {
-                launch_partial.template operator()<Tokens, false, true>();
+    const std::int32_t frame_splits =
+        frames == nullptr
+            ? splits
+            : (frames->splits_per_frame > 0 ? frames->splits_per_frame : splits);
+
+    // One dispatch, because the partial launches and the reduce share it, and the frame loop sits
+    // between them: every frame's partials land in the slots a whole-range launch would write,
+    // then one reduce reads them in split order (design 5.13).
+    const auto dispatch = [&](std::int32_t begin, std::int32_t end) {
+        const auto launch_partial = [&]<int Tokens, bool MultiBatch, bool Masked>() {
+            launch_k8v4_partial<Geometry, Tokens, MultiBatch, Masked>(
+                q, input, positions, scale, cache, invocation, logical_capacity, splits, partial_acc,
+                partial_m, partial_l, stream, begin, end);
+        };
+        const auto dispatch_metadata = [&]<int Tokens>() {
+            const bool masked = invocation.valid_columns != nullptr;
+            if (invocation.batch_size == 1) {
+                if (masked) {
+                    launch_partial.template operator()<Tokens, false, true>();
+                } else {
+                    launch_partial.template operator()<Tokens, false, false>();
+                }
+            } else if (masked) {
+                launch_partial.template operator()<Tokens, true, true>();
             } else {
-                launch_partial.template operator()<Tokens, false, false>();
+                launch_partial.template operator()<Tokens, true, false>();
             }
-        } else if (masked) {
-            launch_partial.template operator()<Tokens, true, true>();
-        } else {
-            launch_partial.template operator()<Tokens, true, false>();
+        };
+        switch (invocation.width) {
+        case 1:
+            dispatch_metadata.template operator()<1>();
+            break;
+        case 2:
+            dispatch_metadata.template operator()<2>();
+            break;
+        case 3:
+            dispatch_metadata.template operator()<3>();
+            break;
+        case 4:
+            dispatch_metadata.template operator()<4>();
+            break;
+        case 5:
+            dispatch_metadata.template operator()<5>();
+            break;
+        case 6:
+            dispatch_metadata.template operator()<6>();
+            break;
+        case 7:
+            if constexpr (Geometry::GroupSize == 6) {
+                dispatch_metadata.template operator()<7>();
+                break;
+            }
+            throw std::invalid_argument("unsupported query-row tile");
+        case 8:
+            if constexpr (Geometry::GroupSize == 6) {
+                dispatch_metadata.template operator()<8>();
+                break;
+            }
+            throw std::invalid_argument("unsupported query-row tile");
+        default:
+            throw std::invalid_argument("causal_attention_small_t_k8v4_launch: unsupported T");
         }
     };
 
-    switch (invocation.width) {
-    case 1:
-        dispatch_metadata.template operator()<1>();
-        break;
-    case 2:
-        dispatch_metadata.template operator()<2>();
-        break;
-    case 3:
-        dispatch_metadata.template operator()<3>();
-        break;
-    case 4:
-        dispatch_metadata.template operator()<4>();
-        break;
-    case 5:
-        dispatch_metadata.template operator()<5>();
-        break;
-    case 6:
-        dispatch_metadata.template operator()<6>();
-        break;
-    case 7:
-        if constexpr (Geometry::GroupSize == 6) {
-            dispatch_metadata.template operator()<7>();
-            break;
+    if (frames == nullptr || window_tokens <= 0 || frames->splits_per_frame <= 0) {
+        dispatch(0, splits);
+    } else {
+        for (std::int32_t frame = 0, begin = 0; begin < splits; ++frame) {
+            const std::int32_t end = begin + frame_splits < splits ? begin + frame_splits : splits;
+            std::int32_t first     = 0;
+            std::int32_t count     = 0;
+            frame_page_range(begin, end, first, count);
+            // The caller turns this into its own stream wait, its copy of the frame's pages and
+            // its record of the frame being read: this call owns the launches, not the link.
+            if (frames->wait != nullptr) { frames->wait(frames->context, frame, first, count); }
+            dispatch(begin, end);
+            if (frames->consumed != nullptr) {
+                frames->consumed(frames->context, frame, first, count);
+            }
+            begin = end;
         }
-        throw std::invalid_argument("unsupported query-row tile");
-    case 8:
-        if constexpr (Geometry::GroupSize == 6) {
-            dispatch_metadata.template operator()<8>();
-            break;
-        }
-        throw std::invalid_argument("unsupported query-row tile");
-    default:
-        throw std::invalid_argument("causal_attention_small_t_k8v4_launch: unsupported T");
     }
 
     const bool masked = invocation.valid_columns != nullptr;
@@ -237,7 +285,7 @@ void causal_attention_small_t_k8v4_launch(
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
     Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream,
-    float* partial_out, CausalSplitRange splits) {
+    float* partial_out, CausalSplitRange splits, const CausalAttentionFrameHook* frames) {
     const CausalAppendInput input{static_cast<const __nv_bfloat16*>(k.data),
                                   static_cast<const __nv_bfloat16*>(v.data)};
     const CausalSmallTInvocation invocation{
@@ -255,7 +303,8 @@ void causal_attention_small_t_k8v4_launch(
     with_causal_query_geometry(q.ne[1], [&]<typename Geometry>() {
         causal_attention_small_t_k8v4_launch_for<Geometry>(q, input, positions, scale, cache,
                                                            invocation, envelope, partial_acc,
-                                                           partial_m, partial_l, out, stream);
+                                                           partial_m, partial_l, out, stream,
+                                                           frames);
     });
 }
 
@@ -279,7 +328,8 @@ void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& 
     with_causal_query_geometry(q.ne[1], [&]<typename Geometry>() {
         causal_attention_small_t_k8v4_launch_for<Geometry>(q, input, positions, scale, batch_cache,
                                                            invocation, envelope, partial_acc,
-                                                           partial_m, partial_l, out, stream);
+                                                           partial_m, partial_l, out, stream,
+                                                           nullptr);
     });
 }
 

@@ -356,7 +356,11 @@ bool launch_chunked_small_t(const Tensor& q, const Tensor& k, const Tensor& v,
                             const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
                             CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
                             Tensor& out, cudaStream_t stream, const void* gate,
-                            float* partial_out) {
+                            float* partial_out, const CausalAttentionFrameHook* frames) {
+    if (frames != nullptr && frames->splits_per_frame > 0) {
+        throw std::invalid_argument(
+            "causal_softmax_attention: a framed launch takes no parallel query tiles");
+    }
     if (const std::int32_t tile = detail::causal_attention_parallel_tile_width(
             q.ne[1], q.ne[2], q.ne[3], cache.storage);
         tile > 0) {
@@ -386,7 +390,7 @@ bool launch_chunked_small_t(const Tensor& q, const Tensor& k, const Tensor& v,
         detail::causal_attention_small_t_launch(q, k, v, positions, valid_columns, table_rows,
                                                 scale, cache, envelope, begin, count, partial.acc,
                                                 partial.m, partial.l, out, stream, nullptr,
-                                                partial_out);
+                                                partial_out, {}, frames);
     }
     return false;
 }
@@ -753,7 +757,7 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
                               float scale, PagedKVBatchLayerView cache,
                               CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
                               Tensor& out, cudaStream_t stream, const Tensor* gate,
-                              Tensor* partial) {
+                              Tensor* partial, const CausalAttentionFrameHook* frames) {
     constexpr const char* op = "causal_softmax_attention";
     validate_batched_attention_tensors(q, positions, valid_columns, kv_table_rows, out, cache,
                                        geometry, envelope, scale, op);
@@ -793,6 +797,19 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
             "causal_softmax_attention: a position-split cache needs a valid rank and a partial");
     }
 
+    // A framed call is one sequence's decode over the whole window: no position split (a partial
+    // per rank and a frame are different partitions of the keys) and no query segments.
+    if (frames != nullptr && frames->splits_per_frame > 0) {
+        if (partial != nullptr) {
+            throw std::invalid_argument(
+                "causal_softmax_attention: a framed launch writes no partial output");
+        }
+        if (cache.page_stride > 1) {
+            throw std::invalid_argument(
+                "causal_softmax_attention: a framed launch takes no position split");
+        }
+    }
+
     auto scope = workspace.scope();
     const detail::CausalAttentionRoute route =
         detail::causal_attention_resolve_route(q.ne[1], width, batch, cache.storage, envelope);
@@ -819,7 +836,7 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
         detail::causal_attention_small_t_launch(
             q, k, v, positions, valid_columns, kv_table_rows, scale, cache, envelope, 0, width,
             partial.acc, partial.m, partial.l, out, stream,
-            (gate != nullptr && fusable) ? gate->data : nullptr, partial_out);
+            (gate != nullptr && fusable) ? gate->data : nullptr, partial_out, {}, frames);
         if (gate != nullptr && !fusable) { sigmoid_mul(*gate, out, stream); }
         return;
     }

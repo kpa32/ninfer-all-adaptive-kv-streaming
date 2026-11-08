@@ -1,5 +1,8 @@
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/execution/text.h"
+
+#include <cstdio>
+#include <cstdlib>
 #include "models/qwen3_5/execution/attention.h"
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/linear.h"
@@ -2059,6 +2062,61 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                         kv_stream_space_->upload(compact_layer, kv_stream_copy_);
                         CUDA_CHECK(cudaStreamWaitEvent(
                             ctx_.stream, kv_stream_space_->ready_event(compact_layer), 0));
+                        // TEMPORARY DIAGNOSTIC (streamed KV): does this layer's ring hold the
+                        // authority's bytes at the moment its attention is about to read them?
+                        if (std::getenv("NINFER_KVSTREAM_CHECK") != nullptr) {
+                            static int rounds = 0;
+                            if (rounds < 1) {
+                                const std::uint32_t streamed = kv_stream_space_->window_start();
+                                if (streamed != 0) {
+                                    const auto& pool  = batch_text_kv_->page_pool();
+                                    const auto layout =
+                                        plan_host_kv_page_layout(pool.geometry());
+                                    HostKVArena scratch(
+                                        layout.page_stride * 3,
+                                        std::span<const HostKVPageLayout>(&layout, 1));
+                                    auto records      = scratch.allocate(layout, 3);
+                                    auto records_view = scratch.writable_view(*records);
+                                    std::uint32_t bad = 0;
+                                    for (std::uint32_t index = 0; index < 3; ++index) {
+                                        const std::uint32_t page =
+                                            index == 2 ? streamed - 1U : index * (streamed / 2U);
+                                        const std::int32_t slot = kv_stream_ring_slot(
+                                            page, kv_stream_space_->split(),
+                                            kv_stream_space_->layers());
+                                        pool.copy_to_host_pages(slot, 1,
+                                                                records_view.subview(index, 1),
+                                                                RankStreams(ctx_.stream));
+                                        CUDA_CHECK(cudaStreamSynchronize(ctx_.stream));
+                                        const std::byte* got =
+                                            records_view.subview(index, 1).data();
+                                        const std::byte* want =
+                                            kv_stream_space_->host_pages()
+                                                .subview(page, 1U)
+                                                .data();
+                                        std::size_t diff = 0;
+                                        while (diff < layout.page_stride &&
+                                               got[diff] == want[diff]) {
+                                            ++diff;
+                                        }
+                                        if (diff != layout.page_stride) { ++bad; }
+                                        std::fprintf(stderr,
+                                                     "KVSTREAM-RING layer=%u page=%u slot=%d "
+                                                     "%s first_diff=%zu\n",
+                                                     compact_layer, page, slot,
+                                                     diff == layout.page_stride ? "ok" : "BAD",
+                                                     diff);
+                                    }
+                                    if (compact_layer + 1U ==
+                                        kv_stream_space_->layers()) {
+                                        ++rounds;
+                                    }
+                                    std::fprintf(stderr,
+                                                 "KVSTREAM-RING round done streamed=%u bad=%u\n",
+                                                 streamed, bad);
+                                }
+                            }
+                        }
                     }
                     attn_mix(block, x, compact, ph);
                     if (kv_stream_space_ != nullptr) {

@@ -51,9 +51,10 @@ public:
     }
 
     // Host pages of one layer: page `p` is record `p` of this view, so a caller can copy a run of
-    // them with a plain 2D transfer or point the append Ops at them.
-    [[nodiscard]] HostKVAllocationView host_pages() noexcept;
-    [[nodiscard]] HostKVAllocationConstView host_pages() const noexcept;
+    // them with a plain 2D transfer or point the append Ops at them. Every layer has its own run:
+    // two layers' page `p` are different bytes and never share a record.
+    [[nodiscard]] HostKVAllocationView host_pages(std::uint32_t layer) noexcept;
+    [[nodiscard]] HostKVAllocationConstView host_pages(std::uint32_t layer) const noexcept;
 
     // Device slot handles, indexed by slot number.
     [[nodiscard]] std::uint32_t slot_count() const noexcept { return slot_count_; }

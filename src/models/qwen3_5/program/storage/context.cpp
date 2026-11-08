@@ -1800,7 +1800,7 @@ void ProgramImpl::commit_sequence_kv(SequenceState& sequence, std::uint32_t main
                                             compute_streams);
                     CUDA_CHECK(cudaStreamSynchronize(compute_streams[0]));
                     const std::byte* got  = records_view.subview(checked_pages % 4U, 1U).data();
-                    const std::byte* want = text_stream_space->host_pages().subview(page, 1U).data();
+                    const std::byte* want = text_stream_space->host_pages(layer).subview(page, 1U).data();
                     std::size_t diff      = 0;
                     while (diff < layout.page_stride && got[diff] == want[diff]) { ++diff; }
                     ++checked_pages;

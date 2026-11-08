@@ -1877,7 +1877,7 @@ ProgramImpl::advance_prefill_batch(std::span<const std::uint32_t> lanes,
                         const std::byte* got =
                             records_view.subview(checked % 4U, 1U).data();
                         const std::byte* want =
-                            text_stream_space->host_pages().subview(page, 1U).data();
+                            text_stream_space->host_pages(layer).subview(page, 1U).data();
                         std::size_t diff = 0;
                         for (; diff < layout.page_stride; ++diff) {
                             if (got[diff] != want[diff]) { break; }

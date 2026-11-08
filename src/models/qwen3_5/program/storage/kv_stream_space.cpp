@@ -60,9 +60,9 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
     // The authority: every page of every streaming layer, for the whole context. A streamed page
     // is read from here on every round, so this allocation is what lets the context exceed the
     // device pool.
-    arena_ = std::make_unique<HostKVArena>(page_bytes_ * pages_per_layer_,
+    arena_ = std::make_unique<HostKVArena>(page_bytes_ * pages_per_layer_ * layers_,
                                            std::span<const HostKVPageLayout>(&host_layout_, 1));
-    auto host = arena_->allocate(host_layout_, pages_per_layer_);
+    auto host = arena_->allocate(host_layout_, pages_per_layer_ * layers_);
     if (!host) {
         throw std::invalid_argument("The host KV arena is too small for this cache's context");
     }
@@ -91,10 +91,14 @@ StreamedKVSpace::~StreamedKVSpace() {
     destroy_events(dropped_);
 }
 
-HostKVAllocationView StreamedKVSpace::host_pages() noexcept { return arena_->writable_view(host_); }
+HostKVAllocationView StreamedKVSpace::host_pages(std::uint32_t layer) noexcept {
+    if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
+    return arena_->writable_view(host_).subview(layer * pages_per_layer_, pages_per_layer_);
+}
 
-HostKVAllocationConstView StreamedKVSpace::host_pages() const noexcept {
-    return arena_->view(host_);
+HostKVAllocationConstView StreamedKVSpace::host_pages(std::uint32_t layer) const noexcept {
+    if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
+    return arena_->view(host_).subview(layer * pages_per_layer_, pages_per_layer_);
 }
 cudaEvent_t StreamedKVSpace::ready_event(std::uint32_t layer) const {
     if (layer >= ready_.size()) { throw std::out_of_range("Streamed KV layer is out of range"); }
@@ -127,7 +131,6 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     if (active_pages > pages_per_layer_) {
         throw std::invalid_argument("A streamed KV frontier exceeds the cache's context");
     }
-    HostKVAllocationView host = host_pages();
     for (std::uint32_t page = active_; page < active_pages; ++page) {
         // The page appears in its layer's window, where this round's append writes it.
         for (std::uint32_t layer = 0; layer < layers_; ++layer) {
@@ -139,8 +142,8 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
             // page takes - the two pages' indices differ by the window depth, so it is the same.
             const std::uint32_t dropped     = page - split_.resident_pages;
             const std::int32_t dropped_slot = kv_stream_window_slot(layer, dropped, split_);
-            cache_->page_pool().copy_to_host_pages(dropped_slot, 1, host.subview(dropped, 1),
-                                                   streams);
+            cache_->page_pool().copy_to_host_pages(
+                dropped_slot, 1, host_pages(layer).subview(dropped, 1), streams);
             publish_slot(layer, dropped, kv_stream_ring_slot(dropped, split_, layers_), streams);
         }
     }
@@ -162,8 +165,8 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
         // pool turns the run into one strided transfer per plane. The host copies a round's window
         // dropped are ordered on the compute stream, so the uploads wait for them first.
         CUDA_CHECK(cudaStreamWaitEvent(copy, dropped_[layer], 0));
-        cache_->page_pool().copy_from_host_pages(host_pages().data(), host_layout_, ring_base_,
-                                                 count, RankStreams(copy));
+        cache_->page_pool().copy_from_host_pages(host_pages(layer).data(), host_layout_,
+                                                 ring_base_, count, RankStreams(copy));
     }
     CUDA_CHECK(cudaEventRecord(ready_[layer], copy));
 }

@@ -2148,7 +2148,7 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                                         const std::byte* got =
                                             records_view.subview(index, 1).data();
                                         const std::byte* want =
-                                            kv_stream_space_->host_pages()
+                                            kv_stream_space_->host_pages(compact_layer)
                                                 .subview(page, 1U)
                                                 .data();
                                         std::size_t diff = 0;

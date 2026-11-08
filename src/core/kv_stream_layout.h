@@ -10,8 +10,12 @@ namespace ninfer {
 // `resident_pages` of every streaming layer stay on the device as a window over that layer's
 // newest pages; the remaining `ring_pages` slots are shared by all of those layers -- one layer's
 // streamed pages occupy them while that layer attends, and the next layer reuses the same slots.
-// The ring is therefore one layer deep, not one pool deep, which is what makes a 16 GB card able
-// to hold a 262 144-token context (docs/maintainer/kv-streaming-design.md, sections 4.1-4.5).
+//
+// The ring must be at least one layer deep, because a dense attention reads a whole layer at once;
+// it need not be only that deep. Any depth beyond one layer's streamed pages is spare, and the
+// execution loop should spend it prefetching later layers so their copies overlap the current
+// layer's attention (docs/maintainer/kv-streaming-design.md, 4.4 and 4.10): at 120K tokens the ring
+// below already holds four layers, and using it is what turns 44 ms of copy per round into overlap.
 struct KVStreamSplit {
     // Resident pages of one layer, a window over its newest pages.
     std::uint32_t resident_pages = 0;

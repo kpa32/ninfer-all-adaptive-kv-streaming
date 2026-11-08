@@ -1,15 +1,24 @@
 # KV 流式：工作交接（临时文档，全部里程碑完成后删除）
 
-> 读这一份就能接着干。最后更新：HEAD `a0633d69`（M1 完成）。
+> 读这一份就能接着干。最后更新：HEAD `c867f4c9`（M1 完成、headroom 默认已改、深环已否决）。
 > 设计权威：`docs/maintainer/kv-streaming-design.md`；外部资料：
 > `docs/maintainer/adaptive-kv-streaming-inputs.md`。
 
 ## 0 一句话状态
 
-**M1 完成**：262 144 原生上下文在 16 GB 卡上跑通 —— 250 964 token 的 prompt，
-`rk8v4` + MTP3，decode **14.1 tok/s**（设计上界 15.3 的 92%），峰值显存 15 028 MiB / 16 376。
-一致性首个证据：80 404 token 的 prompt 在全驻留与「68 页在环」下**逐字节相同**。
-下一步是 M2（把一致性扩到多档）、M3（自适应控制器）、M4（分段流水）、M5（共存）。
+**M1 完成**：262 144 原生上下文在 16 GB 卡上跑通。当前实测（`rk8v4` + MTP3 + `--greedy`，
+`--invariant-attention`）：
+
+| 实际上下文 | 流式 decode | 同 prompt 全驻留 | 一致性 |
+|---:|---:|---:|---|
+| 120 000 | **81.7 tok/s** | 83.6 | 逐字节相同 |
+| 190 000 | 27.3 | 起不来 | — |
+| 250 964 | **16.9 tok/s** | 起不来 | — |
+
+拐点（容量装不下 KV 才流式）约 **117 K token**；容量 120 000 开 `--kv-stream` 时切分为
+`30000/30000`（环为空），与全驻留只差关图的 3.1%（§5.6）。
+**下一步**：M2 一致性扩档、关图以拿回 3%（参考实现在流式下仍捕图）、M5 共存；
+**不要再做深环**（§5.7 已实测否决）。
 
 ## 1 环境与命令
 
@@ -100,17 +109,21 @@ planner 实际切分（`--max-context 262144 --kv-capacity auto`；`auto` 随启
 - 环内字节与表项：曾经在 prefill 与 decode 轮各做过一次直接校验（D2H 环槽 ↔ 主机段，并核
   表项 `entry[p] = 16R+p` / `L·R + p mod R`），修完第 5 项后**未再复测**（诊断代码已删）。
 
-## 5 下一步（M2 → M5）
+## 5 下一步（M2、关图、M5）
 
-1. **M2 一致性**：至少两档（建议 80K 与 120K token）× 两种 dtype（`rk8v4`、`int8`），
-   全部加 `--invariant-attention`，比较 stdout 逐字节；120K 那档基线用 `rk4v4`（基线装得下）。
-   若要更强证据，写一个 host 权威 ↔ 设备全量的逐页比对工具（现在的诊断已删，需要重建）。
-2. **M3 控制器**（设计 §4.8）：三指标（deadline miss、copy busy、ring peak）+ hysteresis + 刹车；
-   同时把 §7 的指标接进 summary（`resident`/`ring`/`uploaded_bytes`/`wait_ms`）。
-3. **M4 分段流水**（§4.10）：把 14.1 抬到 ~19（拷贝与计算重叠）。需要按页区间出偏结果 + 合并。
-4. **M5 共存**：多序列、Hybrid prefix cache、TP 各自「支持或明确拒绝」。
-5. **收尾**：`docs/maintainer/paged-kv-cache.md` 的「plane 按层」要改成「按 kind（流式下）」；
-   `tests/cmake/CoreTests.cmake` 里 `ninfer_kv_stream_layout_test` 仍**未**在 CMake 下跑过。
+排过的顺序，按“实测收益 / 风险”重排过：
+
+1. **关图以拿回 3.1%**（参考实现在流式下仍装图，见它 `graph_decode_span_pages`/
+   `ring->last_graph_decode`）：我们为流式关掉 CUDA Graph，代价是每个容量都 −3%，也是与参考曲线
+   左侧唯一的差别。阻断点：表发布必须在捕获前，而捕获中会跳过 fence（M0-1）。
+2. **M2 一致性扩档**：现在有三档证据（80 404 / 119 664 / 190 000，后两档见 §5.6）；
+   补 `int8` 一档即可。若要更强证据，重建一个 host 权威 ↔ 设备全量的逐页比对工具（诊断已删）。
+3. **M5 共存**：多序列、Hybrid prefix cache、TP 各自“支持或明确拒绝”。
+4. **收尾**：`tests/cmake/CoreTests.cmake` 里 `ninfer_kv_stream_layout_test` 仍**未**在 CMake 下跑过；
+   M1 完成后删除本交接文档。
+
+**已被实测否决，不要重做**：深环 / 跨层预取（§5.7 每一个配置都更慢）；
+把 headroom 再往下压到 128 MiB（17.7 vs 16.9，但启动后只剩 113 MiB）。
 
 ## 6 用户硬性约束（违反会被回滚）
 

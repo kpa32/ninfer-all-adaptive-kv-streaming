@@ -1,3 +1,11 @@
+---
+id: qwen3-5-model
+type: architecture-design
+title: Qwen3.5 模型参考（Dense / MoE / MTP / Vision）
+status: active
+parent: ninfer-27b-4080s
+---
+
 # Qwen3.5 model reference
 
 This reference describes the Qwen3.5 Dense and MoE mathematics implemented by NInfer, including

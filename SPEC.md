@@ -1,3 +1,10 @@
+---
+id: ninfer-27b-4080s
+type: goal-and-requirements
+title: 单目标 NInfer：Qwen3.8-27B Dense 在 RTX 4080 SUPER 上的自适应 KV 流式
+status: draft
+---
+
 # SPEC：单目标 NInfer + Qwen3.8-27B 自适应 KV 流式
 
 状态：draft（阶段 1 审计产出，等所有者确认）

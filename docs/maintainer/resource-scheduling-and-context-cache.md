@@ -1,3 +1,11 @@
+---
+id: resource-scheduling-context-cache
+type: architecture-design
+title: NInfer 资源调度与上下文缓存
+status: active
+parent: engine-architecture
+---
+
 # NInfer 资源调度与上下文缓存
 
 本文定义 NInfer 在有限 Device/Host 资源下选择、验证并提交上下文状态的规则。它是 admission

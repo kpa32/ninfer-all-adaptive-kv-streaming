@@ -1,3 +1,13 @@
+---
+id: phase-1-cutlist
+type: task-spec
+title: 阶段 1 删减清单（待所有者逐项批准）
+status: draft
+parent: ninfer-27b-4080s
+references:
+  - scope-single-target
+---
+
 # CUTLIST：阶段 1 删减清单 v2（待所有者逐项批准）
 
 状态：**提案，未执行**。分支 `target/4080s-27b` 到这份文件为止只新增文档，未删除/修改任何源码、

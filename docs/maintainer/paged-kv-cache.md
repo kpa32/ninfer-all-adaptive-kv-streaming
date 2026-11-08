@@ -1,3 +1,11 @@
+---
+id: paged-kv-cache
+type: architecture-design
+title: NInfer Paged KV Context Store
+status: active
+parent: engine-architecture
+---
+
 # NInfer Paged KV Context Store
 
 本文定义 NInfer growing KV 的物理存储与消费合同。它是 typed KV pools、logical pages、

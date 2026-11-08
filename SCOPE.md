@@ -1,3 +1,11 @@
+---
+id: scope-single-target
+type: architecture-design
+title: 产品范围契约（sm_89 · Qwen3.8-27B Dense · 文本与 Vision）
+status: draft
+parent: ninfer-27b-4080s
+---
+
 # 产品范围：单目标 NInfer（RTX 4080 SUPER · Qwen3.8-27B Dense）
 
 本文件是这个仓库唯一的**产品范围契约**，也是删减的许可边界。代码、测试、文档、构建目标都以

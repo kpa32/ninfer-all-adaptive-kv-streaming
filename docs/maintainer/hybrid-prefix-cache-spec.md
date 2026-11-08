@@ -1,3 +1,11 @@
+---
+id: hybrid-prefix-cache
+type: module-design
+title: Hybrid prefix cache
+status: active
+parent: resource-scheduling-context-cache
+---
+
 # Hybrid prefix cache
 
 The hybrid prefix cache (HPC) is the default prefix-cache mode of `ninfer-serve`

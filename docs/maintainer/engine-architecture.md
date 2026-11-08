@@ -1,3 +1,11 @@
+---
+id: engine-architecture
+type: architecture-design
+title: NInfer Engine 架构
+status: active
+parent: ninfer-27b-4080s
+---
+
 # NInfer Engine 架构
 
 本文定义 NInfer 的模型实例、执行所有权与顶层控制面，说明权重如何进入固定模型实现，以及请求、

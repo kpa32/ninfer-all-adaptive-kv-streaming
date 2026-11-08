@@ -6,6 +6,7 @@
 #include "models/qwen3_5/state/decoder_state.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <vector>
@@ -76,7 +77,13 @@ public:
 
     // Forgets the context: the frontier returns to zero and the next request republishes each
     // entry as its pages appear. Nothing is copied, because those pages are written again.
-    void reset() noexcept { active_ = 0; }
+    void reset() noexcept {
+        active_ = 0;
+        // The ring holds the previous request's pages, so nothing may be read as if it were this
+        // request's.
+        region_layer_.assign(region_layer_.size(), kNoLayer);
+        region_pages_.assign(region_pages_.size(), 0);
+    }
 
     // Copies layer `layer`'s streamed pages (`[0, window_start)`) from their host pages into the
     // ring, on `copy`. The copies are asynchronous and land in the ring slots the tables name; the
@@ -85,7 +92,17 @@ public:
     // The ring is shared, so a round copies each layer into its own region of it: the region the
     // layer `ring_depth` steps back occupied is the one this copy overwrites, which is why the
     // caller orders it after that layer's consumption rather than the previous layer's.
+    //
+    // A region that already holds this layer's pages up to the frontier only receives the pages it
+    // lacks. That is what lets the last layers of a round copy the *next* round's first layers into
+    // their regions without those pages being copied twice.
     void upload(std::uint32_t layer, cudaStream_t copy);
+
+    // First slot of the ring region layer `layer`'s streamed pages occupy.
+    [[nodiscard]] std::uint32_t ring_region(std::uint32_t layer) const noexcept {
+        return ring_base_ + (layer % split_.ring_depth) *
+                                kv_stream_ring_extent(split_, layers_);
+    }
 
     // Device bytes one layer's streamed pages move in one upload, and what a round of every layer
     // moves, for the round's plan and its reporting.
@@ -147,8 +164,7 @@ private:
     std::size_t page_bytes_            = 0;
     HostKVPageLayout host_layout_;
     HostKVAllocation host_;
-    std::vector<cudaEvent_t> ready_;
-    std::vector<cudaEvent_t> consumed_;
+    std::vector<cudaEvent_t> ready_;    std::vector<cudaEvent_t> consumed_;
     std::vector<cudaEvent_t> dropped_;
     // Timing pairs, one per layer for each of the two phases of a round: the copy on the copy
     // stream and the wait for it on the compute stream.
@@ -167,6 +183,14 @@ private:
     // the request, so the live value is not what a finished request moved.
     std::uint32_t round_streamed_pages_ = 0;
     std::uint32_t active_ = 0;
+    // What each region of the ring holds: the layer that last copied into it and how many of that
+    // layer's pages from page 0 it has. A copy of the same layer into the same region moves only
+    // the pages it does not already hold. `kNoLayer` means the region holds nothing (a new
+    // request, or a region no layer has reached yet).
+    static constexpr std::uint32_t kNoLayer =
+        std::numeric_limits<std::uint32_t>::max();
+    std::vector<std::uint32_t> region_layer_;
+    std::vector<std::uint32_t> region_pages_;
 };
 
 } // namespace ninfer::models::qwen3_5

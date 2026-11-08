@@ -78,6 +78,8 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     create_events(ready_, layers_);
     create_events(consumed_, layers_);
     create_events(dropped_, layers_);
+    region_layer_.assign(split_.ring_depth, kNoLayer);
+    region_pages_.assign(split_.ring_depth, 0);
     // Timing events keep their times, so they are created without the disable-timing flag, and
     // only when this run asks to be timed.
     if (report_) {
@@ -230,16 +232,31 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
 void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
     if (copy == nullptr) { throw std::invalid_argument("A streamed KV upload needs a copy stream"); }
-    const std::uint32_t count = window_start();
-    if (report_) { CUDA_CHECK(cudaEventRecord(copy_begin_[layer], copy)); }
-    if (count != 0) {
-        // Every streamed page of this layer, page 0 first, into the consecutive ring slots; the
-        // pool turns the run into one strided transfer per plane. The host copies a round's window
-        // dropped are ordered on the compute stream, so the uploads wait for them first.
-        CUDA_CHECK(cudaStreamWaitEvent(copy, dropped_[layer], 0));
-        cache_->page_pool().copy_from_host_pages(host_pages(layer).data(), host_layout_,
-                                                 ring_base_, count, RankStreams(copy));
+    const std::uint32_t count   = window_start();
+    const std::uint32_t region  = layer % split_.ring_depth;
+    // The pages this region already holds for this layer are not copied twice: a round that
+    // prefetched the next round's first layers only moves the pages appended since.
+    const std::uint32_t already =
+        region_layer_[region] == layer && region_pages_[region] <= count ? region_pages_[region]
+                                                                        : 0U;
+    if (report_) {
+        // A prefetched copy was recorded for this layer and never collected: take its time before
+        // the pair is recorded again, or the round would report less traffic than it moved.
+        add_timing(copy_begin_[layer], copy_end_[layer], copy_pending_[layer], copy_seconds_);
+        CUDA_CHECK(cudaEventRecord(copy_begin_[layer], copy));
     }
+    if (count > already) {
+        // The pages `[already, count)` of this layer, into the ring slots they map to; the pool
+        // turns the run into one strided transfer per plane. The host copies a round's window
+        // dropped are ordered on the compute stream, so the uploads that read them wait first.
+        CUDA_CHECK(cudaStreamWaitEvent(copy, dropped_[layer], 0));
+        cache_->page_pool().copy_from_host_pages(
+            host_pages(layer).subview(already, count - already).data(), host_layout_,
+            static_cast<std::int32_t>(ring_region(layer) + already), count - already,
+            RankStreams(copy));
+    }
+    region_layer_[region] = layer;
+    region_pages_[region] = count;
     if (report_) {
         CUDA_CHECK(cudaEventRecord(copy_end_[layer], copy));
         copy_pending_[layer] = 1;

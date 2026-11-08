@@ -2074,7 +2074,17 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                                 issue(target);
                             }
                         }
-                        if (current + depth - 1 < count) { issue(current + depth - 1); }
+                        if (current + depth - 1 < count) {
+                            issue(current + depth - 1);
+                        } else if (!prefill) {
+                            // The round's last layers prefetch the next round's first ones: the
+                            // region they need is freed by this round's last consumption, which is
+                            // a whole layer of compute before the next round reads it. Without this
+                            // a round starts with `depth` copies that nothing can overlap, and they
+                            // measured as the 11 ms a round that no ring depth removed (design
+                            // 5.12).
+                            issue(current + depth - 1 - count);
+                        }
                         // The wait is measured: whatever it costs here is copy time this round
                         // could not hide behind compute.
                         kv_stream_space_->wait_ready(current, ctx_.stream);

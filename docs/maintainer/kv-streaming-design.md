@@ -361,6 +361,44 @@ copy span 0 → attend span 0（偏 softmax）→ merge
 
 ---
 
+### 4.12 运行时接入：绕过哪一层（M1 的第二个结构性决定）
+
+设计到这里都有一个未回答的问题：扁平池接进去后，今天那些“逻辑页 ↔ 物理页”的机制怎么办。
+答案是把 text pool 的地址空间整个换掉，
+
+**今天的两层**（`program/storage/kv_store.h`）：
+
+| 层 | 职责 | 与流式的关系 |
+|---|---|---|
+| `LogicalKVPageStore` | 逻辑页按需 `materialize` 成一个 device lease；带 host replica、epoch、引用计数、`committed/protected columns` | **不适用**：它假设每个 occupied 逻辑页都有 device replica（`page.device_replica.emplace(...)`），而流式下非常驻页**故意没有** device replica；它的 device 页是需求分配，流式是确定映射 |
+| `KVAddressSpaceStore` | 一条序列的逻辑页 → 物理页地址空间 | **不需要**：流式下地址空间就是 16 张每层表，内容由 `kv_stream_slot` 决定 |
+
+**所以**：流式模式下 text pool 用 `KVStreamSpace` 取代前两层，它拥有：
+
+1. 扁平 `DeviceKVPagePool` 的**全部槽 lease**（启动时一次性 `reserve` + `materialize`，
+   于是 `available_pages() == 0`——流式池没有“空闲页”这个概念）。
+2. 16 行每层表（`row_at(layer)`），启动时把流式段写一次（恒等映射），窗口每 64 token 转动。
+3. host 权威副本（`HostKVArena` + `plan_host_kv_page_layout`），容量 = `P × page_bytes` 每层。
+4. 每轮拷贝计划与 `ready`/`consumed` 事件。
+
+**连带后果（M1 必须一起处理）**：
+
+- `ProgramImpl` 的 `text_kv_pages` / `text_kv_addresses` 在流式下为空；所有使用它们的路径必须
+  逐一处理：retention/checkpoint/prefix 路径**拒绝**（`--kv-stream` 已要求 context cache 关闭），
+  其余（append / attention）只经 view，不经 store。
+- `Vision` 的 KV tier 借用与 `KvExpertLoan` 的专家缓存都拿“空闲页”做抵押（
+  `unpromised_free_pages()`）；流式池没有空闲页 → 这两个借款在流式下必须关闭。
+- admission/pressure 读 `usable_pages()`（`pressure.cpp:2635`、`request_plan.cpp:246`）→
+  流式下容量由 `max_context` 决定，不由池页数决定，这两处要改走 `max_context`。
+- 写入路径（§4.6）：新 token 落常驻窗口，然后异步 D2H 到 host 权威副本；prefill 直接写 host 页
+  （`qwen4_exp/executor.cpp:3457` 已有先例），再在 decode 首轮把常驻窗口拉回设备。
+- 拷贝的投递点：解码轮的层循环（不是图内）——图内只放 `cudaEventWaitExternal` 节点。
+
+这条决定让 M1 的范围变大（不是“加一个 allocator”，而是“多一套地址空间”），但它也是唯一正确的：
+把流式塞进 `LogicalKVPageStore` 会在每次页搬动时继承需求分配的语义，而那正是我们要避开的。
+
+---
+
 ### 4.11 原理图
 
 **（1）扁平槽池与每层表**：一个槽就是一层一页；常驻槽按层分段，环槽跨层复用；

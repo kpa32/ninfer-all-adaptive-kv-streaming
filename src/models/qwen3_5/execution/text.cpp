@@ -1,8 +1,6 @@
 #include "models/qwen3_5/program/internal.h"
 #include "models/qwen3_5/execution/text.h"
 
-#include <cstdio>
-#include <cstdlib>
 #include "models/qwen3_5/execution/attention.h"
 #include "models/qwen3_5/execution/gdn.h"
 #include "models/qwen3_5/execution/linear.h"
@@ -2025,16 +2023,6 @@ GdnReplayRecordLayer TextContext::replay_layer(std::uint32_t layer, std::int32_t
 template <class Tap>
 void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& tap) {
     const bool prefill      = ph == Phase::Prefill;
-    // TEMPORARY DIAGNOSTIC (streamed KV): which phases run, and do they carry the space?
-    if (std::getenv("NINFER_KVSTREAM_CHECK") != nullptr) {
-        static int calls = 0;
-        if (ph != Phase::Prefill && calls < 6) {
-            std::fprintf(stderr, "KVSTREAM-PHASE decode call=%d phase=%d columns=%d space=%d\n",
-                         calls, static_cast<int>(ph), x.ne[1],
-                         kv_stream_space_ != nullptr ? 1 : 0);
-            ++calls;
-        }
-    }
     const std::uint32_t end = parameters_.text.stage_end(stage);
     // The adapters' measures start from the residual the stage receives.
     steer(ops::SteerResidualStep::Measure, 0, -1, x);
@@ -2072,109 +2060,8 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                         kv_stream_space_->upload(compact_layer, kv_stream_copy_);
                         CUDA_CHECK(cudaStreamWaitEvent(
                             ctx_.stream, kv_stream_space_->ready_event(compact_layer), 0));
-                        // TEMPORARY DIAGNOSTIC (streamed KV): does this layer's ring hold the
-                        // authority's bytes at the moment its attention is about to read them?
-                        if (std::getenv("NINFER_KVSTREAM_CHECK") != nullptr) {
-                            static int rounds = 0;
-                            if (rounds < 3 && !prefill) {
-                                const std::uint32_t streamed = kv_stream_space_->window_start();
-                                if (streamed >= 20) {
-                                    // The table is what attention dereferences, so its entries are
-                                    // the thing to check, not only the bytes at the slots they
-                                    // ought to name.
-                                    {
-                                        const Tensor row = batch_text_kv_->execution_tables().row_at(
-                                            static_cast<std::int32_t>(compact_layer), 0);
-                                        const std::uint32_t entries =
-                                            static_cast<std::uint32_t>(row.ne[0]);
-                                        std::vector<std::int32_t> table(entries, -1);
-                                        CUDA_CHECK(cudaMemcpyAsync(
-                                            table.data(), row.data,
-                                            sizeof(std::int32_t) * entries,
-                                            cudaMemcpyDeviceToHost, ctx_.stream));
-                                        CUDA_CHECK(cudaStreamSynchronize(ctx_.stream));
-                                        const std::uint32_t active =
-                                            kv_stream_space_->active_pages();
-                                        std::uint32_t bad_entries = 0;
-                                        std::size_t first_bad       = 0;
-                                        for (std::uint32_t page = 0; page < active; ++page) {
-                                            const std::int32_t want =
-                                                page < streamed
-                                                    ? kv_stream_ring_slot(
-                                                          page,
-                                                          kv_stream_space_->split(),
-                                                          kv_stream_space_->layers())
-                                                    : kv_stream_window_slot(
-                                                          compact_layer, page,
-                                                          kv_stream_space_->split());
-                                            if (table[page] == want) { continue; }
-                                            if (bad_entries == 0) { first_bad = page; }
-                                            ++bad_entries;
-                                        }
-                                        std::fprintf(stderr,
- 
-                                                    "KVSTREAM-TABLE prefill=%d layer=%u active=%u "
-                                                     "streamed=%u bad=%u first_bad=%zu "
-                                                     "entry0=%d want0=%d entry_s=%d wants=%d\n",
-                                                     prefill ? 1 : 0, compact_layer, active, streamed, bad_entries,
-                                                     first_bad, table[0],
-                                                     kv_stream_ring_slot(
-                                                         0, kv_stream_space_->split(),
-                                                         kv_stream_space_->layers()),
-                                                     table[streamed],
-                                                     kv_stream_window_slot(
-                                                         compact_layer, streamed,
-                                                         kv_stream_space_->split()));
-                                    }
-                                    const auto& pool  = batch_text_kv_->page_pool();
-                                    const auto layout =
-                                        plan_host_kv_page_layout(pool.geometry());
-                                    HostKVArena scratch(
-                                        layout.page_stride * 3,
-                                        std::span<const HostKVPageLayout>(&layout, 1));
-                                    auto records      = scratch.allocate(layout, 3);
-                                    auto records_view = scratch.writable_view(*records);
-                                    std::uint32_t bad = 0;
-                                    for (std::uint32_t index = 0; index < 3; ++index) {
-                                        const std::uint32_t page =
-                                            index == 2 ? streamed - 1U : index * (streamed / 2U);
-                                        const std::int32_t slot = kv_stream_ring_slot(
-                                            page, kv_stream_space_->split(),
-                                            kv_stream_space_->layers());
-                                        pool.copy_to_host_pages(slot, 1,
-                                                                records_view.subview(index, 1),
-                                                                RankStreams(ctx_.stream));
-                                        CUDA_CHECK(cudaStreamSynchronize(ctx_.stream));
-                                        const std::byte* got =
-                                            records_view.subview(index, 1).data();
-                                        const std::byte* want =
-                                            kv_stream_space_->host_pages(compact_layer)
-                                                .subview(page, 1U)
-                                                .data();
-                                        std::size_t diff = 0;
-                                        while (diff < layout.page_stride &&
-                                               got[diff] == want[diff]) {
-                                            ++diff;
-                                        }
-                                        if (diff != layout.page_stride) { ++bad; }
-                                        std::fprintf(stderr,
-                                                     "KVSTREAM-RING layer=%u page=%u slot=%d "
-                                                     "%s first_diff=%zu\n",
-                                                     compact_layer, page, slot,
-                                                     diff == layout.page_stride ? "ok" : "BAD",
-                                                     diff);
-                                    }
-                                    if (compact_layer + 1U ==
-                                        kv_stream_space_->layers()) {
-                                        ++rounds;
-                                    }
-                                    std::fprintf(stderr,
-                                                 "KVSTREAM-RING round done streamed=%u bad=%u\n",
-                                                 streamed, bad);
-                                }
-                            }
-                        }
                     }
+
                     attn_mix(block, x, compact, ph);
                     if (kv_stream_space_ != nullptr) {
                         CUDA_CHECK(cudaEventRecord(

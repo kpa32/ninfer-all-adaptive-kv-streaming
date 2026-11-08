@@ -1,6 +1,5 @@
 #include "models/qwen3_5/program/storage/kv_stream_space.h"
 
-#include <cstdio>
 #include <stdexcept>
 
 namespace ninfer::models::qwen3_5 {
@@ -76,13 +75,6 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache)
     create_events(ready_, layers_);
     create_events(consumed_, layers_);
     create_events(dropped_, layers_);
-    // TEMPORARY DIAGNOSTIC (streamed KV): the split the planner actually granted.
-    std::fprintf(stderr,
-                 "KVSTREAM-SPLIT layers=%u resident=%u ring=%u slots=%u context=%u page_bytes=%zu "
-                 "host_mib=%.0f\n",
-                 layers_, split_.resident_pages, split_.ring_pages, slot_count_, cache.max_context(),
-                 page_bytes_, static_cast<double>(page_bytes_ * pages_per_layer_ * layers_) /
-                                 (1024.0 * 1024.0));
 }
 
 StreamedKVSpace::~StreamedKVSpace() {

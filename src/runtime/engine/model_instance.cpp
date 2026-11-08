@@ -965,6 +965,10 @@ ConstructedModel construct_model(const EngineOptions& requested, DeviceContext& 
                 std::move(experts), instance->steering.get());
             break;
         } catch (const std::exception& failure) {
+            // A failed allocation leaves its error latched on this thread, and the next CUDA call
+            // that reports a status of its own would otherwise claim it (arena.cu reports such a
+            // leftover as an unretrieved earlier error). Retrying clears it here, deliberately.
+            (void) cudaGetLastError();
             const std::uint32_t smallest = std::max<std::uint32_t>(
                 curve.minimum_main_page_groups, resolution.main_page_groups > retry_step_pages
                                                      ? resolution.main_page_groups -

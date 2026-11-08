@@ -58,13 +58,16 @@ inline constexpr std::size_t kDefaultKvCapacityHeadroomBytes = 1024ULL * 1024ULL
 
 // Headroom `--kv-capacity auto` leaves free when `--kv-stream` sizes the pool. Streaming serves one
 // sequence on one device with CUDA Graphs off, and its workspace arena is reserved separately from
-// this margin, so an idle gigabyte buys nothing while every page of it is worth real PCIe traffic.
-// The plan's device estimates are accurate to about 10 MiB: at 251K with rk4v4 and MTP the pool
-// planned against a 256 MiB margin still left 245.5 MiB free after startup, and against 128 MiB it
-// left 113-117 MiB in every measured configuration (docs/maintainer/kv-streaming-design.md, 5.5 and
-// 5.10). Below that margin the pool is worth about 117 resident pages a layer per 128 MiB, which is
-// 134 MB of PCIe traffic saved every round - roughly 5 ms of a 54 ms round at 251K with rk4v4.
-inline constexpr std::size_t kDefaultKvStreamHeadroomBytes = 128ULL * 1024ULL * 1024ULL;
+// this margin, so an idle gigabyte buys nothing while every page of it is worth real PCIe traffic:
+// at 251K with rk4v4, 128 MiB is about 117 more resident pages a layer, and 134 MB less traffic
+// every round (docs/maintainer/kv-streaming-design.md, 5.5 and 5.10).
+//
+// The margin only has to cover what the plan did not foresee, and the plan's device estimates are
+// accurate to about 10 MiB: a 256 MiB margin still left 245.5 MiB free after startup in every
+// measured configuration. It is also no longer the last line of defence - a Program that cannot get
+// the memory an automatic plan promised is rebuilt with a smaller pool - so this is a floor rather
+// than a reserve, at six times the measured error.
+inline constexpr std::size_t kDefaultKvStreamHeadroomBytes = 64ULL * 1024ULL * 1024ULL;
 
 // Flash-Next's default for EngineOptions::kv_resident_positions with host or disk experts.
 inline constexpr std::uint32_t kDefaultKvResidentPositions = 32768;

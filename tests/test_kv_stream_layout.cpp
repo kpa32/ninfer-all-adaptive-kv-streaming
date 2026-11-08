@@ -101,13 +101,8 @@ void slots_stay_inside_their_regions() {
     constexpr std::uint32_t kPages  = 96;
     for (std::uint32_t budget = kPages; budget <= kLayers * kPages; budget += 7) {
         const auto split = plan_kv_stream_split(budget, kPages, kLayers);
-        if (!split) {
-            // Only a pool that leaves nothing for the window is refused, and the refusal is what
-            // refuses_what_it_cannot_serve covers.
-            check(kv_stream_pool_pages(KVStreamSplit{kPages - 1, 0, 1}, kLayers) >= budget,
-                  "a refused budget cannot hold a window at all");
-            continue;
-        }
+        check(split.has_value(), "any budget that holds one layer must plan");
+        if (!split) { continue; }
         const std::uint32_t pool = kv_stream_pool_pages(*split, kLayers);
         check(pool <= budget, "the split never exceeds its budget");
         for (std::uint32_t active = 1; active <= kPages; ++active) {
@@ -156,9 +151,11 @@ void slots_stay_inside_their_regions() {
 void refuses_what_it_cannot_serve() {
     check(!plan_kv_stream_split(4095, 4096, 16).has_value(),
           "a budget below one layer is refused, not degraded");
-    // One layer's pages and nothing beside them leave no window, so every page would want the same
-    // resident slot: refused rather than planned.
-    check(!plan_kv_stream_split(4096, 4096, 16).has_value(), "a budget with no window is refused");
+    // One layer's pages and nothing beside them plan as a window of zero, which is the anchor the
+    // planner models a minimal pool with; the cache itself refuses to be built from it.
+    const auto anchor = plan_kv_stream_split(4096, 4096, 16);
+    check(anchor.has_value() && anchor->resident_pages == 0 && anchor->ring_pages == 4096,
+          "a pool of one layer's pages plans with no window");
     check(!plan_kv_stream_split(25300, 4096, 0).has_value(), "no layers is refused");
     check(!plan_kv_stream_split(25300, 0, 16).has_value(), "no pages is refused");
     const auto single = plan_kv_stream_split(4096, 4096, 1);
@@ -175,11 +172,8 @@ void a_bigger_budget_never_residents_less() {
     std::uint32_t previous_depth = 1;
     for (std::uint32_t budget = kPages; budget <= kLayers * kPages; ++budget) {
         const auto split = plan_kv_stream_split(budget, kPages, kLayers);
-        if (!split) {
-            // A pool of one layer's pages leaves nothing for a window, and that is refused.
-            check(budget < kPages + kLayers - 1, "only a pool without a window is refused");
-            continue;
-        }
+        check(split.has_value(), "every budget above one layer plans");
+        if (!split) { continue; }
         // A deeper ring spends window on its extra region; that one step is the only one allowed
         // to shrink it, and it must not cost more than a fifth of what it had.
         if (split->ring_depth == previous_depth || previous == 0) {

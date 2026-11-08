@@ -85,11 +85,13 @@ plan_kv_stream_split(std::uint32_t budget_pages, std::uint32_t pages_per_layer,
         static_cast<std::uint64_t>(budget_pages) >= 6ULL * pages_per_layer ? deepest : 1U;
     for (std::uint32_t depth = first_depth; depth >= 1; --depth) {
         const std::uint64_t ring = static_cast<std::uint64_t>(depth) * pages_per_layer;
-        if (ring >= budget_pages) { continue; }
+        if (ring > budget_pages) { continue; }
         const std::uint32_t resident =
             static_cast<std::uint32_t>((budget_pages - ring) / (layers - depth));
-        if (resident == 0) { continue; }
         const std::uint32_t r = resident < pages_per_layer ? resident : pages_per_layer;
+        // A budget of one layer's pages and nothing beside them plans as a window of zero pages:
+        // the planner evaluates that anchor to model what a pool of one layer costs, and refuses
+        // to build a cache from it (StreamedKVSpace wants a window).
         return KVStreamSplit{r, depth * (pages_per_layer - r), depth};
     }
     return std::nullopt;

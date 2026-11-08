@@ -23,6 +23,24 @@
 
 #include <spdlog/logger.h>
 
+// TEMPORARY DIAGNOSTIC: print the stack behind every C++ throw, so a failure deep inside a header
+// can be located without rebuilding the tree around it. Removed once the streaming path runs.
+#include <cstdio>
+#include <dlfcn.h>
+#include <execinfo.h>
+
+extern "C" [[noreturn]] void __cxa_throw(void* thrown, void* type, void (*destruct)(void*));
+extern "C" [[noreturn]] void __cxa_throw(void* thrown, void* type, void (*destruct)(void*)) {
+    using Throw = void (*)(void*, void*, void (*)(void*));
+    static const auto real = reinterpret_cast<Throw>(dlsym(RTLD_NEXT, "__cxa_throw"));
+    void* frames[40];
+    const int count = backtrace(frames, 40);
+    std::fputs("THROW-STACK\n", stderr);
+    backtrace_symbols_fd(frames, count, fileno(stderr));
+    real(thrown, type, destruct);
+    __builtin_unreachable();
+}
+
 namespace {
 
 std::string format_seconds(double seconds) {

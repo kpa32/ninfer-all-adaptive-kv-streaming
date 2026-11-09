@@ -247,18 +247,21 @@ flowchart TB
 
 ## 8 分期计划（P 系列；编号即契约，验收不达标不算完成）
 
-顺序由依赖决定：**P0 是所有后续的入场券；P1/P2 修 prefill 的两处结构性缺失；P3 才谈重叠；
-P4 由图决定；P5 是容量；P6 收官**。
+顺序由依赖决定：**P0 入场券（基线+合规快项）；P1 移植上游 prefill 三件套并做双布局；P2 让 prefill 参与适配；
+P3 才是重叠与调度器；P4 由图决定；P5 容量；P6 多请求与服务端；P7 注意力侧；P8 收官**。
+每期的条目都钉在上游提交或 `CONTRIBUTING.md` 行号上，见 §9 与 §10。
 
-| 期 | 内容 | 引用 | 验收（可驳回） |
+| 期 | 内容 | 上游对应 | 验收（可驳回） |
 |---|---|---|---|
-| **P0** | 基线 + 可视化：graph on/off 各一组（183 K、251 K × `rk4v4`、`rk8v4`）；把布局形状（uniform/concentrated）、`entering_decode_layout`、repartition 次数、**每层窗口**写进报告 | M6、Y2、§11.2 #6 | 8 组逐轮样本落盘；报告能读出"这轮是什么布局、换过几次"；验证 Y2 |
-| **P1** | prompt/decode 双布局 + 回退（prompt=uniform、decode=concentrated、下一 chunk 回退 uniform），布局代数进表发布与图缓存键 | R9（`kv-cache.cpp:1386`） | 251 K prefill 流量按 M4 下降且时间不差（验证 Y3/Y4）；decode 不退 |
-| **P2** | 每 chunk 适配（prefill 也跑控制器与阶梯）+ 写路径脏行回写 | R8（`context.cpp:1381`）、R10（`fattn.cu:709`） | prefill 期出现 `[partition]` 决策；回写 ≤ 脏页量；251 K/183 K 逐位不变 |
-| **P3** | 跨轮预取 + 槽位所有权：拷贝对"写该页的 attention"建生产者依赖，槽认领 + 设备侧 ready/consumed | R5/R11（`fattn.cu:1290/1474`） | `--kv-stream-ring-ratio 2.0` 下 183 K/251 K 逐位 PASS，每轮 ≥4% 下降（验证 Y5） |
-| **P4** | CUDA Graph：按 P0 的 Y2 决定补图内换页还是维持关图（维持则必须写清理由与代价） | R11、C7 | 251 K `rk4v4` 不慢于 72.8 tok/s；graph vs eager logprobs 512/512 |
-| **P5** | 草稿 KV（MTP/DFlash）作为独立驻留角色 | R13（上游未接线） | 同容量下池更大或每轮字节更少，逐位不破 |
-| **P6** | 验证矩阵：262 144 prefill+decode × {`rk4v4`,`rk8v4`,`int8`} × resident(≤110 K)/streamed；活体迁移逐位；2000+ token 长跑；作者口径曲线（`benchmarks/benchmark_kv_stream.py` 的 8 K 步进 + 自动探池 + 可续跑 CSV） | 全部 | 每格 ids + logprobs 判据；SPEC 完成条件 1–5 逐条对账 |
+| **P0** | 基线 + 可视化：graph on/off 各一组（183 K、251 K × `rk4v4`、`rk8v4`）；报告写进布局形状（uniform/concentrated）、`entering_decode_layout`、repartition 次数、**每层窗口**。**并入合规快项**：`docs/cli.md` 补 `--kv-stream`、README What's New 一行、注册 `test_kv_stream_span_tuner.cpp`、`kv_stream_signal.cu` 的 oracle 测试 + `compute-sanitizer` racecheck/synccheck、env 旋钮定性、文档结构整改方案（把日期日志移出 `docs/`） | M6、Y2、`CONTRIBUTING.md:184/193/200` | 8 组样本落盘并验证 Y2；四项门禁全绿（CTest 含新测试、sanitizer 无报错、`docs/cli.md` 有条目、What's New 有行） |
+| **P1** | **prefill 三件套 + 双布局**：移植 `b2ec300a2`（staging 批量搬行）、`3552d1b7d`（宽 batch 流式注意力/部分输出）、`46c1778f7`（放开 `Q->ne[1] <= 256`），同时做 prompt=uniform / decode=concentrated / 下一 chunk 回退；布局代数进表发布与图缓存键；`aee6bb66c` 的 ubatch 组合（256/512/768/1024）实测 | 9.4 全组、R9/R12 | 251 K prefill 流量按 M4 下降、时间不差（Y3/Y4）；ubatch 四档各跑通一次；decode 不退 |
+| **P2** | 每 chunk 适配（prefill 也跑控制器与阶梯）+ 写路径脏行/镜像（`f0957c082` 的"稳定页"） | R8、R10 | prefill 期出现 `[partition]`；回写 ≤ 脏页量；251 K/183 K 逐位不变 |
+| **P3** | 跨轮预取 + **deadline 驱动的槽位调度器**（`39704675e` + `82a9a538c` 的机制，用生产者依赖而不是删预取） | R5/R11、C8 | `--kv-stream-ring-ratio 2.0` 下 183 K/251 K 逐位 PASS、每轮 ≥4%（Y5）；`1.0` 仍可跑 |
+| **P4** | CUDA Graph：按 P0 的 Y2 决定补图内换页或维持关图（维持必须写清代价） | R11、C7 | 251 K `rk4v4` 不慢于 72.8 tok/s；graph vs eager 512/512 逐位 |
+| **P5** | 草稿 KV（MTP/DFlash2）作为独立驻留角色 | R13（上游未接线）、9.6 | 同容量下池更大或每轮字节更少，逐位不破 |
+| **P6** | **串行提示 / 缓存恢复 / 服务端接线**：一进程两请求（`7dc5fccd5`）、`reset()` 路径逐位、`docs/serving.md` 明确不支持并发与前缀缓存（或接线，`c9484b2e6`）；KV 格式泛化到 `int8`（`50a7de723`） | 9.5、9.6 | 两请求逐位 PASS；`int8` 262 144 启动+稳态；`docs/serving.md` 有明确边界 |
+| **P7** | 注意力侧：span 融合（`6a536bfd6`）与相邻流式页合并（`4f2cb3e91`），按实测决定是否采用 | 9.3 | 251 K 每轮进一步下降或明确否掉（带样本） |
+| **P8** | 收官：262 144 prefill+decode × {`rk4v4`,`rk8v4`,`int8`} × resident(≤110 K)/streamed；活体迁移逐位；2000+ 长跑；**交错运行**的 A/B 证据；跨架构构建确认；作者口径曲线 | 全部、`CONTRIBUTING.md:171` | 每格 ids + logprobs；SPEC 完成条件 1–5 逐条对账 |
 
 ### 8.1 明确不做（写下来，防止被当遗漏）
 
@@ -384,7 +387,7 @@ P4 由图决定；P5 是容量；P6 收官**。
 3. **README What's New 加一行**（流式 KV 交付）。
 4. **注册 `test_kv_stream_span_tuner.cpp`**，并给 `kv_stream_signal.cu` 补 oracle 测试 +
    `compute-sanitizer --tool racecheck` 与 `synccheck` 各一次（`tests/README.md:96-110` 的跑法）。
-5. **跨架构**：在 CI 的四套构建上确认 `kv_stream_sign` 相关 kernel 可编（`sm_70/75/80/86/89/120a`），
+5. **跨架构**：在 CI 的四套构建上确认 `kv_stream_signal` 相关 kernel 可编（`sm_70/75/80/86/89/120a`），
    并在 None 卡的情况下记录"未真机跑"。
 6. **测量口径**：campaign 增加 `--interleave`（两变体按 rep 交错），提示尾部加 nonce。
 7. **env 旋钮定性**：在 `docs/cli.md` 与 worklog 写明它们是诊断口；产品默认值由实测决定。

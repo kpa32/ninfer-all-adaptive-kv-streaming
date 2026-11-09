@@ -2234,12 +2234,16 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                             issue(current);
                         } else if (current + ahead < count) {
                             issue(current + ahead);
-                        } else if (!prefill) {
-                            // The round's last layers prefetch the next round's first ones: the runs they
-                            // need are freed by this round's last consumption, a whole layer of compute
-                            // before the next round reads them.
-                            issue(current + ahead - count);
                         }
+                        // Nothing is prefetched for the *next* round here. An upload dated a round early
+                        // can only be safe if the runs it takes are already free, and at the last layers
+                        // of a round they are not: the copy would then wait on a `consumed` event whose
+                        // last record is from the previous round, pass immediately, and refresh a ring
+                        // run that this round's last layers are still reading - which measured as a
+                        // changed greedy id at the next token when the ring was wide enough for a
+                        // look-ahead of two (kv-streaming-measurements.md M-17). The first layers of the
+                        // next round are issued by the `current == 0` block above, one layer of compute
+                        // later and therefore safely.
                     }
 
                     attn_mix(block, x, compact, ph);

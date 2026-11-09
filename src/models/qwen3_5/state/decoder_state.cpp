@@ -40,7 +40,7 @@ PagedKVCacheLayout plan_cache(std::span<LayoutBuilder* const> builders,
     // capacity reaches: that deficit is exactly what the ring covers page by page. Everything else
     // must be able to reach its whole context at once.
     if (stream != nullptr) {
-        if (physical_page_groups < kv_stream_pool_pages(*stream, layers)) {
+        if (physical_page_groups < kv_stream_pool_pages(*stream)) {
             throw std::invalid_argument("Paged KV stream pool is smaller than its split needs");
         }
     } else if (physical_page_groups < logical_pages) {

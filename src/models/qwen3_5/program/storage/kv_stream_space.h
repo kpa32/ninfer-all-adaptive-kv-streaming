@@ -366,6 +366,10 @@ private:
     double partition_trial_sum_ms_      = 0.0;
     std::uint32_t partition_trial_rounds_   = 0;
     std::uint32_t partition_trial_measured_ = 0;
+    // Windows a trial must not price: the round that opened it carried the migration itself, and the
+    // window that reports it can arrive one evaluation later. Counted rather than assumed: a migration
+    // round that landed in the mean made a +1.9 ms layout read as +54% and reverted it.
+    std::uint32_t partition_trial_skip_     = 0;
     std::uint32_t partition_trial_target_ring_ = 0;
     // The target that measured slower and the working set it was rejected at, so it is not proposed
     // again until the working set moved.

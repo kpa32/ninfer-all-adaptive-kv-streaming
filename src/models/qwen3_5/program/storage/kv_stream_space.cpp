@@ -335,8 +335,13 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     if (partition_trial_cooldown_ != 0) { --partition_trial_cooldown_; }
     if (partition_trial_active_) {
         // The round that opened the trial carried the migration itself, so its time says nothing about
-        // the layout it installed; it is counted for progression and left out of the mean.
-        if (partition_trial_rounds_ != 0 && round_ms > 0.0) {
+        // the layout it installed; it is counted for progression and left out of the mean. The window
+        // that reports the migration can arrive one evaluation later, so the skip is counted, not
+        // inferred: with a single `rounds != 0` test a migration round reached the mean and made a
+        // +1.9 ms layout read as +54%, which reverted a layout that was nearly equal.
+        if (partition_trial_skip_ != 0) {
+            --partition_trial_skip_;
+        } else if (round_ms > 0.0) {
             partition_trial_sum_ms_ += round_ms;
             partition_trial_measured_ += 1;
         }
@@ -353,6 +358,7 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         partition_trial_active_   = false;
         partition_trial_sum_ms_   = 0.0;
         partition_trial_rounds_   = 0;
+        partition_trial_skip_     = 0;
         partition_trial_measured_ = 0;
         layout_round_ms_          = 0.0;
         layout_rounds_            = 0;
@@ -416,6 +422,7 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
             repartition(*deeper, streams);
             partition_trial_active_       = true;
             partition_trial_sum_ms_       = 0.0;
+            partition_trial_skip_         = 1;
             partition_trial_rounds_       = 0;
             partition_trial_measured_     = 0;
             partition_trial_target_ring_  = deeper->ring_pages;
@@ -509,13 +516,9 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
                      max_streamed_pages(), max_streamed_pages(*next));
     }
     repartition(*next, streams);
+    partition_trial_skip_     = 1;
     partition_trial_active_   = true;
-    partition_trial_sum_ms_   = 0.0;
     partition_trial_rounds_   = 0;
-    partition_trial_measured_ = 0;
-    partition_trial_target_ring_ = next->ring_pages;
-    layout_round_ms_          = 0.0;
-    layout_rounds_            = 0;
     evaluations_since_repartition_ = 0;
     return true;
 }

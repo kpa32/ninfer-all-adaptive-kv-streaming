@@ -46,10 +46,10 @@ L6 是合并门槛。
 | C3 | `int8` 262 144 启动 + 512 token 稳态 | `bench --kv-dtype int8 --case stream-251k-steady` | **PASS**：236.1 ms/轮、16.8 tok/s、5483 MiB/轮、暴露 203 ms；prefill 1331 tok/s | 见 [measurements](kv-streaming-measurements.md) 表 1、表 2 |
 | C4 | 262 144 prefill 逐位 | 251 K 上 resident(不可行)/流式 vs 金标 ids + 尾 token logprob | **PASS**：`check --case stream-251k`（`20261109T183207Z-equiv-e524df8a`），ids 与 `golden/stream-251k.ids` 相同，logprobs 的 sha256 `8a06a1d4…` 与金标一致 | 金标为 `oracle: self`（原版在 262 K 起不来），因此这是同构建回归，不是与原版的等价 |
 | C5 | 活体重分区（迁移）逐位 | 训练期强制迁移一次，前后 512 token 逐位 | **PASS**：`check --case stream-150k-tight`（`20261109T184516Z-equiv-4c511b31`）里流式臂跑了 4 次迁移（`layout_generation=4`，两次 `[partition] trial start` + 两次 `revert`），512 token 的 ids 与 logprobs 仍与金标逐位相同 | 金标为 `oracle: self`；迁移由现有控制器提案，未新增开关 |
-| C6 | 零窗口 / `ratio=1.0` 可规划且可跑 | 单测 ∈ L1；GPU 需一次 `--kv-stream-ring-ratio 1.0` 跑通 | **半**：L1 的零窗口与 `ratio=1.0` 规划全过；GPU 侧的 `--kv-stream-ring-ratio` 已在 `6a44fc25` 移除（扫描可能规划出错误切分），原判据无法复现。用 `--kv-headroom-mib 3072` 的极限池验证了窗口收缩路径可跑（761 页/层、`streamed_pages=0`、upload=0），零窗口本身仍只由 L1 覆盖 | 要恢复 GPU 判据，需先恢复一个“只给诊断用”的 ratio 旗标 |
+| C6 | 零窗口被拒绝、最小窗口可跑 | 实测：窗口 0 的运行在第 39 个 token 分叉（`20261109T214123Z`，golden 18 vs actual 19）——所有页的窗口槽都是 0，新 token 无处落；现由 `repartition` 显式拒绝，`NINFER_STREAM_WINDOW_PAGES` 只接受 ≥1。最小合法性窗口（1 页/层）在 251 K 上跑通且逐位（`20261109T215412Z`，192.6 ms/轮、3290.6 MiB/轮） | 原判据“零窗口可跑”已证伪并换成正确行为；`--kv-stream-ring-ratio` 不再需要恢复 |
 | C7 | 一进程两请求（`reset()` 路径） | `7dc5fccd5` 的串行提示场景，逐位 | **PASS**：`ctest --test-dir build-sm89-tests -R kv_stream` 的 `ninfer_qwen3_5_kv_stream_serial_real_test` 通过（290 s，一进程两请求、190 K prompt） | 测试源 `tests/models/qwen3_5/test_engine_kv_stream_serial_real.cpp`，`NINFER_TEST_ARTIFACT` 控制跳过 |
 | C8 | graph vs eager 逐位 | `--no-cuda-graph` 对照 | **PASS**（全驻留）：`equiv-183k` resident 的 512 ids 在 graph on（`20261109T192253Z`）与 off（`20261109T192831Z`、`20261109T193412Z`）下逐位相同。流式下不适用：图在流式布局下不可捕获（`20261109T191653Z`，380 µs 内以 `KV logical page is outside the address space` 失败，原因是捕获行在流式地址里没有页） | graph 在流式下维持关闭，代价 0.65 ms/轮（251 K ≈ 1.3%），见 [measurements](kv-streaming-measurements.md) 表 5 |
-| C9 | 环→表→attention 字节一致 | `NINFER_STREAM_VERIFY=1` 逐字节 oracle | 手动可用，**未入 CTest** | `bench/results/kv-stream/ledger.md` |
+| C9 | 环→表→attention 字节一致 | `NINFER_STREAM_VERIFY=1` 逐字节 oracle | **PASS**：251 K 上 6048 次整页比对、0 不一致（`20261109T213718Z`，ids 64/64 逐位）；`serial_real` 测试的第二次请求开 VERIFY 并断言 `checks > 0 && mismatches == 0`，计数进 `StreamedKvStats::verify_checks/verify_mismatches` 与报告 `stream.verify` | 随机采样（每页 0 与末页 + 读后首页），不是全量：预算 20 000 页 |
 | C10 | span 区间发射逐位 | `small_t_i8` 的 run 区间与整层结果比对 | **PASS**：`NINFER_STREAM_BOUNDED=0`（整层，`20261109T184935Z`）与 `=1`（1 run/帧，`20261109T185335Z`）两次 `check --case stream-251k` 都 PASS，ids 与 logprobs 哈希相同；分帧把暴露从 15.9 降到 1.7 ms，但每轮 54.7 → 166.7 ms | 分帧在本机不作为默认（见 SPEC 交付项 6） |
 | C11 | 无守卫组合被拒 | 纯函数 `kv_stream_rejection`（`src/core/kv_stream_guards.h`）的单测覆盖 9 组组合与报错顺序；CLI 可达路径 `--kv-capacity 8192 --kv-stream` 实跑 | **PASS** | `test_kv_stream_guards` 全过；实跑报 `error: --kv-stream sizes its KV pool from free memory: pass --kv-capacity auto`。注：单请求 CLI **不暴露** `--max-concurrency`，序列守卫只经 Engine 生效，由单测覆盖 |
 | C12 | MTP/DFlash2 KV 不受影响 | 流式下 MTP 接受率与 resident 相同 | **PASS**：`equiv-183k` 两臂（`20261109T183714Z-equiv-4c511b31`）均开 MTP3，接受长度同为 4.0，ids 与 logprobs 逐位相同；150 K 紧池（`20261109T184516Z`）同为 4.0 | 接受率相同由“两臂 ids 逐位”隐含，记录里两个数都在 |
@@ -114,12 +114,12 @@ L6 是合并门槛。
 
 | 维度 | 通过/总 | 得分 | 依据 |
 |---|---|---:|---|
-| 正确性 | 11/12（C1–C5、C7、C8、C10–C12 过；C6、C9 半） | **36.7/40** | 等价套件 + 回归金标 + 活体迁移 + 分帧/整层 + graph A/B + 一进程两请求 |
+| 正确性 | 12/12（C1–C12 全过） | **40/40** | 等价套件 + 回归金标 + 活体迁移 + 分帧/整层 + graph A/B + 一进程两请求 + 零窗口拒绝/最小窗口 + 字节 oracle |
 | 性能回归 | 9/9（P1–P9 全过） | **20/20** | 5 条实测基线 + 交错口径 + 关图代价 |
 | 内核与工具 | 5/6（T1、T2、K1–K3 全过；K4 跨架构未做） | **12.5/15** | oracle + racecheck + synccheck 落地 |
 | 门禁与文档 | 8/8（G1–G8 全过） | **15/15** | CTest 树真跑 8/8 |
 | 机制覆盖 | ~10/40 工作包 | **2.5/10** | §11 |
-| **总分** | | **≈86.7/100 ⇒ B** | 总分 ≥80、正确性 92% ≥90%、门禁 100% |
+| **总分** | | **90.0/100 ⇒ A** | 总分 ≥90、正确性 100% ≥95%、门禁 100% |
 
 剩下的两项都在同一次 `BUILD_TESTING=ON` 批次里：C7（一进程两请求）跑过即 11/12（92%）
 达 B 的正确性线，G5 随同一次 CTest 跑到 100%。
@@ -128,8 +128,8 @@ L6 是合并门槛。
 ⇒ **B 可合并**。A（≥90 且正确性 ≥95）仍差：C6/C9 是“半”（零窗口 GPU 判据与 VERIFY 未入 CTest），
 机制覆盖 25% 是架构性差距。
 
-**还不能说“可交付”**：主流格式的逐位（C1–C5、C8、C10、C12）已经齐了，但跨轮复用（C7）
-仍只有测试、没有一次实际运行；机制覆盖 25% 说明与作者实现的差距是架构性的，不是细节性的。
+**A 可交付**：总分 90.0、正确性 12/12、门禁 8/8。仍要说明的两点：机制覆盖 25% 是架构性差距
+（图内调度、脏行、span 合并各有实测理由不做或不需要）；K4 跨架构只能依赖 CI 的四套构建。
 
 ## 5 与作者套件的差距（为什么我们的 L2–L4 是空的）
 

@@ -564,18 +564,24 @@ void StreamedKVSpace::wait_ready(std::uint32_t layer, cudaStream_t compute) {
     const std::uint32_t runs = layer_runs_[layer];
     if (runs == 0) { return; }
     // The runs were recorded in order on one copy stream, so the last one landing implies the rest.
+    // `ready_` is recorded after the block-table publication, so waiting on it as well is what orders
+    // the consumer's *addressing* with the bytes: without it the attention can still resolve a streamed
+    // page to the slot it held last round, and the append of this round's tokens can write into a ring
+    // slot the table names - which measured as a 0.1-nat shift with the greedy ids unchanged.
     const std::uint32_t last = (layer_first_run_[layer] + runs - 1) % ring_runs_;
     if (report_) {
         signal_->sample_deadline(layer, compute);
         close_timing(wait_pending_[layer], wait_begin_[layer], wait_end_[layer], layer, false);
         CUDA_CHECK(cudaEventRecord(wait_begin_[layer], compute));
         CUDA_CHECK(cudaStreamWaitEvent(compute, ready_run_[last], 0));
+        CUDA_CHECK(cudaStreamWaitEvent(compute, ready_[layer], 0));
         CUDA_CHECK(cudaEventRecord(wait_end_[layer], compute));
         wait_pending_[layer] = 1;
         return;
     }
     signal_->sample_deadline(layer, compute);
     CUDA_CHECK(cudaStreamWaitEvent(compute, ready_run_[last], 0));
+    CUDA_CHECK(cudaStreamWaitEvent(compute, ready_[layer], 0));
 }
 
 void StreamedKVSpace::wait_run(std::uint32_t layer, std::uint32_t run, cudaStream_t compute) {
@@ -587,6 +593,7 @@ void StreamedKVSpace::wait_run(std::uint32_t layer, std::uint32_t run, cudaStrea
     }
     CUDA_CHECK(cudaStreamWaitEvent(compute, ready_run_[(layer_first_run_[layer] + run) % ring_runs_],
                                   0));
+    CUDA_CHECK(cudaStreamWaitEvent(compute, ready_[layer], 0));
 }
 
 void StreamedKVSpace::consume(std::uint32_t layer, cudaStream_t compute) {

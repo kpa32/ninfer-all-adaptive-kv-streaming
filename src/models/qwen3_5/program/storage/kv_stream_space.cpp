@@ -326,29 +326,39 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     const double round_ms = window_seconds_ * 1000.0;
     if (partition_trial_cooldown_ != 0) { --partition_trial_cooldown_; }
     if (partition_trial_active_) {
-        if (round_ms > 0.0) {
+        // The round that opened the trial carried the migration itself, so its time says nothing about
+        // the layout it installed; it is counted for progression and left out of the mean.
+        if (partition_trial_rounds_ != 0 && round_ms > 0.0) {
             partition_trial_sum_ms_ += round_ms;
-            ++partition_trial_rounds_;
+            partition_trial_measured_ += 1;
         }
-        if (partition_trial_rounds_ < kPartitionTrialRounds) { return false; }
-        const double mean = partition_trial_sum_ms_ / static_cast<double>(partition_trial_rounds_);
+        ++partition_trial_rounds_;
+        if (partition_trial_rounds_ <= kPartitionTrialRounds) { return false; }
+        const double mean = partition_trial_measured_ != 0
+                                ? partition_trial_sum_ms_ / static_cast<double>(partition_trial_measured_)
+                                : partition_trial_baseline_ms_;
         const bool slower = mean > partition_trial_baseline_ms_ * (1.0 + kPartitionRevertMargin);
         if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
             std::fprintf(stderr, "[partition] trial done mean=%.2f baseline=%.2f %s\n", mean,
                          partition_trial_baseline_ms_, slower ? "revert" : "keep");
         }
-        partition_trial_active_ = false;
-        partition_trial_sum_ms_ = 0.0;
-        partition_trial_rounds_ = 0;
-        layout_round_ms_        = 0.0;
-        layout_rounds_          = 0;
+        partition_trial_active_   = false;
+        partition_trial_sum_ms_   = 0.0;
+        partition_trial_rounds_   = 0;
+        partition_trial_measured_ = 0;
+        layout_round_ms_          = 0.0;
+        layout_rounds_            = 0;
         if (slower) {
-            // Back to the layout that measured faster, and do not try again for a while: an unstable
-            // boundary would pay the migration cost over and over.
+            // Back to the layout that measured faster, and remember the target that lost: proposing the
+            // same move again after the cooldown would pay the migration for an answer already known,
+            // which measured as four ~170 ms rounds in one 512-token run.
             repartition(partition_trial_before_, streams);
-            partition_trial_cooldown_ = kPartitionCooldownRounds;
+            partition_rejected_ring_     = partition_trial_target_ring_;
+            partition_rejected_active_   = active_;
+            partition_trial_cooldown_    = kPartitionCooldownRounds;
             return true;
         }
+        partition_rejected_ring_ = 0;
         return false;
     }
     if (round_ms > 0.0) {
@@ -360,6 +370,16 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         return false;
     }
     if (partition_trial_cooldown_ != 0) {
+        window_measured_ = false;
+        if (evaluations_since_repartition_ != UINT32_MAX) { ++evaluations_since_repartition_; }
+        return false;
+    }
+    // A target that already measured slower is not proposed again until the working set has moved far
+    // enough that it is a different target: at 4 tokens a round the window creeps, and the same ring
+    // size is not the same trade at 1002 streamed pages as at 1200.
+    if (partition_rejected_ring_ != 0 &&
+        active_ < partition_rejected_active_ + partition_rejected_active_ / 10 &&
+        active_ + active_ / 10 > partition_rejected_active_) {
         window_measured_ = false;
         if (evaluations_since_repartition_ != UINT32_MAX) { ++evaluations_since_repartition_; }
         return false;
@@ -405,16 +425,17 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     if (next->layer_resident == split_.layer_resident && next->ring_pages == split_.ring_pages) {
         return false;
     }
-    // Whether a move pays is decided by measuring it, never by a byte model: the bytes only say what
-    // a round carries, while what a ring actually buys is look-ahead. A byte gate would also only ever
-    // permit shrinking - growing the ring saves no bytes yet is exactly what recovers overlap.
-    // Does the target give up look-ahead? `ahead = ring_runs / one layer's runs - 1` is pure geometry: a
-    // ring that holds exactly one layer's streamed extent cannot start a copy before the previous layer
-    // has been read, so its round is compute + copy instead of the larger of the two. Bytes alone cannot
-    // see that trade - at 251K the controller's smaller ring saved 1% of a round's bytes and cost 10% of
-    // its time - so a target that lowers the look-ahead has to save enough bytes to be worth it. Both
-    // numbers here are measured or planned, never named per card.
-    if (kv_stream_ahead_of(active_, *next) < kv_stream_ahead_of(active_, split_)) {
+    // What a ring buys is look-ahead, which a byte model cannot see; a byte-only gate would also only
+    // permit shrinking, while growing the ring is exactly what recovers overlap. The move is priced
+    // by the experiment below, and the gate here only stops a target that trades look-ahead away for
+    // traffic it does not save.
+    // Does the target give up look-ahead? The ring's size over one layer's runs is pure geometry: a ring
+    // that holds barely more than the layer being read cannot start a copy before that layer has been
+    // read, so its round is compute + copy instead of the larger of the two. Bytes alone cannot see that
+    // trade - at 251K the controller's smaller ring saved 1% of a round's bytes and cost 10% of its time
+    // - so a target that lowers the look-ahead has to save enough bytes to be worth it. Both numbers
+    // here are measured or planned, never named per card.
+    if (kv_stream_lookahead_ratio(active_, *next) < kv_stream_lookahead_ratio(active_, split_)) {
         std::uint64_t before_streamed = 0;
         std::uint64_t after_streamed  = 0;
         for (std::uint32_t layer = 0; layer < layers_; ++layer) {
@@ -425,13 +446,15 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         const std::uint64_t after_bytes  = after_streamed * page_bytes_;
         const std::uint64_t saving       = before_bytes > after_bytes ? before_bytes - after_bytes : 0;
         if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-            std::fprintf(stderr, "[partition] ahead %u -> %u saving %llu of %llu bytes\n",
-                         kv_stream_ahead_of(active_, split_), kv_stream_ahead_of(active_, *next),
+            std::fprintf(stderr, "[partition] lookahead %.3f -> %.3f saving %llu of %llu bytes\n",
+                         kv_stream_lookahead_ratio(active_, split_),
+                         kv_stream_lookahead_ratio(active_, *next),
                          static_cast<unsigned long long>(saving),
                          static_cast<unsigned long long>(before_bytes));
         }
         if (saving * kPartitionSavingDivisor < before_bytes) { return false; }
     }
+
     // Start the experiment: remember the layout being left and the round time it measured, so the
     // next rounds can say whether this one is an improvement.
     partition_trial_before_   = split_;
@@ -447,6 +470,8 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     partition_trial_active_   = true;
     partition_trial_sum_ms_   = 0.0;
     partition_trial_rounds_   = 0;
+    partition_trial_measured_ = 0;
+    partition_trial_target_ring_ = next->ring_pages;
     layout_round_ms_          = 0.0;
     layout_rounds_            = 0;
     evaluations_since_repartition_ = 0;

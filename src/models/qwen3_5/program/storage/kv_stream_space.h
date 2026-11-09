@@ -362,6 +362,12 @@ private:
     double partition_trial_baseline_ms_ = 0.0;
     double partition_trial_sum_ms_      = 0.0;
     std::uint32_t partition_trial_rounds_   = 0;
+    std::uint32_t partition_trial_measured_ = 0;
+    std::uint32_t partition_trial_target_ring_ = 0;
+    // The target that measured slower and the working set it was rejected at, so it is not proposed
+    // again until the working set moved.
+    std::uint32_t partition_rejected_ring_   = 0;
+    std::uint32_t partition_rejected_active_ = 0;
     std::uint32_t partition_trial_cooldown_ = 0;
     bool partition_trial_active_            = false;
     // The running round-time mean of the layout in force, which is the baseline a new one must beat.

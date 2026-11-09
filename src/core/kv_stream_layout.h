@@ -124,16 +124,19 @@ constexpr std::uint32_t kKVStreamRunPages = 128;
     return split.run_pages == 0 ? 0 : split.ring_pages / split.run_pages;
 }
 
-// How many whole layers the ring can start ahead of the one being read. Zero means the copies cannot
-// overlap the compute at all: the ring holds exactly one layer's streamed extent, so the next copy
-// waits for the current layer's consumption. Pure geometry, which is what lets the policy prefer
-// look-ahead without measuring the card.
-[[nodiscard]] inline std::uint32_t kv_stream_ahead_of(std::uint32_t active_pages,
+// How much of a layer's streamed extent the ring can hold *on top of* the layer being read, as a
+// ratio: `ring_runs / runs_per_layer`. One means the ring holds exactly one layer's extent, so a copy
+// cannot start before the previous layer has been read and the round costs compute + copy instead of
+// the larger of the two; 1.4 means two fifths of the next layer can be copied under the current one's
+// compute. An integer "whole layers ahead" is too coarse to see that difference - at 251K, eleven runs
+// against eight and nine runs against eight are both "zero layers ahead" yet measure 54.9 ms and
+// 60.6 ms a round.
+[[nodiscard]] inline double kv_stream_lookahead_ratio(std::uint32_t active_pages,
                                                      const KVStreamSplit& split) noexcept {
     const std::uint32_t runs = kv_stream_runs_per_layer(active_pages, split);
     const std::uint32_t ring = kv_stream_ring_runs(split);
-    if (runs == 0 || ring == 0) { return 0; }
-    return ring > runs ? ring / runs - 1 : 0;
+    if (runs == 0 || ring == 0) { return 0.0; }
+    return static_cast<double>(ring) / static_cast<double>(runs);
 }
 
 

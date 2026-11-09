@@ -232,6 +232,7 @@ public:
     [[nodiscard]] TransferStats transfer_stats();
 
 private:
+    void verify_streamed_page(std::uint32_t layer, std::uint32_t streamed);
     void publish_slot(std::uint32_t layer, std::uint32_t page, std::int32_t slot,
                       RankStreams streams);
     // Reads every complete pair of timing events into the round in flight (or the prompt's
@@ -340,6 +341,11 @@ private:
     std::uint32_t starved_evaluations_           = 0;
     std::uint32_t overprovisioned_evaluations_   = 0;
     bool entering_decode_layout_                 = true;
+    // The `NINFER_STREAM_VERIFY` diagnostic: how many streamed pages it still compares, and the one-page
+    // pinned staging area it reads a ring slot into.
+    int verify_budget_ = 20000;
+    std::unique_ptr<HostKVArena> verify_arena_;
+    std::optional<HostKVAllocation> verify_host_;
     static constexpr std::uint32_t kNoLayer = std::numeric_limits<std::uint32_t>::max();
 };
 

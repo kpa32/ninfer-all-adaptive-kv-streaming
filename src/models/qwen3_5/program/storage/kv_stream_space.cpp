@@ -488,7 +488,43 @@ std::uint32_t StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     }
     run_cursor_ = (layer_first_run_[layer] + runs) % ring_runs_;
     CUDA_CHECK(cudaEventRecord(ready_[layer], copy));
+    verify_streamed_page(layer, streamed);
     return runs;
+}
+
+void StreamedKVSpace::verify_streamed_page(std::uint32_t layer, std::uint32_t streamed) {
+    // A diagnostic that answers one question exactly: do the bytes the ring now holds for a streamed
+    // page match the host record the table points the consumer at? It synchronises, so it only runs in
+    // an eager (`--no-cuda-graph`) run with `NINFER_STREAM_VERIFY` set.
+    if (std::getenv("NINFER_STREAM_VERIFY") == nullptr || streamed == 0 || verify_budget_ <= 0) {
+        return;
+    }
+    --verify_budget_;
+    if (!verify_arena_) {
+        verify_arena_ = std::make_unique<HostKVArena>(
+            page_bytes_, std::span<const HostKVPageLayout>(&host_layout_, 1));
+        verify_host_ = verify_arena_->allocate(host_layout_, 1);
+        if (!verify_host_) { throw std::logic_error("the verify staging arena is too small"); }
+    }
+    for (const std::uint32_t page : {0U, streamed - 1U}) {
+        const std::uint32_t slot = slot_of_page(layer, page);
+        cache_->page_pool().copy_to_host_pages(slot, 1, verify_arena_->writable_view(*verify_host_),
+                                               RankStreams());
+        CUDA_CHECK(cudaDeviceSynchronize());
+        const auto* got  = verify_host_->data;
+        const auto* want = host_pages(layer).subview(page, 1).data();
+        if (std::memcmp(got, want, page_bytes_) != 0) {
+            std::size_t first_diff = 0;
+            while (first_diff < page_bytes_ && got[first_diff] == want[first_diff]) { ++first_diff; }
+            std::fprintf(stderr,
+                         "[verify] MISMATCH layer=%u page=%u slot=%u active=%u streamed=%u "
+                         "first_byte=%zu\n",
+                         layer, page, slot, active_, streamed, first_diff);
+        } else {
+            std::fprintf(stderr, "[verify] ok layer=%u page=%u slot=%u streamed=%u\n", layer, page,
+                         slot, streamed);
+        }
+    }
 }
 
 void StreamedKVSpace::wait_ready(std::uint32_t layer, cudaStream_t compute) {

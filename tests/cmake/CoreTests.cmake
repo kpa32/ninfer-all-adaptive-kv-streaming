@@ -125,6 +125,10 @@ ninfer_add_test(ninfer_kv_stream_layout_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_kv_stream_layout.cpp"
   LIBRARIES ninfer_core)
 
+ninfer_add_test(ninfer_kv_stream_feedback_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_kv_stream_feedback.cpp"
+  LIBRARIES ninfer_core)
+
 ninfer_add_test(ninfer_materialization_budget_test SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_materialization_budget.cpp"
   LIBRARIES ninfer_core)
 

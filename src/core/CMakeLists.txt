@@ -25,6 +25,7 @@ add_library(ninfer_core STATIC
   direct_storage_reader.cpp
   file_read_queue.cpp
   paged_kv_cache.cpp
+  kv_stream_feedback.cpp
   kv_expert_loan.cpp
   linear_attention_state.cpp
   layout.cpp

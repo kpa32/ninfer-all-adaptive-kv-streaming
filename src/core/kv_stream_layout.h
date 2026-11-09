@@ -167,11 +167,16 @@ plan_kv_stream_uniform(std::uint32_t budget_pages, std::uint32_t active_pages,
         return kv_stream_all_resident(active_pages, layers, run_pages);
     }
     if (!(ring_ratio >= 1.0)) { ring_ratio = 1.0; }
+    // The ratio is a target: a pool that cannot afford a ring that deep even with no window plans at
+    // 1.0 instead, which is the depth-one regime - a ring that holds exactly one layer's extent, so the
+    // layers serialise. Refusing outright would make a capacity scan give up on a pool it can serve.
+    const double ratios[2] = {ring_ratio, 1.0};
+    for (const double ratio : ratios)
     for (std::uint32_t run = run_pages; run >= 1; run = run > 1 ? run / 2 : 0) {
         const auto ring_for = [&](std::uint32_t resident) {
             if (resident >= active_pages) { return std::uint32_t(0); }
             const std::uint64_t streamed = active_pages - resident;
-            std::uint64_t ring = std::uint64_t(ring_ratio * double(streamed));
+            std::uint64_t ring = std::uint64_t(ratio * double(streamed));
             if (ring < streamed) { ring = streamed; }
             return detail::kv_stream_ceil_to_run(ring, run);
         };

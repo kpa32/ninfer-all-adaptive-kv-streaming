@@ -126,6 +126,10 @@ json stream_stats(const StreamedKvStats& stream) {
                                     {"deadline_misses", stream.deadline_misses},
                                     {"busy_windows", stream.copy_busy_windows},
                                     {"copy_busy_ratio", stream.copy_busy_ratio}};
+    // The byte oracle, when `NINFER_STREAM_VERIFY` is set: pages whose ring bytes were compared
+    // with their host records and how many differed. A record with no checks proves nothing.
+    out["verify"]            = json{{"checks", stream.verify_checks},
+                                    {"mismatches", stream.verify_mismatches}};
     out["rounds_series"]     = json::array();
     for (const StreamedKvRoundSample& round : stream.round_samples) {
         json sample{{"upload_bytes", round.upload_bytes},

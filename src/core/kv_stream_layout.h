@@ -123,6 +123,19 @@ constexpr std::uint32_t kKVStreamRunPages = 128;
     return kKVStreamRunPages;
 }
 
+// The ring ratio a plan actually uses. `kKVStreamRingRatio` is the measured default; the environment
+// variable exists so the ring can be driven to its extremes on a host without a rebuild - a ratio at
+// or above the pool's page count plans a zero window, which is the boundary the delivery must prove
+// runs and stays bit-exact, and which no product flag reaches once the delivery no longer exposes one.
+// Every record carries the split it ran with (`stream.layer_resident`, `stream.ring_runs`).
+[[nodiscard]] inline double kv_stream_ring_ratio() noexcept {
+    if (const char* env = std::getenv("NINFER_STREAM_RING_RATIO")) {
+        const double value = std::strtod(env, nullptr);
+        if (value >= 1.0 && value <= 1024.0) { return value; }
+    }
+    return kKVStreamRingRatio;
+}
+
 // Slots the pool holds for this split.
 [[nodiscard]] inline std::uint32_t kv_stream_pool_pages(const KVStreamSplit& split) noexcept {
     std::uint32_t total = split.ring_pages;

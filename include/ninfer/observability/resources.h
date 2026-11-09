@@ -247,6 +247,12 @@ struct StreamedKvStats {
     std::uint64_t deadline_misses   = 0;
     std::uint64_t copy_busy_windows = 0;
     double copy_busy_ratio          = 0.0;
+    // The byte oracle (`NINFER_STREAM_VERIFY=1`): streamed pages whose ring bytes were compared with
+    // their host records, and how many of those differed. The probe synchronises, so it is a
+    // diagnostic; a record with `verify_checks == 0` proves nothing about the bytes, and one with a
+    // nonzero `verify_mismatches` proves the table, the copy or the reuse gate is wrong.
+    std::uint64_t verify_checks     = 0;
+    std::uint64_t verify_mismatches = 0;
     std::vector<StreamedKvRoundSample> round_samples;
 };
 

@@ -84,6 +84,17 @@ int run() {
 
     // The same prompt again, after the first context was deactivated and the space reset. If any
     // page of the first request survived, these bytes would not be the same answer.
+    //
+    // C9 runs on this request: with `NINFER_STREAM_VERIFY` set, every streamed page the ring receives
+    // is copied back and compared with its host record (kv_stream_space.h, TransferStats). A record
+    // that reports checks with no mismatch is the only proof that the block table, the copy and the
+    // reuse gate all pointed the consumer at the bytes it was supposed to read - ids alone cannot
+    // see a wrong page whose error is below the greedy margin.
+#ifdef _WIN32
+    _putenv_s("NINFER_STREAM_VERIFY", "1");
+#else
+    setenv("NINFER_STREAM_VERIFY", "1", 1);
+#endif
     const auto second = engine.generate(engine.prepare_tokens(prompt()), greedy(8));
     const auto after_second = engine.runtime_stats().streamed_kv;
     require(second.generated_token_ids.size() == 8, "the second request stopped early");
@@ -93,11 +104,16 @@ int run() {
             "the second request ran no streamed round of its own");
     require(after_second.upload_bytes > after_first.upload_bytes,
             "the second request moved no page of its own");
+    require(after_second.verify_checks != 0, "the byte oracle compared no streamed page");
+    require(after_second.verify_mismatches == 0,
+            "the byte oracle found a streamed page that differs from its host record");
 
     std::cout << "kv stream serial: ids identical, rounds " << after_first.rounds << " -> "
               << after_second.rounds << ", upload bytes " << after_first.upload_bytes << " -> "
               << after_second.upload_bytes << ", window " << after_second.resident_pages
-              << " pages/layer, shape " << after_second.shape << '\n';
+              << " pages/layer, shape " << after_second.shape << ", byte oracle "
+              << after_second.verify_checks << " checks / " << after_second.verify_mismatches
+              << " mismatches\n";
     return 0;
 }
 

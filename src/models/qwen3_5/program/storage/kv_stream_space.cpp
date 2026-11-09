@@ -302,6 +302,28 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     // entered once the frontier holds its window: `repartition` refuses a window larger than the
     // active context, which is exactly the state a first prompt chunk is in.
     if (!decode_phase) { return false; }
+    // The diagnostic that reaches a boundary no product path reaches: a forced window per layer. Zero
+    // makes every page stream (one whole-context extent per layer per round), which the planner allows
+    // but a ratio never lands on exactly - an infeasible ratio falls back to the ring's floor. It is
+    // here so the zero-window plan can be run on a device, and it names the split it forced in the
+    // report like any other.
+    if (const char* env = std::getenv("NINFER_STREAM_WINDOW_PAGES")) {
+        const long forced_pages = std::strtol(env, nullptr, 10);
+        if (forced_pages >= 0 && forced_pages <= static_cast<long>(pages_per_layer_)) {
+            KVStreamSplit forced;
+            forced.layer_resident.assign(layers_, static_cast<std::uint32_t>(forced_pages));
+            forced.run_pages  = split_.run_pages;
+            const std::uint32_t context_pages = pages != 0 ? pages : pages_per_layer_;
+            const std::uint32_t streamed = context_pages > forced_pages
+                                               ? context_pages - static_cast<std::uint32_t>(forced_pages)
+                                               : 0U;
+            forced.ring_pages = detail::kv_stream_ceil_to_run(streamed, forced.run_pages);
+            if (kv_stream_pool_pages(forced) <= slot_count_) {
+                repartition(forced, streams);
+                return true;
+            }
+        }
+    }
     // The ring is planned over the pool's context, not the frontier in force: the frontier only says
     // how much of that context a request has reached, and a ring sized to it would shrink as the
     // request grew into the last pages (which is what turned 11 runs into 9 and cost 10% of a round
@@ -309,7 +331,8 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     const std::uint32_t context = pages != 0 ? pages : pages_per_layer_;
     if (context == 0) { return false; }
     const std::optional<KVStreamSplit> target =
-        plan_kv_stream_split(slot_count_, context, layers_, split_.run_pages, kKVStreamRingRatio);
+        plan_kv_stream_split(slot_count_, context, layers_, split_.run_pages,
+                             kv_stream_ring_ratio());
     if (!target) { return false; }
     if (target->layer_resident == split_.layer_resident &&
         target->ring_pages == split_.ring_pages) {
@@ -705,7 +728,9 @@ void StreamedKVSpace::verify_streamed_page(std::uint32_t layer, std::uint32_t st
         CUDA_CHECK(cudaDeviceSynchronize());
         const auto* got  = verify_arena_->view(*verify_host_).data();
         const auto* want = host_pages(layer).subview(page, 1).data();
+        ++verify_checks_;
         if (std::memcmp(got, want, page_bytes_) != 0) {
+            ++verify_mismatches_;
             std::size_t first_diff = 0;
             while (first_diff < page_bytes_ && got[first_diff] == want[first_diff]) { ++first_diff; }
             // Which record does the slot actually hold? The fingerprint names the writer, which is what
@@ -803,7 +828,9 @@ void StreamedKVSpace::verify_after_attention(std::uint32_t layer) {
     CUDA_CHECK(cudaDeviceSynchronize());
     const auto* got  = verify_arena_->view(*verify_host_).data();
     const auto* want = host_pages(layer).subview(page, 1).data();
+    ++verify_checks_;
     if (std::memcmp(got, want, page_bytes_) != 0) {
+        ++verify_mismatches_;
         std::size_t first_diff = 0;
         while (first_diff < page_bytes_ && got[first_diff] == want[first_diff]) { ++first_diff; }
         std::size_t last_diff = page_bytes_;
@@ -930,6 +957,8 @@ StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
     out.layout_generation   = layout_generation_;
     out.timing_samples = timing_samples_;
     out.timing_lost    = timing_lost_;
+    out.verify_checks     = verify_checks_;
+    out.verify_mismatches = verify_mismatches_;
     if (report_) {
         out.round_samples = round_samples_;
         // The round in flight is returned as a copy, not closed: publication may read this between

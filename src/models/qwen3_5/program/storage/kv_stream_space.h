@@ -216,6 +216,10 @@ public:
         // average: the controller decides per window.
         std::uint64_t deadline_samples   = 0;
         std::uint64_t deadline_misses    = 0;
+        // The byte oracle (`NINFER_STREAM_VERIFY=1`): streamed pages compared with their host
+        // records, and how many differed. Zero checks prove nothing about the bytes.
+        std::uint64_t verify_checks     = 0;
+        std::uint64_t verify_mismatches = 0;
         std::uint64_t copy_busy_windows  = 0;
         double copy_busy_ratio           = 0.0;
         // The geometry of the layout in force, which a round time is only comparable inside: the
@@ -379,6 +383,8 @@ private:
     // pinned staging area it reads a ring slot into.
     int verify_budget_ = 20000;
     int verify_after_budget_ = 64;
+    std::uint64_t verify_checks_     = 0;
+    std::uint64_t verify_mismatches_ = 0;
     std::unique_ptr<HostKVArena> verify_arena_;
     std::optional<HostKVAllocation> verify_host_;
     // Every repartition is an experiment with a measured outcome: `trial_before_` is the layout it left,

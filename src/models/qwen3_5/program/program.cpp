@@ -806,6 +806,8 @@ StreamedKvStats Program::streamed_kv_stats() {
     out.prefill_exposed_seconds  = stats.prefill_exposed_seconds;
     out.timing_samples = stats.timing_samples;
     out.timing_lost    = stats.timing_lost;
+    out.verify_checks     = stats.verify_checks;
+    out.verify_mismatches = stats.verify_mismatches;
     out.round_samples  = stats.round_samples;
     return out;
 }

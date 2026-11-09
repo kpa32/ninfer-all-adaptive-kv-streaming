@@ -146,10 +146,17 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     // A streaming text cache divides the pool's slots into a resident window per layer and one
     // ring shared by all of them (kv_stream_layout.h). The capacity axis stays in slots, so the
     // cache keeps whatever the resolution granted and leaves fewer than `layers` slots idle.
+    //
+    // The pool is planned for the phase a request *starts* in: its prompt. A prompt chunk's copies
+    // are hidden behind its own attention (measurements table 2: 0.0 s exposed), so a ring deeper
+    // than one layer's extent buys nothing there and only takes window away from a traffic that
+    // grows with the square of what streams. The decode round's shape - the one ring depth buys
+    // overlap for - is entered when the first decode round runs, once the frontier is large enough
+    // to hold its window (kv_stream_space.h, enter_layout).
     const std::optional<KVStreamSplit> text_stream =
         plan.features.kv_stream
-            ? plan_kv_stream_split(physical_pages, logical_pages, config.full_attention_layers,
-                                   kv_stream_run_pages())
+            ? plan_kv_stream_uniform(physical_pages, logical_pages,
+                                     config.full_attention_layers, kv_stream_run_pages(), 1.0)
             : std::nullopt;
     if (plan.features.kv_stream && !text_stream) {
         throw std::invalid_argument(

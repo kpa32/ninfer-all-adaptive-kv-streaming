@@ -297,17 +297,15 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     const int phase = decode_phase ? 1 : 0;
     if (phase_ == phase) { return false; }
     phase_ = phase;
+    // The pool is planned for the shape a request starts in - its prompt (startup.cpp) - so entering
+    // a prompt phase costs nothing. Only the decode round has a shape to enter, and it can only be
+    // entered once the frontier holds its window: `repartition` refuses a window larger than the
+    // active context, which is exactly the state a first prompt chunk is in.
+    if (!decode_phase) { return false; }
     const std::uint32_t context = pages != 0 ? pages : active_;
     if (context == 0) { return false; }
     const std::optional<KVStreamSplit> target =
-        decode_phase ? plan_kv_stream_split(slot_count_, context, layers_, split_.run_pages,
-                                            kKVStreamRingRatio)
-                     // A prompt chunk exposes no compute of its own: its copies are hidden behind the
-                     // chunk's attention (measurements, table 2: 0.0 s exposed), so ring depth buys
-                     // nothing there and only takes window away. At the ring's own floor every slot
-                     // the ring gives back is a resident page, and a chunk's traffic grows with the
-                     // square of what streams (kv-streaming-strategy.md M4).
-                     : plan_kv_stream_uniform(slot_count_, context, layers_, split_.run_pages, 1.0);
+        plan_kv_stream_split(slot_count_, context, layers_, split_.run_pages, kKVStreamRingRatio);
     if (!target) { return false; }
     if (target->layer_resident == split_.layer_resident &&
         target->ring_pages == split_.ring_pages) {

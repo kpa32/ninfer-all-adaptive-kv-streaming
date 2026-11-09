@@ -4,6 +4,8 @@
 #include <iostream>
 #include <map>
 #include <string>
+#include <algorithm>
+#include <vector>
 
 namespace {
 
@@ -15,6 +17,30 @@ void check(bool condition, const std::string& message) {
     if (!condition) { ++failures[message]; }
 }
 
+// The ladder for a layer of `runs` runs: every run in one launch, then half, then two, then one.
+std::vector<std::uint32_t> ladder(std::uint32_t runs) {
+    std::vector<std::uint32_t> steps{runs};
+    for (const std::uint32_t step : {std::max<std::uint32_t>(1U, (runs + 1U) / 2U), std::uint32_t{2},
+                                     std::uint32_t{1}}) {
+        if (step < steps.back()) { steps.push_back(step); }
+    }
+    return steps;
+}
+
+// Runs the whole ladder, giving each step `ms` as its round time, and checks that the tuner asked for
+// exactly that step while it was measured.
+void drive(KVStreamSpanTuner& tuner, std::uint32_t runs, const std::vector<double>& ms,
+           std::uint32_t samples) {
+    const std::vector<std::uint32_t> steps = ladder(runs);
+    for (std::size_t level = 0; level < steps.size(); ++level) {
+        for (std::uint32_t sample = 0; sample < samples; ++sample) {
+            const std::uint32_t asked = tuner.candidate_runs_per_frame(runs);
+            check(asked == steps[level], "the tuner measures the step it is about to report");
+            tuner.observe(ms[level], true, asked, runs);
+        }
+    }
+}
+
 // A fresh tuner asks for the widest launch: the ordinary unframed path is the baseline, and every
 // narrower step has to earn its place by making the round faster.
 void a_fresh_tuner_runs_unframed() {
@@ -24,40 +50,24 @@ void a_fresh_tuner_runs_unframed() {
     check(!tuner.selected(), "a fresh tuner has selected nothing");
 }
 
-// The ladder narrows only after the baseline is complete, and it reports the candidate it is
-// measuring so the caller runs the shape being timed.
-void the_ladder_narrows_after_the_baseline() {
+// The ladder is measured in full - four steps for eight runs - and only then is the fastest kept.
+void the_ladder_is_measured_in_full() {
     KVStreamSpanTuner tuner(2, 0.005, 0);
-    check(tuner.candidate_runs_per_frame(8) == 8, "the baseline runs first");
-    tuner.observe(100.0, true, 8, 8);
-    check(tuner.candidate_runs_per_frame(8) == 8, "one sample is not a trial");
-    tuner.observe(100.0, true, 8, 8);
-    check(tuner.candidate_runs_per_frame(8) == 4, "the ladder narrows to half the runs");
-    tuner.observe(110.0, true, 4, 8);
-    tuner.observe(110.0, true, 4, 8);
-    check(tuner.candidate_runs_per_frame(8) == 2, "then to two runs");
-    tuner.observe(120.0, true, 2, 8);
-    tuner.observe(120.0, true, 2, 8);
-    check(tuner.candidate_runs_per_frame(8) == 1, "then to one run");
-    tuner.observe(130.0, true, 1, 8);
-    tuner.observe(130.0, true, 1, 8);
+    drive(tuner, 8, {100.0, 110.0, 120.0, 130.0}, 2);
     check(tuner.selected(), "the whole ladder has been measured");
-    check(tuner.candidate_runs_per_frame(8) == 8, "the fastest step wins, and the baseline was fastest");
     check(tuner.trials() == 4, "the ladder is four steps wide for eight runs");
+    check(tuner.candidate_runs_per_frame(8) == 8, "the fastest step wins: the baseline was fastest");
 }
 
 // A narrower step wins only by more than the margin: a tenth of a percent is noise, not a result.
 void the_margin_decides_close_calls() {
     KVStreamSpanTuner tuner(2, 0.005, 0);
-    for (int round = 0; round < 2; ++round) { tuner.observe(100.0, true, 8, 8); }
-    for (int round = 0; round < 2; ++round) { tuner.observe(99.0, true, 4, 8); }
+    drive(tuner, 8, {100.0, 99.0, 130.0, 140.0}, 2);
     check(tuner.candidate_runs_per_frame(8) == 4, "a one-percent gain takes the step");
 
     KVStreamSpanTuner narrow(2, 0.005, 0);
-    for (int round = 0; round < 2; ++round) { narrow.observe(100.0, true, 8, 8); }
-    for (int round = 0; round < 2; ++round) { narrow.observe(99.9, true, 4, 8); }
-    check(narrow.candidate_runs_per_frame(8) == 4,
-          "a one-tenth gain is inside the margin, so the baseline still leads the next step");
+    drive(narrow, 8, {100.0, 99.9, 130.0, 140.0}, 2);
+    check(narrow.candidate_runs_per_frame(8) == 8, "a one-tenth gain is inside the margin");
 }
 
 // A round that streamed nothing, a non-positive time, and a round whose shape is not the candidate
@@ -74,7 +84,6 @@ void rounds_that_measure_nothing_are_ignored() {
     check(tuner.chosen_average_ms() == 0.0, "and they contribute no time");
     check(tuner.candidate_runs_per_frame(8) == 8, "the baseline is still the candidate");
 
-    // One zero-length sample is enough either way: the trial completes on real samples only.
     tuner.observe(90.0, true, 8, 8);
     check(tuner.candidate_runs_per_frame(8) == 8, "a single real sample is still one sample");
 }
@@ -83,15 +92,13 @@ void rounds_that_measure_nothing_are_ignored() {
 // loop would alternate between shapes on noise.
 void a_selected_choice_is_final_until_reset() {
     KVStreamSpanTuner tuner(2, 0.005, 0);
-    for (int round = 0; round < 2; ++round) { tuner.observe(100.0, true, 8, 8); }
-    for (int round = 0; round < 2; ++round) { tuner.observe(80.0, true, 4, 8); }
-    tuner.observe(80.0, true, 2, 8);
-    tuner.observe(80.0, true, 1, 8);
-    for (int round = 0; round < 40; ++round) {
-        for (int sample = 0; sample < 2; ++sample) { tuner.observe(500.0, true, 2, 8); }
-    }
+    drive(tuner, 8, {100.0, 70.0, 90.0, 120.0}, 2);
     check(tuner.selected(), "the ladder finished");
-    check(tuner.candidate_runs_per_frame(8) == 4, "the narrow step that won stays chosen");
+    check(tuner.candidate_runs_per_frame(8) == 4, "the three-percent step that won stays chosen");
+
+    std::vector<double> noise;
+    for (int round = 0; round < 40; ++round) { tuner.observe(500.0, true, 1, 8); }
+    check(tuner.candidate_runs_per_frame(8) == 4, "a selected choice is not revisited");
 
     tuner.reset();
     check(tuner.candidate_runs_per_frame(8) == 8, "a reset returns to the baseline");
@@ -101,8 +108,7 @@ void a_selected_choice_is_final_until_reset() {
 // A layer whose extent changed is a different trade: the ladder is rebuilt for the new run count.
 void a_new_extent_rebuilds_the_ladder() {
     KVStreamSpanTuner tuner(2, 0.005, 0);
-    for (int round = 0; round < 2; ++round) { tuner.observe(100.0, true, 8, 8); }
-    for (int round = 0; round < 2; ++round) { tuner.observe(70.0, true, 4, 8); }
+    drive(tuner, 8, {100.0, 70.0, 90.0, 120.0}, 2);
     check(tuner.candidate_runs_per_frame(8) == 4, "the narrower step won at eight runs");
     check(tuner.candidate_runs_per_frame(5) == 5,
           "a different extent starts from its own baseline again");
@@ -113,7 +119,7 @@ void a_new_extent_rebuilds_the_ladder() {
 
 int main() {
     a_fresh_tuner_runs_unframed();
-    the_ladder_narrows_after_the_baseline();
+    the_ladder_is_measured_in_full();
     the_margin_decides_close_calls();
     rounds_that_measure_nothing_are_ignored();
     a_selected_choice_is_final_until_reset();

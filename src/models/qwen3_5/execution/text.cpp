@@ -1621,8 +1621,13 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
     // time inside the launch loop, so it needs single-sequence decode with no explicit positions; every
     // other path waits for the whole layer here and frees its runs after the launch
     // (kv_stream_space.h, kv_stream_span_tuner.h).
-    const auto stream_layer =
-        static_cast<std::uint32_t>(dimension(config_.compact_layer_indices[fidx]));
+    //
+    // `fidx` is already the layer's index among its own kind - the caller maps the block index through
+    // `compact_layer_indices` before it gets here, and the KV planes and execution tables are addressed
+    // the same way. Mapping it a second time named another layer's streamed window: two layers then
+    // freed one run and the ones they shadowed freed none, so a copy refilled a ring run its reader was
+    // still using (measured as a 0.08 nat shift with every greedy id unchanged).
+    const auto stream_layer = static_cast<std::uint32_t>(fidx);
     StreamFrameFeed stream_feed{};
     ops::CausalAttentionFrameHook frame_hook{};
     const ops::CausalAttentionFrameHook* frames = nullptr;

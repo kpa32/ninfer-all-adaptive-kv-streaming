@@ -280,6 +280,25 @@ const auto stream_layer = static_cast<std::uint32_t>(dimension(config_.compact_l
 | **C8** | **跨轮预取**（`depth` 回绕那一半） | **已删，未替代** | `e3dd5bf3` 的 `text.cpp:2303` 有 `issue(current + depth - 1 - count)`；因在活读者底下刷新环槽导致 ids 漂移（M-17）而删（`0c6927c7`）。上游不是删预取，而是用 `producer_attention_index`（拷贝等写该页的 attention 完成）+ 设备侧 ready 标志把它做成合法依赖。要补的是那个依赖机制，不是把旧代码放回去 |
 
 
+
+### 计划 P0–P6（2026-11-10 重排；事项编号即契约，验收不达标不算完成）
+
+排序依据是依赖，不是喜好：**没有 P0 的数字不许动 P4；P3 的所有权模型是 P4 能上图的前提；
+P1/P2 是 prefill 缺口，先做**。每个 P 的"完成"都要求：改前有基线、改后有逐位判据、报告里能读到它。
+
+| P | 事项 | 对应缺口 | 完成判据（可驳回） |
+|---|---|---|---|
+| **P0** | 基线测量与形状可视化：graph on/off 各一组（183K、251K × `rk4v4`、`rk8v4`）；当前布局形状（uniform/concentrated）与分区计数进报告，读出"到底有没有换过布局/迁移过" | C7、§11.2 #6 | 8 组逐轮样本落盘；`stream` 段能读出布局代数、repartition 次数 |
+| **P1** | prompt/decode 双布局：prompt 用 uniform、decode 用 concentrated、下一个 prompt chunk 回退 uniform；布局代数进块表发布与图缓存键 | §11.2 #6（死分支 `kv_stream_space.cpp:407`） | 251K prefill 每轮字节与 tok/s 优于基线（1281 tok/s / 94 GiB）；decode 不退（≥72.8 tok/s）；日志/报告能读出当前布局 |
+| **P2** | 每 chunk 适配（prefill 也跑控制器与调优器）+ 写路径脏行回写（只回写真写过的页） | §11.2 #7 #8 | prefill 期出现 `[partition]` 决策；prefill 回写字节 ≤ 脏页量；251K 与 183K 逐位不变 |
+| **P3** | 跨轮预取的正确实现：拷贝对"写该页的 attention"建立 producer 依赖（上游 `producer_attention_index` 思想），槽位认领 + 设备侧 ready/consumed 所有权；恢复被删的 `depth` 回绕预取 | §11.2 #10、C8 | `--kv-stream-ring-ratio 2.0` 下 183K 与 251K 逐位 PASS，且每轮不慢于 1.10；`ring-ratio 1.0` 仍可跑 |
+| **P4** | CUDA Graph 与流式的关系：按 P0 数字决定"补图内换页"或"维持关图并写清理由"；若补，则块表/control 更新做成图内合法形状 | §11.2 #9、C7 | 251K `rk4v4` 不慢于 72.8 tok/s；graph vs eager 的 logprobs 512/512 逐位 |
+| **P5** | 草稿 KV（MTP/DFlash）流式：作为独立驻留角色参与池规划 | §11.2 #12 | 同质量同容量下池更大或每轮字节更少，且逐位不破 |
+| **P6** | 验证矩阵收官：262 144 的 prefill+decode × {`rk4v4`,`rk8v4`,`int8`} × resident(≤110K)/streamed；活体迁移逐位；2000+ token 长跑；作者口径曲线 | A1–A4、B1–B6、C5 | 每格有 ids 与 logprobs 判据；曲线上能看见流式生效点；SPEC 完成条件 1–5 逐条对账 |
+
+**不做（明确排除，不是遗漏）**：上游 `region` 规划器与 `role::mtp` 的 host 侧 API（上游除单测外零
+调用者）；phase arena、图切分、多卡、图像 prefill 的分块流式（SPEC 已列"不在本次范围"，若要做得单独立项）。
+
 ### prefill 的现状（为后续的 prefill 专项留证据）
 
 本轮**没有**为 prefill 做任何专门优化，只把现状核清：

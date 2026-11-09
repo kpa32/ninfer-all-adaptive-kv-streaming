@@ -1880,9 +1880,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # campaign uses), so the flags are passed through instead of being spelled out per case.
     bench.add_argument(
         "--extra",
-        nargs="+",
+        nargs=argparse.REMAINDER,
         default=[],
-        help="flags appended to every request; a flag that starts with -- is passed as --extra=--flag",
+        help="every flag after this one is appended to each request, unchanged",
     )
     bench.set_defaults(func=command_bench, record_golden=False, force=False)
 

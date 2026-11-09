@@ -21,16 +21,33 @@
 
 ### 0.1 当前实际状态（2026-11-09，必须读）
 
-**帧/span 流水（设计 §5.13）目前不在任何交付路径上。** 已落的 8 个提交
-（`98973519`…`224d057b`）只改了 `small_t_k8v4.cu`，而那是 `--kv-dtype k8v4`
-（`Fp8KeyNvfp4Value`）的 kernel；交付目标 `rk8v4`、`int8` 与测试替身 `rk4v4` 都走 **INT8 家族
-`small_t_i8`**，那里只加了"传区间就 throw"。
+**帧（span）流水已改落在 INT8 家族（`rk8v4`/`rk4v4`/`rk2v4`/`int8`），k8v4 那份已回滚。**
 
-由此产生一个**必须修的缺陷**：同批提交把 decode 的按层拷贝改成了 `prefill` 专属
-（`text.cpp` 两处 `&& prefill`），而 INT8 家族拿不到帧 hook ⇒ 该格式 decode **一次都不搬**，
-读环里的 prefill 残值。实测记录 `runs/20261109T003445Z-bench-frames-224d057b` 的
-`rounds_series` 逐轮 `upload_bytes=0`，而它的 102.6 tok/s 就来自少搬的那 ~1.1 GB/轮，
-**该数字作废**。
+- 子区间：`CausalSmallTInvocation::split_begin/split_end` → `launch_tc_partial_i8` →
+  `small_t_i8.cuh`（tiled）与 `small_t_i8_pipelined.cuh`，`split = split_begin + blockIdx.y`、
+  `split_count = split_capacity`（整调用容量，partial 槽位就按它步进）。Volta 仍只接整段。
+- 发射循环：`causal_attention_small_t_launch_for` 逐帧 `wait → dispatch(区间) → consumed`，末尾一次
+  reduce（`causal_attention_small_t_reduce_output_kernel`，按 split 序号累加）。
+- 帧宽 = `splits_per_frame × split_keys / 64`，`split_keys` 与内核同规则（segmented ⇒ `segment_keys`，
+  否则 `ceil(ceil(window/64)/active)·64`）；`active` 由 host/device 共用的
+  `causal_small_t_active_splits` 给出。**不再有线性近似**。
+- 兜底：`text.cpp` 每轮开头 `plan_stream_round()` 定下本轮是否分帧，
+  `layer_copy = space && (prefill || !framed)` 同时管拷与 consumed；非 INT8 家族（含 `k8v4`）
+  一律退回按层拷贝。`20830005` 的 `&& prefill` 缺陷已修。
+- 工具：`run_kv_stream.py` 新增全局 `--kv-dtype`（替换钉死的 `rk4v4`），bench/check/golden/window/
+  footprint 全部生效。
+
+**待上卡（需所有者批准）**：`check --suite equiv` 4/4、`bench --case stream-251k`（`rk4v4` 与
+`--kv-dtype rk8v4` 各一次），判据含 `rounds_series[].upload_bytes > 0`。
+
+### 0.1.0 上轮结论（保留，解释为什举振了）
+
+已落的 8 个提交（`98973519`…`224d057b`）只改了 `small_t_k8v4.cu`，而那是 `--kv-dtype k8v4`
+（`Fp8KeyNvfp4Value`）的 kernel；交付目标 `rk8v4`、`int8` 与测试替身 `rk4v4` 走 INT8 家族。
+由此产生一个**已修**的缺陷：`20830005` 把 decode 的按层拷贝改成 `prefill` 专属，而 INT8 家族
+拿不到帧 hook ⇒ 该格式 decode **一次都不搬**。实测记录
+`runs/20261109T003445Z-bench-frames-224d057b` 的 `rounds_series` 逐轮 `upload_bytes=0`，
+它的 102.6 tok/s 就来自少搬的那 ~1.1 GB/轮，**该数字作废**。
 
 正确口径与路由事实写在设计 §5.13.1（含上游出处 `llama.cpp-adaptive-kv-streaming` 的
 `kv-stream-span-tuner.h` / `fattn.cu:145-146,1983-2058,378-391`：span = 32 页量级、

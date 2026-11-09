@@ -758,7 +758,7 @@ CausalAttentionFramePlan causal_attention_frame_plan(
     // FP8, NVFP4 and BF16 small-T routes reduce with their own kernels and keep the whole range, so
     // their caller copies a layer at a time.
     if (!kv_cache_is_int8_family(storage)) { return {}; }
-    const detail::CausalKeyPartition partition{
+    const CausalKeyPartition partition{
         .segment_keys = static_cast<std::int32_t>(envelope.invariant_segment_keys)};
     const std::int32_t capacity =
         detail::causal_attention_split_capacity(q_heads, width, storage, envelope, batch);

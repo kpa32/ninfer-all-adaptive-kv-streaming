@@ -1142,10 +1142,12 @@ decode 路径。**这一步是错的，并且是整轮返工的根因。**
   步进、每层只归约一次）。INT8 家族的归约是 `causal_attention_small_t_reduce_output_kernel`
   → `causal_merge_split_statistics`（按 split 序号累加），与 k8v4 的 reduce 同构，所以同一套
   不变量成立。
-- 落点必须是 INT8 家族；`k8v4` 那份实现（提交 `98973519`…`224d057b`）保留为管道，不算交付。
+- 落点必须是 INT8 家族；`k8v4` 的帧循环已回滚（它的页范围是线性近似，在 segmented 几何下每帧
+  少覆盖 39 页，会读陈旧环；该路也从未被基准跑到）。保留的是与格式无关的共享设施：
+  `CausalSplitRange`/`CausalSmallTInvocation::split_begin|split_end`、`CausalAttentionFrameHook`、
+  `StreamedKVSpace` 的按帧 API、`kv_stream_layout.h` 的帧环与单测。
 
 #### 掉进过的坑（保留在案）
-
 1. 把 `k8v4` 当作 `rk4v4`（错误等价）⇒ 帧流水写进了没人用的 kernel，`.251 K` 实测 decode
    一次都没搬（记录 `runs/20261109T003445Z-bench-frames-224d057b` 的 `rounds_series` 全零），
    由此得出的 102.6 tok/s **作废**。
@@ -1210,25 +1212,58 @@ rk4v4 反量化 + QK^T/PV 核，还要和 DMA 抢内存带宽）。**结论：�
 token 差异只会出现在近乎并列的位置——按"KLD / 智商不变"的判据它是可接受的；它出局的原因纯粹是
 算力对不上带宽。真正被这条判据否决的是**尾部降精度**（改的是 KV 的表示），不是这条。
 
-### 5.13.2 实施口径（2026-11-09 定稿，正在落地）
+### 5.13.2 实施口径（2026-11-09 定稿，已落地第一步）
 
 分两步，都不动数学：
 
-**第一步（收益的大头）**：环不变（整层流式区间，页→槽仍是纯函数），把**发射与拷贝的粒度**
-从"一层"降到"一帧"。一次 attention 调用内部按 key 升序分帧发射（每帧 `frame_keys` 个 key），
-每帧前 `wait(帧)`、后 `consumed(帧)`，末尾仍只 reduce 一次 ⇒ **逐位相同**。
+**第一步（收益的大头，已落地）**：环不变（整层流式区间，页→槽仍是纯函数），把**发射与拷贝的
+粒度**从“一层”降到“一帧”。一次 attention 调用内部按 key 升序分帧发射，每帧前 `wait(帧)`、
+后 `consumed(帧)`，末尾仍只 reduce 一次 ⇒ **逐位相同**。
 判据：现状 56.7 = 47.5（拷贝）+ 9.2（空转），这一步就是消掉 9.2 → 预测 ≈48–50 ms（+13~18%）。
 
-**第二步（小幅）**：环改成帧级（§5.13.1 的映射），窗口 +2 368 token ⇒ 拷贝 1 208 → 1 165 MB，
-再 +3~5%。
+**第二步（未做）**：环改成帧级（§5.13.1 的映射；`kv_stream_layout.h` 的 `frame_pages` 已就绪，
+但 `StreamedKVSpace` 的拷贝寻址还是 `ring_region + page` 的整层寻址），窗口 +2 368 token ⇒
+拷贝 1 208 → 1 165 MB，再 +3~5%。
 
-为什么必须走"调用内分帧"而不是"多次调用再合并"：合并路径
-（`causal_attention_merge_partials`）与内部 reduce 公式等价但**累加顺序不同**（合并用的是
+#### 落点与三个不变量（第一步的实际代码）
+
+- 子区间在 `CausalSmallTInvocation::split_begin/split_end`，由 `launch_tc_partial_i8` 传给两个
+  INT8 家族 kernel（`small_t_i8.cuh` 的 tiled、`small_t_i8_pipelined.cuh`），kernel 用
+  `split = split_begin + blockIdx.y`、`split_count = split_capacity`。Volta 的 `small_t_sm70.cuh`
+  仍只接整段（传区间就 throw）。
+- 三条不变量：`window`/`visible_capacity`/`positions` 传原值；`split_count` 仍传**整调用**的容量
+  （partial 槽位按它步进）；每层只 reduce 一次（`causal_attention_small_t_reduce_output_kernel`，
+  按 split 序号累加）。这三条就是 `--invariant-attention` 的 segmented 几何能逐位复现的原因。
+- **`rk8v4`/`rk4v4`/`rk2v4`/`int8` 共用这条路径**；`--kv-dtype k8v4`（`Fp8KeyNvfp4Value`）走自己的
+  launcher、自己的 reduce，不分帧（它的帧路径已因页范围算术错误而回滚，见 §5.13.1）。
+
+#### 帧宽必须精确，不能是估计
+
+帧宽 = 一帧的 splits × 一个 split 的 keys ÷ 64，而一个 split 的 keys 只有两种：segmented 分区
+就是 `segment_keys`，否则是内核的 `ceil(ceil(window/64)/active)·64`（`causal_small_t_partition_range`）。
+两者都**对所有 split 相同**，所以帧宽是一次乘法。`causal_attention_split_keys` 把这个规则写在
+一处，`causal_attention_frame_plan` 与发射循环共用它。
+
+为什么不能用线性近似：251 K、容量 262 144 时 `segment=3 136`（= 49 页），`k8v4` 那份实现按
+`split · window / active` 算帧宽，得到 941 页/帧，而 kernel 实际读 20 × 49 = **980 页/帧** —— 每帧
+少拷 39 页，第一帧就少约 2 500 个 key，即读环里的陈旧字节。它在 rk4v4 上从未被跑到的原因是：
+那里 frames 直接 throw，于是 decode 根本没搬页（`runs/20261109T003445Z` 的 `upload_bytes=0`）。
+
+#### 为什么必须走“调用内分帧”而不是“多次调用再合并”
+
+合并路径（`causal_attention_merge_partials`）与内部 reduce 公式等价但**累加顺序不同**（合并用的是
 `exp(M_r−M)·l_r` 与已归一化的 value，内部用的是 `exp(lse_s−M)` 与未归一化的 acc），
-会改字节；而 SPEC 交付项 2 要求 streaming 开/关逐 token、logprob 一致，所以只能"分帧发射、
-一次归约"。
+会改字节；而 SPEC 交付项 2 要求 streaming 开/关逐 token、logprob 一致，所以只能“分帧发射、
+一次归约”。
 
-帧的切分由 ops 层算（段界是 `causal_small_t_partition_range` 的东西，不能跨边界重推），
-调用方只提供 `window_tokens`（本轮的可见 key 数，它已经知道）与两个回调；回调上报
-`(帧号, 首页, 页数)`，调用方拿它和自己的 `window_start()` 求交后搬页。拷贝"提前一帧"
-由 `consumed(f)` 里发起 `f + depth` 的拷贝实现（和现在按层预取同构）。
+#### 调用方契约
+
+ops 层算帧的切分（段界是 `causal_small_t_partition_range` 的东西，不能跨边界重推）；调用方只提供
+`window_tokens`（本轮的可见 key 数，它已经知道）与两个回调；回调上报 `(帧号, 首页, 页数)`，
+`StreamedKVSpace` 用它搬页与记事件。拷贝“提前一帧”由 `consumed(f)` 里发起 `f + depth` 的拷贝实现
+（和按层预取同构）。
+
+**兜底合同**：拿不到帧（非 INT8 家族、或帧数 ≤ 1）时必须退回“按层拷贝 + 按层 consumed 事件”，
+两者互斥。`text.cpp` 在每轮一开始 `plan_stream_round` 定下本轮是否分帧，然后
+`layer_copy = space && (prefill || !framed)` 同时管拷与 consumed —— 这是 `20830005` 把 decode 的
+整层拷贝改成 `prefill` 专属而引入静默错误的修法。

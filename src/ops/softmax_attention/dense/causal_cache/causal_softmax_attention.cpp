@@ -818,7 +818,7 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
         const bool fusable = kv_cache_is_int8_family(cache.storage);
         const bool gated   = launch_chunked_small_t(
             q, k, v, positions, valid_columns, kv_table_rows, scale, cache, envelope, workspace,
-            out, stream, (gate != nullptr && fusable) ? gate->data : nullptr, partial_out);
+            out, stream, (gate != nullptr && fusable) ? gate->data : nullptr, partial_out, frames);
         if (gate != nullptr && !gated) { sigmoid_mul(*gate, out, stream); }
         return;
     }

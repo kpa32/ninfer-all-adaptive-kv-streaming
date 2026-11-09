@@ -310,11 +310,12 @@ bool StreamedKVSpace::close_signal_window() noexcept {
 }
 
 bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
-    // The reference only evaluates with a fresh deadline window (or at the first decode round, whose
-    // working set is known even though no feedback exists yet): a ratio nobody measured must not move
-    // the pool (kv-cache.cpp, `entering_decode_layout || delta.has_evaluation`).
-    const bool entering = entering_decode_layout_ && window_start() != 0;
-    if (!window_measured_ && !entering) {
+    // Measurement, not prediction, decides where the pool boundary sits: a round with no feedback yet
+    // only records the baseline it will be compared against. The reference evaluates at the first
+    // decode round too, but its pool is a reservation it can rebuild cheaply - ours moves every page
+    // that changes side, which measured as a 126 ms first-round spike (189.8 ms against a 60.4 ms
+    // steady round) because the migration landed inside the measured round.
+    if (!window_measured_) {
         if (evaluations_since_repartition_ != UINT32_MAX) { ++evaluations_since_repartition_; }
         return false;
     }
@@ -338,7 +339,7 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     params.starved_evaluations           = starved_evaluations_;
     params.overprovisioned_evaluations   = overprovisioned_evaluations_;
     params.evaluations_since_repartition = evaluations_since_repartition_;
-    params.entering_decode_layout        = entering;
+    params.entering_decode_layout        = false;
     const KVStreamPartition decision = kv_stream_partition_adapt(params);
     window_measured_ = false;
     if (!decision.valid) { return false; }

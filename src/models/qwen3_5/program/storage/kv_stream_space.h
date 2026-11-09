@@ -348,7 +348,6 @@ private:
     std::uint32_t evaluations_since_repartition_ = UINT32_MAX;
     std::uint32_t starved_evaluations_           = 0;
     std::uint32_t overprovisioned_evaluations_   = 0;
-    bool entering_decode_layout_                 = true;
     // The `NINFER_STREAM_VERIFY` diagnostic: how many streamed pages it still compares, and the one-page
     // pinned staging area it reads a ring slot into.
     int verify_budget_ = 20000;

@@ -622,10 +622,33 @@ void StreamedKVSpace::verify_after_attention(std::uint32_t layer) {
     if (std::memcmp(got, want, page_bytes_) != 0) {
         std::size_t first_diff = 0;
         while (first_diff < page_bytes_ && got[first_diff] == want[first_diff]) { ++first_diff; }
+        std::size_t last_diff = page_bytes_;
+        while (last_diff > 0 && got[last_diff - 1] == want[last_diff - 1]) { --last_diff; }
+        std::size_t differs = 0;
+        for (std::size_t i = 0; i < page_bytes_; ++i) { differs += got[i] != want[i]; }
+        // Whose bytes are these now? A full-page match names the copy that overwrote the slot; no match
+        // at all means the writer is not a copy of a host record but the append itself.
+        int found_layer = -1;
+        unsigned found_page = 0;
+        for (std::uint32_t other = 0; other < layers_ && found_layer < 0; ++other) {
+            const std::uint32_t limit = window_start(other);
+            for (std::uint32_t candidate = 0; candidate < limit; ++candidate) {
+                if (std::memcmp(got, host_pages(other).subview(candidate, 1).data(), page_bytes_) ==
+                    0) {
+                    found_layer = static_cast<int>(other);
+                    found_page  = candidate;
+                    break;
+                }
+            }
+        }
         std::fprintf(stderr,
                      "[verify-after] MISMATCH layer=%u page=%u slot=%u active=%u streamed=%u "
-                     "first_byte=%zu\n",
-                     layer, page, slot, active_, streamed, first_diff);
+                     "first_byte=%zu last_byte=%zu differs=%zu/%zu first_run=%u runs=%u ring=%u "
+                     "holds=%s%u\n",
+                     layer, page, slot, active_, streamed, first_diff, last_diff, differs, page_bytes_,
+                     layer_first_run_[layer], layer_runs_[layer], ring_runs_,
+                     found_layer < 0 ? "nothing" : "host(layer,page)=",
+                     found_layer < 0 ? 0U : (static_cast<unsigned>(found_layer) << 16) | found_page);
     } else {
         std::fprintf(stderr, "[verify-after] ok layer=%u page=%u slot=%u streamed=%u\n", layer, page,
                      slot, streamed);

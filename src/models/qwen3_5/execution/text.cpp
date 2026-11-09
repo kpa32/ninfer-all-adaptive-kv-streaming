@@ -1686,6 +1686,40 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
     const bool rotated_output = rotated(p.output.hadamard_signs);
     const Tensor& kv_table_rows =
         active_kv_table_rows_ != nullptr ? *active_kv_table_rows_ : io_.text_kv_table_row;
+    // A streaming decode feeds this layer's keys a frame at a time so its copies run under its own
+    // launches instead of only under the next layer's (design 5.13.2). The frame geometry is the
+    // round's (`plan_stream_round`), so every layer of a round copies the same width and the caller
+    // has already decided - before it copied - that this round frames. One sequence only: a
+    // speculative decode states its batch as one, so single-sequence is `<= 1`, not `== 0`.
+    ops::CausalAttentionFrameHook frame_hook{};
+    const ops::CausalAttentionFrameHook* framed  = nullptr;
+    const auto stream_layer                      = static_cast<std::uint32_t>(fidx);
+    if (stream_framed_round_ && !positions && active_sequence_batch_ <= 1 &&
+        ph != Phase::Prefill && stream_layer < stream_feeds_.size()) {
+        StreamFrameFeed& feed = stream_feeds_[stream_layer];
+        feed.page_width       = stream_frame_pages_;
+        feed.compute          = s;
+        // The whole layer is queued before its first launch: the link is then busy for the layer's
+        // whole copy while the launches read it frame by frame, which is the only arrangement in
+        // which a copy never waits for a launch and a launch never waits for a copy it could have
+        // started earlier (design 5.13.2).
+        feed_stream_frames(feed, stream_frame_count_ - 1);
+        frame_hook = ops::CausalAttentionFrameHook{stream_window_tokens_, stream_splits_per_frame_,
+                                                   stream_frame_wait, stream_frame_consumed, &feed};
+        framed     = &frame_hook;
+        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+            static int printed = 0;
+            if (printed < 40) {
+                ++printed;
+                std::fprintf(stderr,
+                             "[stream] attn layer=%u active=%u T=%d window=%d frames=%d "
+                             "pages=%d spf=%d batch=%d\n",
+                             stream_layer, kv_stream_space_->active_pages(), T,
+                             stream_window_tokens_, stream_frame_count_, stream_frame_pages_,
+                             stream_splits_per_frame_, active_sequence_batch_);
+            }
+        }
+    }
     if (active_sequence_batch_ != 0) {
         const std::int32_t width = active_sequence_width_;
         if (width <= 0 || width * active_sequence_batch_ != T) {
@@ -1720,7 +1754,8 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
              dimension(config.attention->num_key_value_heads)},
             static_cast<float>(1.0 / std::sqrt(static_cast<double>(config.attention->head_dim))),
             batch_text_kv_->batch_layer_view(fidx, kv_rank), envelope, work_, a_batch, s,
-            rotated_output || positions ? nullptr : &gate_batch, positions ? &partial : nullptr);
+            rotated_output || positions ? nullptr : &gate_batch, positions ? &partial : nullptr,
+            framed);
     } else if (!active_segments_.empty()) {
         // Each segment attends over its own sequence exactly as its prefill alone would.
         for (const SegmentBinding& segment : active_segments_) {
@@ -1747,40 +1782,6 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
         const PagedKVBatchLayerView cache_view = batch_text_kv_->batch_layer_view(fidx, kv_rank);
         // A streaming decode feeds this layer's keys a frame at a time so its copies run under its
         // own launches instead of only under the next layer's (design 5.13.2). The frame geometry
-        // is the round's (`plan_stream_round`), so every layer of a round copies the same width and
-        // the caller has already decided - before it copied - that this round frames.
-        ops::CausalAttentionFrameHook frame_hook{};
-        const ops::CausalAttentionFrameHook* framed = nullptr;
-        const auto layer = static_cast<std::uint32_t>(fidx);
-        // One sequence only: a speculative decode pass states its batch as one (the verify call's
-        // batch dimension is 1 even for a single sequence), so "one sequence" is `<= 1`, not `== 0`.
-        if (stream_framed_round_ && !positions && active_sequence_batch_ <= 1 &&
-            ph != Phase::Prefill && layer < stream_feeds_.size()) {
-            StreamFrameFeed& feed = stream_feeds_[layer];
-            feed.page_width       = stream_frame_pages_;
-            feed.compute          = s;
-            // The whole layer is queued before its first launch: the link is then busy for the
-            // layer's whole copy while the launches read it frame by frame, which is the only
-            // arrangement in which a copy never waits for a launch and a launch never waits for a
-            // copy it could have started earlier (design 5.13.2).
-            feed_stream_frames(feed, stream_frame_count_ - 1);
-            frame_hook = ops::CausalAttentionFrameHook{
-                stream_window_tokens_, stream_splits_per_frame_, stream_frame_wait,
-                stream_frame_consumed, &feed};
-            framed = &frame_hook;
-            if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-                static int printed = 0;
-                if (printed < 40) {
-                    ++printed;
-                    std::fprintf(stderr,
-                                 "[stream] attn layer=%u active=%u T=%d window=%d frames=%d "
-                                 "pages=%d spf=%d\n",
-                                 layer, kv_stream_space_->active_pages(), T,
-                                 stream_window_tokens_, stream_frame_count_, stream_frame_pages_,
-                                 stream_splits_per_frame_);
-                }
-            }
-        }
         ops::causal_softmax_attention(
             qn, kn, v, cache_positions, Tensor{}, kv_table_rows,
             {dimension(config.attention->head_dim),
@@ -1789,19 +1790,20 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
             static_cast<float>(1.0 / std::sqrt(static_cast<double>(config.attention->head_dim))),
             cache_view, envelope, work_, a, s,
             rotated_output || positions ? nullptr : &gate, positions ? &partial : nullptr, framed);
-        if (framed != nullptr) {
-            // The next layer's frames follow this layer's on the copy stream, now that this layer's
-            // launches are all enqueued: at a layer boundary the link then has the next layer's
-            // copy ready to start the moment this layer's last launch is enqueued, instead of
-            // waiting for that layer's first launch to ask for it.
-            const auto next_layer = static_cast<std::size_t>(fidx) + 1;
-            if (next_layer < stream_feeds_.size()) {
-                StreamFrameFeed& next = stream_feeds_[next_layer];
-                next.page_width       = stream_frame_pages_;
-                next.compute          = s;
-                feed_stream_frames(next, stream_frame_count_ - 1);
-            }
-        }    }
+    }
+    if (framed != nullptr) {
+        // The next layer's frames follow this layer's on the copy stream, now that this layer's
+        // launches are all enqueued: at a layer boundary the link then has the next layer's copy
+        // ready to start the moment this layer's last launch is enqueued, instead of waiting for
+        // that layer's first launch to ask for it.
+        const auto next_layer = static_cast<std::size_t>(fidx) + 1;
+        if (next_layer < stream_feeds_.size()) {
+            StreamFrameFeed& next = stream_feeds_[next_layer];
+            next.page_width       = stream_frame_pages_;
+            next.compute          = s;
+            feed_stream_frames(next, stream_frame_count_ - 1);
+        }
+    }
     if (positions) {
         // The rank's query heads' gates, contiguous for the merge.
         const TensorShare& share = stage_runtime_->tensor_parallel->shares[tensor_rank_];

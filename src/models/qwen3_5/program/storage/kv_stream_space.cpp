@@ -591,8 +591,38 @@ void StreamedKVSpace::wait_run(std::uint32_t layer, std::uint32_t run, cudaStrea
 
 void StreamedKVSpace::consume(std::uint32_t layer, cudaStream_t compute) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
+    // The post-attention half of the verify probe: the same slots the upload wrote, read again after the
+    // attention that consumed them. A mismatch here means something other than the copy wrote those
+    // slots while the layer read them.
+    verify_after_attention(layer);
     for (std::uint32_t run = 0; run < layer_runs_[layer]; ++run) { consume_run(layer, run, compute); }
     CUDA_CHECK(cudaEventRecord(consumed_[layer], compute));
+}
+
+void StreamedKVSpace::verify_after_attention(std::uint32_t layer) {
+    if (std::getenv("NINFER_STREAM_VERIFY") == nullptr || verify_after_budget_ <= 0) { return; }
+    const std::uint32_t streamed = window_start(layer);
+    if (streamed == 0 || !verify_arena_ || !verify_host_) { return; }
+    --verify_after_budget_;
+    CUDA_CHECK(cudaDeviceSynchronize());
+    const std::uint32_t page = 0;
+    const std::uint32_t slot = slot_of_page(layer, page);
+    cache_->page_pool().copy_to_host_pages(slot, 1, verify_arena_->writable_view(*verify_host_),
+                                           RankStreams());
+    CUDA_CHECK(cudaDeviceSynchronize());
+    const auto* got  = verify_arena_->view(*verify_host_).data();
+    const auto* want = host_pages(layer).subview(page, 1).data();
+    if (std::memcmp(got, want, page_bytes_) != 0) {
+        std::size_t first_diff = 0;
+        while (first_diff < page_bytes_ && got[first_diff] == want[first_diff]) { ++first_diff; }
+        std::fprintf(stderr,
+                     "[verify-after] MISMATCH layer=%u page=%u slot=%u active=%u streamed=%u "
+                     "first_byte=%zu\n",
+                     layer, page, slot, active_, streamed, first_diff);
+    } else {
+        std::fprintf(stderr, "[verify-after] ok layer=%u page=%u slot=%u streamed=%u\n", layer, page,
+                     slot, streamed);
+    }
 }
 
 void StreamedKVSpace::consume_run(std::uint32_t layer, std::uint32_t run, cudaStream_t compute) {

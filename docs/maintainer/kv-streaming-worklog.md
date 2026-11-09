@@ -118,17 +118,28 @@ depends-on:
 
 **26.1 tok/s | 151.0 ms/轮 | 3603 MiB/轮 | 暴露 114.3 ms | 窗口 1670 页（106 880 token）**。
 
-### 5.3 新框架首次上卡（M-13，`equiv-183k`）
+### 5.3 修好缺陷后的交付数字（M-16/M-17，提交 `9c9121a8`）
 
-| 项 | resident 基线 | streamed（新框架） | streamed（移植前） |
+183K 与 251K 各一次，`check` 与 `bench` 都在同一提交上：
+
+| 场景 | resident | streamed | 移植前 streamed |
 |---|---:|---:|---:|
-| greedy ids | 512/512 | **512/512** | 512/512 |
-| 每轮上载 | — | 779.9 MiB | 822.9 MiB |
-| 暴露 | — | **0.9 ms/轮** | 15.6 ms/轮 |
-| decode | 106.0 | 94.2 tok/s | 89.9 |
-| 窗口 / 环 | — | 2150 页/层 / 7 runs（≈1.23×） | 2111 / 1512 槽（2×） |
+| 183K rk4v4 tok/s | 106.1 | 85.6 | 89.9 |
+| 183K rk4v4 每轮 | 37.3 ms | 46.2 ms | 46.9 ms |
+| 183K rk4v4 每轮上载 | — | 779.9 MiB | 822.9 MiB |
+| 183K rk4v4 暴露 | — | **7.2 ms** | 15.6 ms |
+| 183K 窗口 / 环 | — | 2150 页/层 / 7 runs | 2111 / 1512 槽（2×） |
+| 183K logprob 最大差 | — | **0.000000（512/512）** | 未测 |
+| 251K rk4v4 tok/s | — | 57.7 | 69.2 |
+| 251K rk4v4 每轮上载 | — | 1094.9 MiB | 1193.6 MiB |
+| 251K rk4v4 暴露 | — | 20.6 ms | 15.6 ms |
+| 251K rk8v4 tok/s | — | 25.7 | 26.1 |
+| 251K rk8v4 每轮上载 | — | 3348.6 MiB | 3603.0 MiB |
 
-### 5.4 定位 logprob 差异的九组实验（M-14/M-15，全部保留在树里）
+**代价是真的**：字节全面下降（−5% ~ −8%），但 251K/`rk4v4` 慢了 17%——环降到 1.10× 之后
+`ahead == 0`，整层拷贝没有前视。三条找回重叠的路都实测否掉（M-17）。
+
+### 5.4 定位 logprob 差异的八组实验（M-14/M-15，探针保留在树里）
 
 | 编号 | 做什么 | 结果 | 结论 |
 |---|---|---|---|
@@ -139,6 +150,8 @@ depends-on:
 | E6 | 拷贝之间主机同步（`NINFER_STREAM_SAFE=1`） | 仍差 0.087 | 不是拷贝与注意力的时序竞争 |
 | E7 | — | — | 探针因一次原子编辑失败没编译进去 |
 | E8 | 注意力**之后**再读同一槽 | **24/24 全错** | 槽内容在注意力期间被写坏 |
+| E9 | 比对时打印"槽里是谁的页" | 槽里是**下一个轮到该 run 的层**的 page 0 | 环槽被后继层覆盖 |
+| E10/E11 | `NINFER_STREAM_TRACE=1` 打消费序列 | `0,1,2,0,3,4,5,1,6,7,8,2,9,10,11,3` | **与 `compact_layer_indices` 的二次映射逐位吻合 = 根因** |
 
 ---
 
@@ -152,57 +165,75 @@ depends-on:
    现在零窗口是合法计划（全部流式），扫描得以继续。
 4. **规划器的定点迭代在预算不足时下溢**：改为二分求解 + `ratio` 1.0 回退 + `run_pages` 逐次减半。
 5. **池校验签名**：`kv_stream_pool_pages(split)` 不再需要 layers。
-6. **绝对层号 vs full-attention 序号**：旧帧路径用 `fidx` 索引按 full-attention 序号编号的空间，
-   后半模型的流式层会静默失配；现在统一 `compact_layer_indices`。
+6. **绝对层号 vs full-attention 序号**：旧帧路径用绝对层号索引按 full-attention 序号编号的空间，
+   后半模型的流式层会静默失配。现在的规则是：调用方映射一次 `compact_layer_indices[layer]`，
+   空间内部一律用这个序数，**不得再映射**（§7 的根因就是多映了一次）。
 7. **消费者没等块表发布**：`wait_ready`/`wait_run` 现在同时等 `ready_[layer]`（发布之后记录）。
-   效果：logprob 差 0.118 → 0.079 nat（真实但不充分，见下）。
+   效果：logprob 差 0.118 → 0.079 nat（真实但不足）。
+8. **层号被映射两次**（根因，见 §7）：`stream_layer` 直接用 `fidx`。
+9. **`ahead` 没有上限**：夹到 `count − 1`，`issue()` 自带边界检查（`rk8v4`/251K 的崩溃）。
+10. **span 流水按帧序而非页区间寻址**：改为用 hook 报告的 `(first_page, page_count)` 换算 run 区间
+    （`wait_run_range`/`consume_run_range`），bounded 路径因此逐位正确（仍太贵，见 §8）。
 
 ---
 
-## 7. 未修复的缺陷（接手的第一件事）
+## 7. 已修复的主缺陷（这轮的核心）
 
-**症状**：`equiv-183k` 的 `streamed` 与 `resident` 比，ids 512/512 相同，**logprobs 最大差 0.079 nat
-（510/512 有差）**；`check` 的 `logprobs_match_across_layouts` 判 FAIL。
+**症状**：`equiv-183k` 的 `streamed` 与 `resident` 比，ids 512/512 相同，**logprobs 最大差 0.118 nat**；
+`check` 的 `logprobs_match_across_layouts` 判 FAIL。
 
-**证据链（已排除）**：
-- 拷完就比是逐字节正确的（E5，3872/3872）；
-- 完全串行化拷贝仍然错（E6）⇒ 不是拷贝/注意力的时序竞争；
-- 关图仍然错（E2）⇒ 不是 CUDA 图；
-- 全驻留（环 0 run）逐位正确（E1）⇒ 窗口、块表、append、advance 本身对；
-- **注意力读完后再读同一个槽，内容变了**（E8，24/24）⇒ 有别的东西在注意力期间**写**了环槽。
+**根因（静态的层号二次映射）**：`attn_mix` 的 `fidx` 参数**已经是**该层的 compact 序数（调用方先做过
+`config_.compact_layer_indices[layer]`），函数里又映射了一次：
 
-**首要假设**：本轮新增 token 的 KV append 通过**块表**解析页号，而该页的表项还是旧的/未发布，
-于是 append 写进了环槽（同时新页的键也没落到窗口槽）。这与"ids 对、分布偏"完全吻合。
-最可能的位置：`src/models/qwen3_5/program/storage/kv_store.h:1693`（`ensure_mapped_to_tokens` →
-`stream_space_->advance(...)`）与**本轮 KV 写入**的相对顺序 —— prefill 路径已在写入之前
-（`prefill.cpp:1369` 的注释即此意），decode 这条要核实。
+```cpp
+const auto stream_layer = static_cast<std::uint32_t>(dimension(config_.compact_layer_indices[fidx]));
+```
 
-**下一步（按顺序）**：
-1. 在 `advance()` 与 append 都加一次性打印（页面、表项、流），确认 decode 轮里谁先谁后；
-2. 若 append 在前：把 `advance` 提到 append 之前，或在 append 前强制发布本轮新页；
-3. 重跑 `check --case equiv-183k`（期望 `logprobs_match_across_layouts=true`）；
-4. 通过后跑 `check --suite equiv`（4/4）与 `bench --case stream-251k`（`rk4v4` 与 `rk8v4` 各一次）。
+`compact_layer_indices[i]`（`src/models/qwen3_5/config.cpp:133`）是"第 i 层在**它自己那一类**里的序号"，
+所以 16 个 full 层拿到的是 `0,1,2,0,3,4,5,1,6,7,8,2,9,10,11,3`：**0–3 各被消费两次、12–15 一次都没有**。
+于是 `consume(错层)` 把别人的 run 标成已释放、`wait_ready(错层)` 等的是别人的事件，被遮住的 4 层从不
+释放 run —— 拷贝就在活着的读者底下刷新环槽。读到的仍是同一页的上一轮字节，所以 **ids 全对、分布偏
+0.1 nat**。
 
-**另一个已知限制**：`NINFER_STREAM_BOUNDED`（bounded span 派发）默认关闭。原因是 span 的下标
-（按 split 计数）与 run 的下标（按页计数）只在"run 恰好是整数个 span"时才对齐；对不齐时最后几个
-span 等待的是空事件，会读到未落地的槽 —— 曾测到 0.13 nat 的偏差。要开启必须先让派发单位与拷贝单位
-同源（让 `splits_per_run` 由 `run_pages × 64 / segment_keys` 精确整除，或让 hook 直接用 run 下标）。
+**为什么难定位**：它不崩、不报错、ids 一模一样；所有"看起来该怀疑"的地方经实验全部排除——
+拷贝逐字节正确（E5）、关图仍错（E2）、完全串行化仍错（E6）、全驻留全对（E1）。前三个"修等待"的
+尝试都不可能奏效，因为等待被记到了别人的 run 上。真正的证据是 `NINFER_STREAM_TRACE=1` 打出来的
+消费序列，与 `config.cpp:133` 的构造规则逐位吻合。
+
+**修复**：`stream_layer = static_cast<std::uint32_t>(fidx);`
+
+**结果**（`check --case equiv-183k`，同 argv 同模型）：
+
+| | 移植前 | 移植后 | +修 `wait_ready` 顺序 | **+修层号映射** |
+|---|---:|---:|---:|---:|
+| logprob 最大差 | 未测 | 0.118 | 0.079 | **0.000000** |
+| 有差的 token | — | 508/512 | 510/512 | **0/512** |
+| greedy ids | 512/512 | 512/512 | 512/512 | **512/512** |
+| campaign | PASS（当时没有 logprob 判据） | FAIL | FAIL | **PASS** |
+
+`check --suite equiv` 在交付提交 `9c9121a8` 上 **4/4 PASS**（`equiv-8k`、`equiv-100k` 金标 ids；
+`equiv-183k` 的 resident 与 streamed 各 512 token，ids 与 logprobs 双重逐位相同）。
+
+**这一轮另外两个真缺陷**（都已修）：
+- `ahead`（允许前视的层数）没有上限，`ring_runs / runs_per_layer − 1` 在环较宽时可以超过层数 ⇒
+  `issue()` 越界，`rk8v4`/251K 直接崩（`Streamed KV layer is out of range`）。现在夹到 `count − 1`，
+  且 `issue()` 自带边界检查。
+- `wait_ready`/`wait_run` 只等"最后一个 run 的拷贝"，**没等块表发布**。补上 `ready_[layer]` 之后
+  logprob 差从 0.118 收到 0.079（真实但不足）。
 
 ---
 
-## 8. 未完成的工作清单
+## 8. 未完成的工作清单（接手从这里开始）
 
-| # | 项目 | 状态 | 备注 |
+| # | 项目 | 状态 | 证据 / 备注 |
 |---|---|---|---|
-| 1 | §7 的 logprob 缺陷 | **未修** | 阻塞 `check --suite equiv` 4/4 |
-| 2 | bounded span 派发（`NINFER_STREAM_BOUNDED`） | 默认关 | 需先把 span 与 run 对齐 |
-| 3 | `check --suite equiv` 4/4 | 未跑 | 需要 #1 |
-| 4 | 251K bench（`rk4v4` / `rk8v4`） | 未跑 | 需要 #1 |
-| 5 | 130K–180K 的收益实测（R7.1 效应） | 未测 | 规划上这是本轮最大的期望收益处 |
-| 6 | `1.05/1.10/1.25/1.50` 四档 ring ratio 扫描 | 未做 | 上游 1.10 是它自己硬件的值，不宜照抄结论 |
-| 7 | 重分区代价实测（一次重分区多少毫秒） | 未测 | 上游用 64 轮冷却摊掉 |
-| 8 | `--kv-stream-report` 之外的计时样本清理 | 可选 | 目前 `report_` 关闭时仍会记每轮字节 |
-| 9 | 上游的"驻留旧前缀、最新页在环里"布局 | 未移植 | 与本实现的"最新页驻留"相反；对本轮收益无影响，但影响 append 走向（见 §7） |
+| 1 | **`ahead ≥ 1` 的正确性** | **未修（新发现）** | 1.10× 环下 `ahead` 恒为 0，所以这条路径从未在正确层号下成立过；把环比试到 2.00 时 **ids 与金标不同**（token 1：16→17，M-17）。最可能是"本轮末尾预取下一轮前几层"（`issue(current + ahead - count)`）与下一轮开头的预发重复执行 |
+| 2 | bounded span 流水 | **可用但太贵** | 已改为按**页区间**驱动（不再假设 run 是整数个 span），`NINFER_STREAM_BOUNDED=1` 下 logprobs **逐位正确**、暴露降到 **0.1 ms/轮**，但发射代价让每轮从 46.2 涨到 102.6 ms（38.6 tok/s）。调优器因此会稳定地选 unbounded |
+| 3 | 251K 的默认环比 | **待决策** | 1.10× 在 PCIe 4.0 上比移植前慢 17%（M-17）。要选 1.5–2.0 必须先修 #1；`NINFER_STREAM_RING_RATIO` 旋钮已移除（对已结束的扫描有用，留着能让别人规划出错的 split） |
+| 4 | 130K–180K 的实测（R7.1 效应） | 未测 | 规划上这里收益最大：窗口装得下时环应当接近零 |
+| 5 | 重分区代价实测 | 未测 | 上游用 64 轮冷却摊掉；本实现的控制器每轮评估一次 |
+| 6 | 上游"驻留旧前缀、最新页在环里"布局 | 未移植 | 与本实现的"最新页驻留"相反；影响 append 走向与环的必要大小 |
+| 7 | 集中 decode 形状（S6）的实际收益 | 未测 | 池恒等式下它不改变每轮字节，只改拷贝层数与 run 长度；`rk8v4`/251K 才会真正触发它 |
 
 ---
 
@@ -211,23 +242,26 @@ span 等待的是空事件，会读到未落地的槽 —— 曾测到 0.13 nat 
 **包含**
 - 逐字原文与 R1–R13 要求表（替换旧转述版）
 - 移植图纸与逐条核对（`kv-streaming-fidelity.md`）
-- 反馈计量、分区控制器、设备侧 sampling、运行时重分区、平铺环 + run 级拷贝/消费、span 调优器（默认关）、
-  每层窗口 + 集中 decode 形状
+- 反馈计量、分区控制器、设备侧 sampling、运行时重分区、平铺环 + run 级拷贝/消费、
+  span 流水（按页区间寻址，由调优器实测选择，本机实测选 unbounded）、每层窗口 + 集中 decode 形状
 - 观测面：`ring_runs`、`feedback{...}`、每轮 deadline/busy 字段
 - 四个纯逻辑单测（layout / feedback / partition / span tuner）
 - 测量记录 M-12…M-15
 
 **不包含（明确不改）**
 - 上游后续的生命周期提交（phase arena、图切分、多卡、图像 prefill、MTP/DFlash/Gemma handoff）
-- 生产代码里的 `NINFER_STREAM_VERIFY` / `NINFER_STREAM_SAFE` 探针（诊断用，默认不启用；收尾时可删或保留）
+- 生产代码里的 `NINFER_STREAM_VERIFY` 探针（诊断用，默认不启用，保留作为逐字节 oracle；
+  `NINFER_STREAM_SAFE` 与 `NINFER_STREAM_TRACE` 已随缺陷定位完成而删除）
 - 计算精度相关的任何改动（本轮**没有**放宽任何数值判据；`rk8v4` 仍是质量下限）
 - 250K 以上的上下文、非 `rk*` 家族的 KV 格式
 
 **验收标准（建议写进 PR 描述）**
-1. `check --suite equiv` 4/4，ids 与 logprobs 均逐位相同；
+1. `check --suite equiv` 4/4，ids 与 logprobs 均逐位相同 —— **在 `9c9121a8` 上已满足**；
 2. `bench --case stream-251k --kv-dtype rk4v4`：`stream_upload_mib_per_round > 0`，暴露 ≤ 2 ms/轮，
-   decode 不低于移植前（69.2 tok/s）；
-3. `bench --case stream-251k --kv-dtype rk8v4`：记录窗口/环/每轮字节与 tok/s（基线见 M-12b）；
+   decode 不低于移植前（69.2 tok/s）—— **未满足**：实测 57.7 tok/s / 暴露 20.6 ms，原因是环降到
+   1.10× 后没有前视（M-17）；这是 §8 #3 的待决策项，不是未知故障。
+3. `bench --case stream-251k --kv-dtype rk8v4`：记录窗口/环/每轮字节与 tok/s（基线见 M-12b）
+   —— **已满足**：25.7 tok/s / 3348.6 MiB/轮（移植前 26.1 / 3603.0）；
 4. 四个纯逻辑单测全绿；增量构建无 error。
 
 ---

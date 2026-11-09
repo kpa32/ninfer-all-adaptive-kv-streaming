@@ -401,22 +401,9 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     if (next->layer_resident == split_.layer_resident && next->ring_pages == split_.ring_pages) {
         return false;
     }
-    // Does the new boundary pay for the move? Both sides are byte counts the run already keeps, so
-    // this needs no model of the link and no timing sample: the migration writes and re-reads every
-    // page that changes side, and the layout that replaces it only saves the difference in what a
-    // round uploads. If the saving does not repay the move within the cooldown, the move is skipped.
-    // At 251K on this host the controller's 1.10 ring saved 11 MiB a round against a 1.09 GiB
-    // migration - 64 rounds of saving buy 700 MiB, so the move never pays and never happens.
-    const std::uint64_t migration_bytes = migration_page_bytes(*next);
-    const std::uint64_t before_bytes =
-        static_cast<std::uint64_t>(max_streamed_pages()) * layers_ * page_bytes_;
-    std::uint64_t after_streamed = 0;
-    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-        after_streamed += kv_stream_window_start(active_, *next, layer);
-    }
-    const std::uint64_t after_bytes = after_streamed * page_bytes_;
-    const std::uint64_t saving = before_bytes > after_bytes ? before_bytes - after_bytes : 0;
-    if (migration_bytes > saving * kPartitionCooldownRounds) { return false; }
+    // Whether a move pays is decided by measuring it, never by a byte model: the bytes only say what
+    // a round carries, while what a ring actually buys is look-ahead. A byte gate would also only ever
+    // permit shrinking - growing the ring saves no bytes yet is exactly what recovers overlap.
     // Start the experiment: remember the layout being left and the round time it measured, so the
     // next rounds can say whether this one is an improvement.
     partition_trial_before_   = split_;
@@ -430,19 +417,6 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     layout_rounds_            = 0;
     evaluations_since_repartition_ = 0;
     return true;
-}
-
-std::uint64_t StreamedKVSpace::migration_page_bytes(const KVStreamSplit& next) const noexcept {
-    if (next.layers() != layers_) { return UINT64_MAX; }
-    std::uint64_t moved = 0;
-    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-        const std::uint32_t old_start = kv_stream_window_start(active_, split_, layer);
-        const std::uint32_t new_start = kv_stream_window_start(active_, next, layer);
-        const std::uint32_t left = old_start > new_start ? old_start - new_start : 0;
-        const std::uint32_t entered = new_start > old_start ? new_start - old_start : 0;
-        moved += static_cast<std::uint64_t>(left) + static_cast<std::uint64_t>(entered);
-    }
-    return moved * page_bytes_;
 }
 
 void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams) {

@@ -234,6 +234,11 @@ public:
     // and the block tables are republished. Rare by design: the controller rate-limits it.
     void repartition(const KVStreamSplit& next, RankStreams streams);
 
+    // The bytes a move between `next` and the layout in force has to carry: every page that crosses a
+    // window boundary is written back or re-read once. Pure arithmetic on the two splits, which is
+    // what lets the payoff be judged from byte counts the run already keeps.
+    [[nodiscard]] std::uint64_t migration_page_bytes(const KVStreamSplit& next) const noexcept;
+
     // Reads every timing pair the device has finished, closes the round in flight and returns the
     // series. Safe to call repeatedly: a pair is counted once.
     [[nodiscard]] TransferStats transfer_stats();

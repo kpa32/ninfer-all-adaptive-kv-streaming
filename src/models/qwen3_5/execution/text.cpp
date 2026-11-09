@@ -1495,6 +1495,14 @@ void TextContext::plan_stream_round(std::int32_t width) {
     if (kv_stream_space_ == nullptr || batch_text_kv_ == nullptr || width <= 0) { return; }
     // One launch per run only pays when the runs are wider than one attention split and the ring was
     // planned for it; the tuner has to have measured it on this layout (kv_stream_span_tuner.h).
+    //
+    // Off by default until the frame-to-run mapping is exact: the callbacks are indexed by *span* (a
+    // fixed number of splits) while the copies are indexed by *run* (a fixed number of pages), and the
+    // two only line up when a run happens to be a whole number of spans. With them adrift, the last
+    // spans of a layer wait for nothing and read slots whose copy may not have landed - which measured
+    // as a 0.13-nat shift in the log probabilities with the greedy ids unchanged. Opt-in for the work
+    // on that mapping, never as the delivered path.
+    if (std::getenv("NINFER_STREAM_BOUNDED") == nullptr) { return; }
     if (!stream_span_tuner_.use_bounded()) { return; }
     if (kv_stream_space_->runs_per_layer() <= 1) { return; }
     const std::uint32_t segment_keys = batch_text_kv_->attention_segment_keys();

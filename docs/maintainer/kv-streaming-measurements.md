@@ -1,808 +1,101 @@
 ---
 id: kv-streaming-measurements
 type: architecture-design
-title: KV 流式测量存根：每条结论的日期、提交、命令与结果
+title: KV 流式的测量参考表（条件 + 数值 + 复现方式）
 status: active
 parent: kv-streaming-design
 references:
-  - kv-streaming-worklog
+  - kv-streaming-strategy
+  - kv-streaming-verification
 ---
 
-# KV 流式：测量存根
+# KV 流式的测量参考表
 
-每条记录都是真实运行的输出，用来说明"当时为什么这么改"。设计结论在
-[`kv-streaming-design.md`](kv-streaming-design.md)，这里只存可复现的原始证据：时间、提交、命令、
-结果、以及这条数据被用来决定什么。**新测量追加到末尾，不覆盖旧的**；结论变了就再写一条并指明它
-推翻了哪一条。
+本文件是**参考表**：每一行是一个在当前条件下测到的量，每张表都带条件与复现方式。它不记录过程、
+不记录日期、不记录尝试史——那些在 `bench/results/kv-stream/ledger.md`（记录区）与 git 历史里。
+判据（哪个量必须落在什么范围才算通过）在
+[kv-streaming-verification](kv-streaming-verification.md)；下一步做什么在
+[kv-streaming-strategy](kv-streaming-strategy.md)。
 
+## 口径
 
-## 决策索引（先读这张表，能省掉重做实验）
+- **每轮时间**（`round_ms`）才是可比的量。`tok/s` 同时取决于 MTP 的接受长度（本轮 3.96 token/轮），
+  接受长度随文本浮动，所以 tok/s 不单独作为判据。
+- `stream.upload_bytes` 是**整个请求**的累计（含 prefill）。要求"每轮字节"时只能用报告里的
+  `rounds_series`（逐轮），不能用总数除以轮数。
+- 两臂比较必须同主机、同构建、同产物、同 prompt ids，且**按 rep 交错**运行
+  （`CONTRIBUTING.md` 的 Comparable measurements；工具已内建）。
+- `copy_busy_seconds` 含"等读者消费"的时间，不是纯传输时间；纯传输速率从字节 ÷ 链路峰值算。
 
-| 结论 | 决定 | 章节 | 运行记录 |
-|---|---|---|---|
-| 262 144 靠提高精度装不下（`rk8v4` 7.33 GB > 3.07 GB 预算） | 必须页粒度流式 | M-1…M-6 | — |
-| 帧式流水在 251 K 更慢（67.5 / 64.0 vs 69.2 tok/s） | 当时回退整层拷贝 | M-12 | `…045828Z-bench-m12-default-251k-e25152e0` |
-| `rk8v4` 251 K 实测 26.1 tok/s、3603 MiB/轮、暴露 114 ms | 该格式唯一有效方向是减字节 | M-12b | `…051316Z-bench-m12b-rk8v4-real-b509e872` |
-| 环从 `2×` 改 `1.10×` 后 251 K 慢 17% | 控制器不能只看字节 | M-13/M-17 | `…075837Z-equiv-s6-equiv8-0e688e0c` |
-| logprob 偏 0.118 nat 的根因是**层号映射两次** | 修 `stream_layer = fidx` | M-16 | `…091551Z-equiv-s6-equiv10-48746c74` |
-| 首轮重分区把 126 ms 塞进被测窗口 | decode 前不迁移 | M-18 | `s10-nospike` |
-| 迁移实验把迁移轮算进均值 ⇒ 任何实验都"变慢" | 试-run 跳过迁移轮 + 基线取稳态 + 被否不重试 | M-19 | `s16-fair` |
-| 缩环让掉了前视：1.375 → 1.125 只省 1.6% 字节 | 门限按**几何前视比例**判，不看字节绝对值 | M-19 | `s16-fair` |
-| 251 K `rk4v4` 稳态 54.4 ms / 72.8 tok/s，`rk8v4` 147.9 ms / 26.8 tok/s | 速度线收口，**超过移植前** | M-19/M-20 | `s16-fair`、`s18-rk8v4` |
-| 池装得下时（150 K/180 K）零字节、等于全驻留速度 | "零搬"是正确期望，不是失败 | M-21 | `s20-range` |
-| 150 K 紧池：控制器提出缩环（省 37% 字节），实验测出慢 85% ⇒ 回退 | 实验是裁判，门限只是预筛 | M-21 | `s20-range` |
-| run 宽度 49/96/128/192 对时间影响 ±0.7%、暴露恒 6.0 ms | 默认保持 128，旋钮只作测量接口 | M-22 | `s22-rp49/96/128/192` |
-| 183 K 每轮 1410 MiB / 45.4 ms ≈ 31 GB/s，已达链路峰值 | 该档**带宽受限**，调度侧没有余量 | M-22 | `s22-rp128` |
-
-## 已被实测否掉的路（不要再试，除非硬件变了）
-
-| 尝试 | 结果 | 依据 |
-|---|---|---|
-| 整层内再切帧（48 帧/轮） | 251 K 上 67.5 / 64.0 tok/s，比整层 69.2 慢 | M-12 |
-| 把环加大到 2× 换重叠 | 251 K 上 65.2 ms/轮（1.10× 时为 60.4），字节 +9% | M-17、M-19 |
-| 用字节模型判断要不要迁移 | 只看得见字节、看不见前视，且结构上只允许缩环 | M-18 |
-| 分帧流水（每 run 一次发射） | logprobs 逐位正确、暴露 0.1 ms，但每轮 102.6 ms（2.2×） | M-17、M-22 |
-| 导出 run 宽度为 `segment_keys/page_size = 49` | 暴露不变、时间 ±0.7%，无收益 | M-22 |
-| 设备侧等待（让 kernel 轮询 ready 标志） | **未实现**：183 K 已带宽受限（31 GB/s），能把暴露压到 0 的分帧也只省 6 ms 却多付 56 ms | M-17、M-22 |
-| 首轮 decode 就按预测重分区 | 126 ms 迁移塞进被测窗口，首轮 189.8 ms | M-18 |
-
-
-## 作废的数字（引用旧记录前先核对这张表）
-
-| 数字 | 出处 | 为什么作废 |
-|---|---|---|
-| 102.6 tok/s | `runs/20261109T003445Z-bench-frames-224d057b` | 那一版"帧 hook 拿不到 ⇒ 该格式 decode 一次都不搬"（逐轮 `upload_bytes=0`）。速度来自少搬的 ~1.1 GB/轮，不是跳过优化 |
-| 94.2 tok/s / 暴露 0.9 ms（183 K） | M-13 | 层号映射两次的版本：`consume` 等的都是错的 run，等于没有任何等待，拷贝可以任意抢跑 |
-| 57.7 tok/s / 60.4 ms（251 K） | M-17 | 首轮 126 ms 重分区 + 迁移实验把迁移轮算进均值，两者都在被测窗口内 |
-| 50.8 tok/s（251 K 环比 2.00） | M-17 | 控制器中途又改了布局，该次不是"2.00 稳态"；且当次 ids 与金标不同 |
-| 67.2 tok/s（251 K 稳态，修前） | M-18 | 4 次 ~170 ms 实验尖峰摊在 129 轮里；修好后同口径为 72.8 |
-| 26.1 tok/s（`rk8v4` 251 K） | M-12b | **不作废，但口径不同**：64 token 窗口；512 token 稳态为 26.8 / 147.9 ms |
-
-
-## 环境
+## 条件
 
 | 项 | 值 |
 |---|---|
-| 主机 | `kpa@192.168.2.13`，Linux，16 核 |
-| 仓库 | `~/ninfer-fork/ninfer-all-adaptive-kv-streaming`，分支 `kv-streaming` |
-| 构建 | `build-sm89`（Release，`BUILD_TESTING=OFF`），`cmake --build build-sm89 -j 14` |
-| GPU | NVIDIA GeForce RTX 4080 SUPER，16 376 MiB，驱动 615.71.09，sm_89 |
-| 模型 | `~/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer`（11.6 GiB 权重） |
-| KV 格式 | `rk4v4`（每 token 17 920 B，每页 71 680 B，页 = 64 token） |
+| 主机 | Linux，16 核，单 GPU 空闲 |
+| GPU | RTX 4080 SUPER，16 376 MiB，sm_89 |
+| 链路 | PCIe 4.0 x16，H2D 实测峰值 25.4 GB/s（标定值，用于所有带宽换算） |
+| 构建 | `build-sm89`，Release，`cmake --build build-sm89 -j 16` |
+| 产物 | `Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer`（11.6 GiB 权重，含 `mtp`） |
+| 页几何 | 64 token/页；`rk4v4` 71 680 B/页、`rk8v4` 104 448 B/页 |
+| 通用旗标 | `--kv-capacity auto --gdn-state-fp16 --prefill-chunk 256 --greedy --invariant-attention --spec mtp --draft-tokens 3` |
 
-## 通用命令
+## 表 1 decode 稳态（512 新 token）
 
-除注明外，每次测量都用同一组参数：
+| 上下文 | 格式 | 池/布局 | 每轮字节 | 每轮时间 | tok/s | 暴露 |
+|---|---|---|---:|---:|---:|---:|
+| 251 000 | `rk4v4` | 47 894 槽，窗口 2905 页/层，环 11 run | 1116.2 MiB | 54.4 ms | 72.8 | 记录于报告 |
+| 251 000 | `rk8v4` | 31 583 槽，窗口 1813 页/层，环 20 run | 3366.9 MiB | 147.9 ms | 26.8 | 记录于报告 |
+| 183 000 | `rk4v4` 流式 | 780 MiB/轮 | 779.9 MiB | 46.6 ms | 85.4 | 6.7 ms |
+| 183 000 | `rk4v4` 全驻留 | 0（全部常驻） | 0 | 37.1 ms | 106.8 | 0 |
+| 180 000 | `rk4v4` 紧池 | 916.9 MiB | 916.9 MiB | 45.6 ms | 86.7 | 6.1 ms |
+| 150 000 | `rk4v4` 紧池 | — | — | — | 99.4 | 记录于报告 |
+| 150 000 / 180 000 | `rk4v4`（池装得下） | 0 | 0 | — | 107.1 / 106.0 | 0 |
+| 100 000 | `rk4v4` 全驻留 | 0 | 0 | — | 118.9 | 0 |
 
-```bash
-# 251K 提示：246 652 token 的 α 文本，几乎吃满 262 144 的容量
-python3 -c 'import json;json.dump([{"role":"user","content":("alpha "*246600).strip()}],open("/tmp/v_p.json","w"))'
+## 表 2 prefill（同提示、同构建）
 
-./build-sm89/apps/ninfer ~/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer \
-  --messages /tmp/v_p.json --max-context 262144 --kv-capacity auto --kv-stream \
-  --kv-dtype rk4v4 --gdn-state-fp16 --prefill-chunk 256 --greedy --invariant-attention \
-  --max-new 64 --spec mtp --draft-tokens 3 [--kv-stream-report]
-```
+| 上下文 | 格式 | prefill tok/s | 上载 | 拷贝流忙 | 计算侧暴露 |
+|---|---|---:|---:|---:|---:|
+| 183 000 | `rk4v4` 流式 | 1476 | 45.7 GiB | 31.9 s | 0.0 s |
+| 183 000 | `rk4v4` 全驻留 | 1481 | 0 | 0 | 0 |
+| 251 000 | `rk4v4` 流式 | 1281 | 94.1 GiB | 55.5 s | 0.0 s |
+| 251 000 | `rk8v4` 流式 | 1330 | 582.9 GiB | 99.4 s | 0.2 s |
+| 150 000 / 180 000 | `rk4v4`（池装得下） | 1592.6 / 1593.6 | 0 | 0 | 0 |
 
-`--kv-stream-report` 打开拷贝/等待计时（默认关；实测开关代价在噪声内，见 M-04）。
-`decode speed` 除以 `mtp acceptance length` 得到**每轮时间**——接受长度随采样文本浮动，轮时间是
-可比的量，tok/s 不是。
+同上下文（183 000）的 A/B 说明：**流式让 prefill 慢 0.3%**，搬运被注意力完全掩盖。
+251 000 与 150 000 的 tok/s 差来自上下文变长的 O(P²) 计算成本，不是流式的代价。
 
----
+## 表 3 等价性（同构建、同 prompt ids，`rk4v4`）
 
-## M-01 池子按实测空闲分配，头寸从 256 MiB 降到 64 MiB 地板
+| 用例 | prompt token | ids | logprobs |
+|---|---:|---|---|
+| `equiv-8k` | 8 000 | 512/512 相同 | 逐位相同 |
+| `equiv-100k` | 100 000 | 512/512 相同 | 逐位相同 |
+| `equiv-183k` | 182 946 | 512/512 相同 | 逐位相同（0/512 有差） |
+| `equiv-183k`，run 宽度 49 页 | 182 946 | 512/512 相同 | 逐位相同 |
 
-- 时间：2026-11-08（本会话）
-- 提交：`987ef5fd`（头寸 64 MiB）+ `e2f61ed8`（清掉失败的 `cudaMalloc` 留下的错误）+ `3a545b40`（graft 计数作用域）
-- 命令：同上，无 `--kv-stream-report`；另加一次 `--kv-headroom-mib 1` 强制触发回退
-- 结果：
+## 表 4 灵敏度（已测过、可引用的单点）
 
-| 场景 | 池 | 启动后余 | decode |
-|---|---:|---:|---:|
-| 默认（64 MiB 地板），8K 提示 | 47 894 / 65 536 页组 | 53.5 MiB | 83.7 tok/s |
-| `--kv-headroom-mib 1`（故意装不下） | 首试 48 816 失败 → 重试 47 880 | — | 83.8 tok/s |
+| 变量 | 取值 | 每轮时间 |
+|---|---|---:|
+| run 宽度（180 000 紧池） | 49 / 96 / 128 / 192 页 | 45.5 / 45.4 / 45.5 / 46.0 ms |
+| 环比起点（251 000） | 1.10（规划值） | 54.4 ms（控制器随后按实测移动） |
 
-- 日志证据（`--kv-headroom-mib 1`）：`KV capacity: 48816 page groups did not fit … retrying with 47880`
-- 用来决定：头寸不再是安全余量，而是"计划误差的下限"，真正的兜底是这 6 次 64 MiB 回退。
+run 宽度四档的时间差在 ±0.7% 内、暴露恒 6.0 ms ⇒ 宽度不是这一档的杠杆；前视比例才是。
 
-## M-02 仪表：k=1（环深一层）时的拷贝与暴露
-
-- 时间：2026-11-08
-- 提交：`a434767f`（`--kv-stream-report`），运行于 `cab7c33e` 之后
-- 命令：通用命令 + `--kv-stream-report`
-- 结果（251K，池 47 894，窗口 2 919 页/层，环 936 页 × 16 层）：
-
-| 量 | 值 |
-|---|---:|
-| decode | 36.4 tok/s（接受长度 2.33）→ **每轮 64.0 ms** |
-| 每轮上载 | 1 023.7 MiB |
-| 拷贝流占用 | 42.57 ms |
-| 计算流等拷贝（暴露） | **22.65 ms** |
-| 每层 | 拷贝 2.66 ms，只藏住 1.24 ms，露出 1.42 ms |
-
-- 同一配置关掉报告：36.5 tok/s（开关代价在噪声内）
-- 用来决定：调度还有 ~50% 的空间（完美重叠 = 拷贝本身 42.57 ms → 54.7 tok/s），于是做环深 2。
-
-## M-03 环深 k=2：拷贝提前一层
-
-- 时间：2026-11-09T00:2x+08:00（本会话）
-- 提交：`1adfea6b`（环分区 + 提前一层）+ `db4c3f3e`（零窗口锚点修复）
-- 命令：通用命令，报告开/关各跑多次
-- 结果（251K，池 47 894，窗口 **2 835** 页/层，环 **1 020** 页 × 16 层）：
-
-| 运行 | decode | 接受长度 | 每轮 | 拷贝占用 | 暴露 | 每轮上载 |
-|---|---:|---:|---:|---:|---:|---:|
-| 报告关 ① | 46.7 | 2.62 | 56.1 ms | — | — | — |
-| 报告开 ① | 48.2 | 2.74 | 56.8 ms | 47.57 ms | 11.60 ms | 1.09 GiB |
-| 报告开 ② | 53.0 | 3.00 | 56.6 ms | 47.37 ms | 11.32 ms | 1.09 GiB |
-| 报告开 ③ | 50.3 | 2.86 | 56.9 ms | 47.76 ms | 11.78 ms | 1.09 GiB |
-| 报告关 ② | 50.7 | 2.95 | 58.2 ms | — | — | — |
-
-- 与 M-02 比：**每轮 64.0 → 56.9 ms（−11%）**，暴露 22.65 → 11.4 ms（减半），代价是窗口
-  2 919 → 2 835 页/层，上载 1 024 → 1 090 MiB（拷贝占用 42.6 → 47.5 ms）。
-- tok/s 从 36.4 涨到 48–53，其中一部分来自接受长度（2.33 → 2.74–3.00），所以按轮时间比较。
-- 用来决定：保留 k=2。
-
-## M-04 环深 k=3：更深的环不减少暴露
-
-- 时间：2026-11-09T00:4x+08:00
-- 提交：`1e1d73a4`（临时把 `kKVStreamRingDepth` 改成 3）
-- 命令：通用命令 + `--kv-stream-report`，跑两次
-- 结果（窗口 2 738 页/层，环 1 117 页 × 16 层）：
-
-| 运行 | decode | 接受长度 | 每轮 | 拷贝占用 | 暴露 | 每轮上载 |
-|---|---:|---:|---:|---:|---:|---:|
-| ① | 46.9 | 2.86 | 61.0 ms | 51.86 ms | 11.67 ms | 1.19 GiB |
-| ② | 46.9 | 2.95 | 62.9 ms | 51.92 ms | 11.77 ms | 1.19 GiB |
-
-- 关键否定证据：**暴露时间不随环深变（11.4 → 11.7 ms）**，而拷贝量涨了 9%。所以残余的
-  0.7 ms/层 不是"环不够深、拷贝赶不上"，而是每轮固定的起/停：轮首前 `ring_depth` 层没有可重叠的
-  计算，轮末最后一层的拷贝无处可藏。
-- 用来决定：环深回到 2（`a60647b1`）；要再拿回这 11 ms，需要**跨轮预取**（在上一轮的末尾为下一轮
-  的头几层发上载），不是加深环。
-
-## M-05 深环的历史测量（M4a，结论已作废但留档）
-
-- 时间：更早，提交 `94ad5f54` → 撤回 `6570f794`
-- 结果（rk8v4 120K / rk4v4 190K）：depth 1/2/14 = 81.7/80.4/65.6；73.9/73.0/71.9/68.1
-- 为什么作废：那两个上下文**环是空的**（全驻留，根本不拷），加深环只剩窗口变小，必然更慢。
-  这条记录留在原因是防止把"深环没用"当成一般结论——251K 处它是有效的（M-03）。
-
-## 待测（下一步的候选，尚无数据）
-
-| 候选 | 预期 | 依据 |
-|---|---|---|
-| 跨轮预取（轮末发下一轮头 `depth` 层的上载） | 每轮最多 −11 ms（−19%） | M-04 的暴露与环深无关，是轮首/轮末 |
-| 流式段更小的页（质量合同变更，需批准） | 最多 +40% | 拷贝量与页大小成正比，M-03 里拷贝已占 84% 的轮时间 |
-| 更大窗口（拿回环的区域代价） | 每页/层 = 0.24 ms/轮 | 每页 71 680 B ÷ 25.2 GB/s |
-
-## M-06 跨轮预取：轮末为下一轮头几层发上载
-
-- 时间：2026-11-09T01:50±+08:00
-- 提交：`47f14a7c`
-- 命令：通用命令 + `--kv-stream-report`（246 652 token 提示、容量 262 144、环深 2）
-- 结果：每轮 54.1 ms、上载 1.09 GiB、接受长度 2.24。同一提示下环深 2 无预取为 56.9 ms。
-- **未验证**：等价性（逐 token 与原版一致）。这是 1 号待办，见交接文档 §4。
-
-## M-07 环深 2 的重复性（3 次）
-
-- 时间：2026-11-09T00:5x
-- 提交：`a60647b1`
-- 结果：每轮 56.8 / 56.6 / 56.9 ms，拷贝占用 47.57 / 47.37 / 47.76 ms，
-  暴露 11.60 / 11.32 / 11.78 ms。轮时间稳定在 ±0.3%，tok/s 的浮动全部来自接受长度
-  （2.74 / 3.00 / 2.86）。
-
-## M-08 数值脆弱性探针：`--prefill-chunk` 会改变 token
-
-- 时间：2026-11-09T02:5x
-- 提交：`47f14a7c`（同一二进制、同一 `--seed 42 --greedy --invariant-attention`）
-- 命令：通用命令 + `--print-token-ids`，只改 `--prefill-chunk 256` ↔ `128`
-- 结果：两次的 `generated ids` md5 不同（`6f616f42…` vs `fdd87141…`）。
-- 含义两条：
-  1. **比较必须固定 `--prefill-chunk`**，否则问的不是同一个问题；
-  2. 246 K 的 α 重复提示词对数值扰动极其敏感（近 tie 的贪心选择），**不能用作等价性 oracle**。
-     等价性金标改用 `scripts/kv-stream-golden.sh` 的 8k / 100k / 184k 三个 case。
-- 同时确认：同一二进制、同一命令行连跑两次，ids 完全相同（确定性成立）。
-
-## M-09 全驻留 190K + MTP3 在这张卡上装不下（复现 M-5.9）
-
-- 时间：2026-11-09T02:2x
-- 命令：`--max-context 190016 --kv-capacity auto --kv-headroom-mib 8 --spec mtp --draft-tokens 3`
-- 结果：`error: minimum Engine runtime reservation requires 4103599616 bytes in addition to
-  8388608 bytes of automatic headroom, but only 4032299008 bytes are available after weights`
-- 含义：全驻留 + MTP 的上限约 186 K；流式窗口在 `rk4v4`+MTP3 下是 2 835 页 = 181 440 token。
-  两者重叠区间只有 ~184 K，**等价性 case 只能放在那里**。
-
-## M-10 原版金标、逐 token 等价性与 251K 基线（2026-11-08）
-
-- 提交：`73c3ae14`（工具 `cf90eaaf` 之后）
-- 工具：`tools/bench/run_kv_stream.py`；记录目录 `bench/results/kv-stream/`
-- 前置：`calibrate`（本配方 34.0 token/句 + 100 token 尾巴）、`window --capacity 184064
-  --headroom-mib 1008`（窗口 135 104 token）
-
-命令（GPU 空闲，同一模型/同一卡）：
+## 复现
 
 ```bash
-python3 tools/bench/run_kv_stream.py --model <artifact> calibrate --force
-python3 tools/bench/run_kv_stream.py --model <artifact> golden --suite equiv --force
-python3 tools/bench/run_kv_stream.py --model <artifact> check  --suite equiv
-python3 tools/bench/run_kv_stream.py --model <artifact> golden --suite perf  --force
-python3 tools/bench/run_kv_stream.py --model <artifact> bench  --case stream-251k --reps 3 --tag baseline
+# 一次稳态测量（两臂交错：变体在每个 rep 内交换顺序）
+python3 tools/bench/run_kv_stream.py bench --case stream-251k-steady --reps 3 --tag <tag>
+
+# 等价性（先录金标，再比对；需要原版二进制）
+python3 tools/bench/run_kv_stream.py golden --suite equiv
+python3 tools/bench/run_kv_stream.py check  --suite equiv
+
+# 单独一例、指定格式（--kv-dtype 在子命令之前）
+python3 tools/bench/run_kv_stream.py --kv-dtype rk8v4 bench --case stream-251k-steady --reps 1
 ```
 
-**等价性**（`runs/20261108T195936Z-equiv-73c3ae14`，四行全 PASS）：
-
-| case | 布局 | prompt | 生成 | 轮 | decode | 每轮 | 判定 |
-|---|---|---:|---:|---:|---:|---:|---|
-| equiv-8k | 全驻留 | 7 948 | 16 | 4 | 150.0 | 25.0 ms | ids 相同 |
-| equiv-100k | 全驻留 | 99 952 | 16 | 4 | 119.0 | 31.6 ms | ids 相同 |
-| equiv-183k | 全驻留 | 182 946 | 512 | 129 | 106.1 | 37.4 ms | ids + logprob 相同 |
-| equiv-183k | 流式 | 182 946 | 512 | 129 | 91.4 | 43.4 ms | ids + logprob 相同 |
-
-- 金标由**原版二进制**录制：`/home/kpa/ninfer/ninfer-all/build-sm89/apps/ninfer`，
-  `ninfer 2026-11-04.3+…-gf6928e00`。它是唯一允许执行的参照，不写、不编。
-- 183 K 的 512 个 token 跨 8 页/层（窗口 135 104 token、750 页），环复用与滑窗都在 decode 中发生。
-- 流式与全驻留的 `logprobs_sha256` 都是 `feb518b5…`，**逐位相同**。
-- 流式每轮上载 823 MiB、暴露 2.4 ms；`stream_series_matches_total` 通过（逐轮之和 == 总 − prefill）。
-- 旧记录里 3 593 MiB/轮是工具的错（把 prefill 的 55.2 GB 摊进了 decode 轮），已改并作废。
-
-**251K 基线**（`runs/20261108T201204Z-bench-baseline-73c3ae14`，3 次）：
-
-| 指标 | 值 |
-|---|---:|
-| prompt token | 250 946 |
-| decode | 69.2 tok/s |
-| 每轮 | 56.7 ms |
-| 每轮上载 | 1 193.6 MiB |
-| 暴露（计算等拷贝） | 15.8 ms |
-| 接受长度 | 3.94 |
-| 主机权威副本 / 设备窗口 | 4 480 / 3 274 MiB |
-
-与 M-03 的 56.9 ms/轮几乎相同；tok/s 高来自接受长度（3.94 对 2.24–3.0），不是调度改动。
-
-**过程发现（都已在本提交里修掉）**：
-
-1. 思考请求发布的是 reasoning，Engine 只为 content token 保留 logprob ⇒ 开着思考时
-   `--logprobs` 得到空数组（183 K 那次的 512 个 token 全是 reasoning、stdout 为空）。
-   基准固定 `--no-thinking`，才有可逐位比较的分布。
-2. 收尾句必须"活过"预算：`1 2 3 …` 列表在第 51 个 token 命中 stop token；改成"续写数字到 800"
-   后 8 K 与 183 K 都能生成满 512。为此加了 `prompt-shape` 哨兵 case（8 K、512 token）。
-3. 8 192 容量装不下 8 K 提示 + 512 输出（引擎报 `context-capacity`，只给 245 个），
-   哨兵 case 用 16 384 容量。
-
-**未验证**：跨版本 logprob（原版 CLI 没有 `--logprobs`，只有 `--print-token-ids`）；
-8k/100k 只生成 16 个 token（跨版本 ids 已比，分布未比）。
-
-## M-11 投机后端的占用与草稿成本：DFlash2 的代价是窗口，不是速度（2026-11-08）
-
-- 提交：`1b9e7dd6`（`footprint` 子命令）
-- 记录：`bench/results/kv-stream/footprint.json` + `runs/20261108T214346Z-footprint-ac0f4d53/`
-- 产物：`models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer`（自带 `text/vision/mtp/dflash2`；
-  drafter 投影是 `q8_g32_fp16 / row_split_k128_v1`）
-
-```bash
-python3 tools/bench/run_kv_stream.py --model <artifact> footprint \
-    --context 262144 --config none:0 mtp:3 mtp:7 dflash2:3 dflash2:7
-```
-
-**实测占用**（容量 262 144、`--kv-stream`、8 K 提示、`--max-new 8`）：
-
-| 配置 | 权重 | 上下文池 | 流式窗口 | 窗口 token |
-|---|---:|---:|---:|---:|
-| none/0 | 10.90 GiB | 3 995 页 | 3 895 页 | 249 280 |
-| mtp/3 | 11.60 GiB | 3 362 页 | 2 869 页 | 183 616 |
-| mtp/7 | 11.60 GiB | 3 362 页 | 2 858 页 | 182 912 |
-| dflash2/3 | 13.40 GiB | 1 724 页 | 1 228 页 | 78 592 |
-| dflash2/7 | 13.40 GiB | 1 724 页 | 1 217 页 | 77 888 |
-
-派生：DFlash2 权重 **+1.80 GiB**（相对 MTP；Q8 drafter 本体 1.70 + 选择器/状态 0.10），
-窗口 **−1 641 页 = −105 024 token**。汇率核对：1.80 GiB ÷ 1 146 880 B = 1 685 页，
-实测 1 641，差 44 页是 drafter 自己的滑窗 KV 与状态。
-
-**这份 footprint 的 accept / decode 两列不可用**：`--max-new 8` 只有 1–2 轮，
-`mtp/7 89.0 < mtp/3 118.2`、`dflash2/7 75.6` 都是采样噪声，不是速率。
-
-**草稿成本**（已发布实测：`docs/performance/reference-2026-09.md` §Draft length，RTX 4090、
-Qwen3.8-27B、`rk8v4`、单请求；tok/s，括号是接受率）：
-
-| 草稿器 | k | 短聊 | 32 768 | 131 072 |
-|---|---:|---:|---:|---:|
-| none | – | 54.8 | 52.0 | 45.6 |
-| MTP | 3 | 110.6 (0.58) | 114.7 (0.66) | 80.3 (0.45) |
-| MTP | 7 | 106.8 (0.36) | 102.8 (0.37) | 64.3 (0.22) |
-| DFlash2 | 3 | 120.6 (0.58) | 120.6 (0.63) | 88.7 (0.45) |
-| DFlash2 | 7 | 148.8 (0.35) | 151.9 (0.39) | 102.3 (0.27) |
-
-还原成每轮毫秒（`轮 = (1 + k·接受) / tok/s`，短聊列）：
-
-| | k=1 | k=3 | k=5 | k=7 |
-|---|---:|---:|---:|---:|
-| MTP | 22.8 | 24.8 | 27.7 | 33.0 |
-| DFlash2 | 22.7 | 22.7 | 23.1 | 23.7 |
-
-**DFlash2 的每轮成本对 k 近乎平坦**（22.7 → 23.7），MTP 每加一个草稿 +1.7 ms；7 草稿时
-DFlash2 每轮便宜 9.3 ms（131 K 时 11.2 ms，且接受率 0.27 vs 0.22）。接受率本身两者几乎相同，
-所以优势来自**每轮成本**，不是更会猜。
-
-**结论 1（最重要）**：窗口固定时，流式搬运的惩罚是所有后端共享的**沉没成本**。以 183 K 上下文、
-本卡实测的 77 888 token 窗口（惩罚 17.7 ms/轮）代入：
-
-| 配置 | 每轮计算 | + 惩罚 | 合计 | 每轮 token | tok/s |
-|---|---:|---:|---:|---:|---:|
-| DFlash2-7 | 23.7 ms | 17.7 | 41.4 | 3.45 | 83 |
-| MTP-3 | 24.8 ms | 17.7 | 42.5 | 2.74 | 64 |
-| MTP-7 | 33.0 ms | 17.7 | 50.7 | 2.54 | 50 |
-
-⇒ **窗口不变时 DFlash2-7 全程领先约 29%，后端切换没有收益。**
-
-**结论 2**：收益来源是把 DFlash2 的 1.80 GiB 还给窗口（+105 024 token ⇒ 183 K 时惩罚归零），
-不是换草稿器：MTP-3 拿到自己的窗口后 183 K 上是 24.8 ms/轮 ≈ 110 tok/s。
-
-**结论 3**：`--adaptive-mtp` 在长上下文会自己退回窄宽度（131 K：MTP-3 80.3 > MTP-7 64.3，
-接受率 0.45 vs 0.22）。尾部该切的是 **MTP-3**，不是关掉投机——`none` 在 131 K 只有 45.6。
-
-**没有测的**：本卡（RTX 4080 SUPER 16 GB）上 DFlash2 的绝对速度。上表是 4090、24 GB 卡、
-无流式；比值可用于判断方向，绝对值不能引用。
-
-### M-11 补充：`--embedding-residency host` 是这份产物上最便宜的一笔显存（2026-11-08，外推）
-
-产物核对（`python3 -m tools.artifact.inspect <artifact> --bindings --objects`）：
-
-| 张量 | 格式 | 形状 | 字节 | 结论 |
-|---|---|---|---:|---|
-| `text/token_embedding` | `gguf_iq2_s` | 248 320 × 5 120 | 407 244 800 = **388.4 MiB** | 可搬主机（`tie_word_embeddings: false`） |
-| `text/output_head` | `gguf_q4_k` | 248 320 × 5 120 | 715 161 600 = 682 MiB | 必须留设备 |
-
-按 M-11 的汇率（1 页 = 1 146 880 B = 64 token）：388.4 MiB = **355 页 = 22 720 token** 的窗口；
-251 K 上下文下尾部短 22 720 token，每轮少搬 407 MB ≈ 15.4 ms，**预测**每轮 56.7 → ≈41 ms、
-decode 69.2 → ≈95 tok/s（+38%）。
-
-前提：`--kv-capacity` 必须自动（写死容量则搬走的内存不会进窗口）；prefill 的 gather 多走
-≈640 MB 总线（251 K 提示，一次性，≈+24 ms）。**以上两行加速是外推，没有实测**——测法只差
-一个 footprint 变体，见 `bench/results/kv-stream/README.md`「白拿的显存」。
-
-## M-12 帧（span）流水：机制成立、逐位相同，但在 251 K 上比整层拷贝慢（2026-11-09）
-
-**目的**：把一层内的拷贝与发射重叠，消掉每轮 9.2–15.8 ms 的计算流空等（设计 §5.13.2 第一步）。
-
-**做了什么**：`small_t_i8` 家族（`rk8v4`/`rk4v4`/`rk2v4`/`int8`）的 small-T 发射接受 split 区间
-（`CausalSmallTInvocation::split_begin/split_end`），一次调用内按 split 升序分帧发射、每帧
-`wait → launch → consumed`、层末仍只 reduce 一次；帧宽 = `splits_per_frame × split_keys ÷ 64`，
-`split_keys` 与内核 `causal_small_t_partition_range` 同规则。默认路径改为整层拷贝
-（`NINFER_STREAM_FRAMES=1` 才开帧）。
-
-**同一构建内的 A/B**（251 K、容量 262 144、`rk4v4` + MTP3、`--invariant-attention`、RTX 4080 SUPER）：
-
-| 变体 | tok/s | 每轮 ms | 暴露 ms/轮 | 上载 MiB/轮 | 记录 |
-|---|---:|---:|---:|---:|---|
-| 整层拷贝（历史基线，`73c3ae14`） | 69.2 | 56.7 | 15.8 | 1193.6 | `20261108T201204Z-bench-baseline-73c3ae14` |
-| 整层拷贝（本次构建，`5731011d`） | 69.2 | 56.7 | 15.6 | 1193.6 | `20261109T043626Z-bench-m12-wave-noframes-5731011d` |
-| 帧 spf=20、帧内 64 页分块 | 67.5–67.7 | 57.9–58.2 | 11.1 | 1191.2 | `20261109T040336Z-bench-m12-framed-251k-28ade87e` |
-| 帧 spf=20、一帧一次拷贝 | 65.1–65.8 | 59.3–60.5 | 11.3 | 1191.0 | `20261109T041142Z-bench-m12-framed-onerun-2cf5d0c3` |
-| 帧 spf=17（按波对齐）、一帧一次 | 64.0–64.1 | 61.1–61.5 | 8.7 | 1191.2 | `20261109T042835Z-bench-m12-wave-aligned-5731011d` |
-| 帧 spf=17 + 只拷流式前缀（空帧不记事件） | 48.9–50.8 | 77.5–91.3 | 1.5 | 1191.2 | `20261109T044203Z-bench-m12-prefix-only-c941d6ca` |
-
-**结论 1：暴露确实降了，但每轮没有降。** 分帧把暴露从 15.6 砍到 8.7 ms，同时每轮涨了 4.4 ms；
-再往前切（空帧不记事件）暴露掉到 1.5 ms，每轮反而涨到 78 ms。251 K 下链路本身是瓶颈：
-每轮 1 191 MiB ÷ 25.4 GB/s ≈ 47 ms，占每轮 56.7 ms 的 83%——**能不暴露的上限只有那么多**，
-分帧只是把等待在层内重新排列，额外的发射与流事件（每层 5–17 次）反而收费。
-
-**结论 2：帧要"按一个整段调用所需的波数"分，而不是按一个波。** `spf = sms / kv_heads = 20` 时
-85 个 split 变成 5 次发射 = 5 个整波，而整段调用只要 4.25 波；改成
-`frames = ceil(active × kv_heads / sms)`、`spf = ceil(active / frames)`（= 17，5 段 × 0.85 波
-= 4.25 波）把这份浪费去掉，暴露 11.1 → 8.7 ms，但每轮仍因事件开销多 3 ms。
-
-**结论 3：机制本身是对的，可以逐位相同。** 同一构建、`--invariant-attention`、183 K 流式下，
-开启分帧后 `check --suite equiv` 的 `equiv-183k/streamed` 行 **PASS**，ids 与 logprobs 都和全驻留
-逐位相同，同轮 `stream_upload_mib_per_round = 824.7`（证明 decode 真在搬，不是少搬变快）
-（`20261109T035348Z-equiv-dbg8-cb327a1a`）。默认路径（整层拷贝）的等价性全集 **4/4 PASS**：
-`20261109T045055Z-equiv-m12-equiv-default-e25152e0`。
-
-**因此**：这一轮不交付"更快"，交付的是"分帧机制可用、可行、已验证逐位相同，但在 251 K 上不赚钱"。
-下一步要动的是**每轮字节数**（帧级环多给窗口 ≈ −6%，或更小的流式页），不是继续在层内切细。
-
-**没有测的**：`rk8v4` 上的帧路径（窗口更小、尾部更大，量级应当更不利，但不能外推）。
-
-### M-12b 交付格式 `rk8v4` 在 251 K 的实测（2026-11-09，默认路径）
-
-`--kv-dtype rk8v4`、容量 262 144、MTP3、`--invariant-attention`、单次（`reps 1`）：
-
-| 项 | 值 |
-|---|---:|
-| 流式窗口 | **1 670 页 = 106 880 token**（自动容量实测，不是设计表里的 1 789 页） |
-| 每轮 | **151.0 ms** |
-| decode | **26.1 tok/s** |
-| 每轮上载 | **3 603.0 MiB** |
-| 暴露（计算等拷贝） | **114.3 ms / 轮 = 76%** |
-| 接受长度 | 3.9 |
-
-记录：`20261109T051316Z-bench-m12b-rk8v4-real-b509e872`（argv 里 `--kv-dtype rk8v4`，
-运行摘要 `kv cache dtype rotated-k8g64-v4g32` 即 `rk8v4`，80 SMs）。
-
-**读法**：`rk8v4` 每页 104 448 B，且窗口比 `rk4v4` 小 610 页 ⇒ 尾部大 630 页/层 ⇒ 每轮字节是
-`rk4v4` 的 3.0 倍（3 603 vs 1 194 MiB）。链路耗 3 603 MiB ÷ 25.4 GB/s ≈ 142 ms，占每轮的 94%，
-所以暴露 114 ms 是“链路来不及”，不是调度没重叠。**结论：`rk8v4` 上唯一有效的方向是减字节**
-（更大窗口 / 更小页 / 把权重挤出显存），层内重叠无论怎么切都不会有收益。
-
-**没有测的**：`rk8v4` 的等价性金标（原版二进制在这个容量下装不下 `rk8v4` 的全驻留布局，
-所以 `golden` 无法录）。因此 `rk8v4` 目前只有“能稳定 decode”的证据，没有“逐 token 与原版相同”
-的证据——后者只能在 `int8`/`rk4v4` 上做，或在更大显存的卡上录 `rk8v4` 金标。
-
-### M-13 保真移植后的首次上卡（2026-11-09，`equiv-183k`）
-
-同一构建、同一条用例，`resident` 与 `streamed` 两个变体：
-
-| 项 | resident | streamed（新框架） | streamed（移植前） |
-|---|---:|---:|---:|
-| greedy ids vs 金标 | 512/512 相同 | **512/512 相同** | 512/512 相同 |
-| 每轮上载 | — | **779.9 MiB** | 822.9 MiB |
-| 暴露（计算等拷贝） | — | **1.0 ms/轮** | 15.6 ms/轮 |
-| decode | 106.0 tok/s | 93.8 tok/s | 89.9 tok/s |
-| 接受长度 | 4.0 | 4.0 | 3.94 |
-| 环 | — | 7 runs = 896 槽（≈1.26× 流式量） | 2 × 756 页 = 1512 槽 |
-| 窗口 | — | **2 150 页/层** | 2 111 页/层 |
-
-记录：`20261109T075100Z-equiv-s6-equiv7-baae1682`（campaign 判 FAIL，仅因
-`logprobs_match_across_layouts=false`；ids 判据通过）。
-
-**结论与未决**：暴露从 15.6 ms 降到 1.0 ms（15×），窗口 +39 页/层，每轮字节 −5%。
-唯一没过的判据是"两布局 logprobs 逐位相同"（SHA-256 摘要不同）：ids 完全一致说明 KV 内容正确，
-差异在低位。可疑来源按优先级：① `run_pages=128` 让 bounded 派发的 split 边界与整层派发不同，
-若归约顺序随帧而变则该判据必然失败；② 新窗口把 split 边界移动了一页（2111→2150 页 ⇒ split 数
-不同），累加顺序随之变化。下一步：先确认 `causal_attention_small_t_launch_for` 是否"层末单次归约"
-（若按帧归约，就是①），再决定是修归约还是把该判据改成"同布局内逐位、跨布局用容差"。
-
-### M-14 保真移植的 logprob 回归：三组定点实验（2026-11-09）
-
-`equiv-183k` 的 `streamed` 变体与 `resident` 基线比：**ids 512/512 相同，logprobs 最大差 0.118 nat
-（508/512 有差）**。为定位，跑了三组定点实验（都用记录过的 argv，只改一个参数）：
-
-| 实验 | 配置 | 最大差 | 结论 |
-|---|---|---:|---|
-| E1 | `--kv-stream` + `--kv-headroom-mib 16`（池装得下全上下文 ⇒ 窗口 2876 页/层、环 0 run） | **0.000000** | 平铺池的**窗口寻址、块表发布、append、advance 全部逐位正确** |
-| E2 | 流式 + `--no-cuda-graph` | 0.606 | 无图时更差 ⇒ 图不是病因 |
-| E3 | 流式 + `NINFER_STREAM_VERIFY=1`（每层拷完立即把环槽 D2H 回来与主机权威逐字节比） | — | 1949 次检查中 **1923 次不符** |
-| E4 | 同上，并打印"该槽实际持有哪一页" | — | `layer=7 page=0 slot=34400 … holds=layer=0 page=0`；下一轮 `layer=0 slot=34656 holds=layer=9` |
-
-**结论**：错误定位在**环槽复用**这条路径上，且只在"该 run 之前被别的层用过"时出现（首次使用的
-run 全部 ok）。指纹证明槽里躺着的是**上一个使用者**的页，不是本层的页——即本层这次拷贝对消费者而言
-没有生效。环形缓冲共 7 个 run，而一层需要 6 个，于是同一轮内第 7 层起就回卷复用到第 0 层的 run。
-
-**下一步（已确定）**：在 `upload()` 末尾记录一个"本层全部拷贝完成"的事件，探针先等它再比对；若等完后
-仍不符，说明块表指向的槽与拷贝写入的槽不同（那么 `slot_of_page` 与拷贝循环的下标换算不一致）；若等完
-后相符，则证明消费者真的在拷贝落地前就读了——即 `consumed_run_` 的等待在**同一轮内**是失效的
-（事件对象持有的是更早一条记录），修法是给 run 记"本轮已被消费者释放"的代际，而不是只看事件。
-
-### M-15 环的写入是正确的，问题在消费者的顺序（M-14 的更正）
-
-上一节 E3/E4 的 1923 次不符是**探针自身的时序假象**：探针在拷贝还在异步流上时就读了槽。给它加上
-"等本层 `ready_` 事件（在最后一次拷贝之后记录）再比"之后：
-
-| 实验 | 检查数 | 不符 |
-|---|---:|---:|
-| E3/E4（不等拷贝） | 1949 | 1923 |
-| **E5（等拷贝）** | **3872** | **0** |
-
-**所以：槽位映射、块表发布、每层拷贝全部逐字节正确。** 0.118 nat 的 logprob 差只能来自
-**消费者在拷贝落地前就读了环**——即消费者的等待链在某一层/某一轮没生效，或生效在一个已经被
-重新记录过的事件对象上。
-
-下一步（已确定，未做）：在消费者侧加同款探针——每层 `wait_ready` 之前打印 `(layer, round,
-ready_run_ 的 run 下标, 该事件最后一次记录时的轮次)`，与写入侧打印的 `(layer, run, round)` 对齐，
-找出第一个"读的轮次 ≥ 写侧尚未记录的轮次"的层。修法大概率同 M-14 结尾写的：给 run 记**本轮**是否
-被消费者释放的代际，而不是只依赖事件对象（事件对象只保存最后一次记录，而最后一次可能来自上一轮，
-等待随即放行）。
-
-### M-16 根因：`attn_mix` 把层号映射了两次（M-13/M-14/M-15 结案）
-
-M-15 把范围收到"消费者的等待链"，但真正的错因是**静态的层号错误**，不是时序。前面所有"加同步"
-的实验都不可能修好它，因为等待被记录到了**别人的 run** 上。
-
-**根因**（`src/models/qwen3_5/execution/text.cpp`，`attn_mix`）：
-
-```cpp
-// 调用方传进来的 fidx 已经是 compact 序数（循环里先做过 compact_layer_indices[layer]），
-// 这里又映射了一次：
-const auto stream_layer = static_cast<std::uint32_t>(dimension(config_.compact_layer_indices[fidx]));
-```
-
-`compact_layer_indices[i]`（`src/models/qwen3_5/config.cpp:133`）是"第 i 层在**它自己那一类**里的
-序号"：full-attention 层给出 full 序数，linear-attention 层给出 linear 序数。合法调用只有一次。
-
-**后果**：16 个 full 层的 `stream_layer` 实际取值是
-
-```
-0,1,2,0,3,4,5,1,6,7,8,2,9,10,11,3
-```
-
-即 **0/1/2/3 各被消费两次，12/13/14/15 一次也没有**。于是 `consume(错层)` 把别人的 run 标成已释放、
-`wait_ready(错层)` 等的是别人的事件；被遮住的 4 层从不释放 run，写者便以为可以覆盖——拷贝在活着的
-读者底下刷新环槽。这正好解释"ids 全对、logprobs 差 0.1 nat"：读的是同一页的**上一轮字节**。
-
-**决定性证据**（`NINFER_STREAM_TRACE=1`，`equv-183k`，`--max-new 2` 时的前 64 个事件）：消费顺序
-`L0,L1,L2,L0,L3,L4,L5,L1,L6,L7,L8,L2,L9,L10,L11,L3` 与上式**逐位相同**；同时
-`NINFER_STREAM_VERIFY` 的事后探针显示每个环槽里装的是"本该轮到它下一轮的那一层"的页
-（`layer=0` 的槽 `holds=host(layer=7,page=0)`）。
-
-**修复**：直接用 `fidx`（`stream_layer = static_cast<std::uint32_t>(fidx)`）。
-
-**修复前后（`check --case equiv-183k`，同一 argv，同一模型）**：
-
-| | 移植前 | 移植后（有 bug） | 修 `wait_ready` 顺序 | **修层号映射** |
-|---|---:|---:|---:|---:|
-| logprob 最大差 | — | 0.118 | 0.079 | **0.000000** |
-| 有差的 token | — | 508/512 | 510/512 | **0/512** |
-| greedy ids | 512/512 | 512/512 | 512/512 | **512/512** |
-| campaign | PASS（无 logprob 判据） | FAIL | FAIL | **PASS** |
-| streamed tok/s | 89.9 | 94.2 | 94.2 | **85.7** |
-| 暴露 ms/轮 | 15.6 | 0.9 | 0.9 | **7.2** |
-
-**注意速度的变化**：修好后 decode 从 94.2 掉到 85.7、暴露从 0.9 升到 7.2 ms。这是**正确的代价**，
-不是新的回归：以前没有任何等待真正生效（等的都是错的 run），拷贝可以任意抢跑。环在 183K 是
-1.10 × 工作集（≈780 页 → 7 runs = 896 槽），而一轮要搬 16 层 × ≈708 页 = 775 MiB 穿过这个 62 MiB
-的环，即环被回卷 12 次，每次都必须等前一个读者——**这正是上游要用 bounded span 流水（拷贝跑在
-launch 循环里、与计算重叠）的原因**。本实现的 bounded 派发默认关闭（span 与 run 未对齐），所以现在
-只拿到了"环变小"的收益，还没拿到"重叠回来"的收益。
-
-运行记录：`bench/results/kv-stream/runs/20261109T091551Z-equiv-s6-equiv10-48746c74`（PASS）。
-
-### M-17 移植后的实测代价，以及 251K 上的三次真回归
-
-修好 M-16 之后，同一个二进制在等价与性能两轴上都有实测。**先说结论：正确性达标，速度比移植前慢**，
-原因不是移植做错了，而是 1.10× 环在本机（PCIe 4.0 / 25.4 GB/s）上把重叠让给了字节。
-
-| 场景 | 移植前 | 移植后 | 判读 |
-|---|---:|---:|---|
-| 183K rk4v4 streamed | 89.9 tok/s / 822.9 MiB / 暴露 15.6 ms | **85.7 tok/s / 779.9 MiB / 暴露 7.2 ms** | 暴露减半，速度 −4.7% |
-| 251K rk4v4 streamed | 69.2 tok/s / 1193.6 MiB / 暴露 15.6 ms | **57.7 tok/s / 1094.9 MiB / 暴露 20.6 ms** | 字节 −8.3%，速度 **−17%** |
-| 251K rk8v4 streamed | 26.1 tok/s / 3603.0 MiB / 暴露 114.3 ms | **25.7 tok/s / 3348.6 MiB / 暴露 112.9 ms** | 链路受限，持平 |
-| logprob（183K） | 未测 | **0.000000（512/512）** | 逐位相同 |
-| `check --suite equiv` | — | **4/4 PASS** | 金标 ids 全同 |
-
-**为什么 251K/rk4v4 反而变慢**：环从"2 × 一层流式量"降到 1.10×，`ahead = ring_runs/runs_per_layer − 1`
-在 251K 上算出来是 **0**——整层拷贝没有任何前视，一次 1095 MiB 的拷贝（43 ms @ 25.4 GB/s）只能串在
-60 ms 的一轮前面。字节省了 99 MiB（8.3%），却丢掉了整整一层的前视（≈15 ms）。参考实现的 1.10× 是在
-50 GB/s 的 PCIe 5.0 上测的，那里字节是主导项；在本机上不是。
-
-**试过的三条找回重叠的路，全部实测否掉**：
-
-| 尝试 | 结果 | 结论 |
-|---|---|---|
-| bounded span 流水（`NINFER_STREAM_BOUNDED=1`，逐位正确，campaign PASS） | 102.6 ms/轮、38.6 tok/s，暴露降到 **0.1 ms** | 重叠成功但发射代价 2.2×，不可用 |
-| 环比 1.60（含端点重分区） | 54.6 tok/s / 60.4 ms | 更慢 |
-| 环比 2.00 | 50.8 tok/s / 65.2 ms，**且 ids 与金标不同**（token 1：16→17） | 既慢又错 |
-
-后两者说明**启动环比不是可用的旋钮**：控制器每轮都会按测量重新分区，启动值只影响前几轮；而 2.00 那次
-的 ids 漂移是一个**新的、未修的正确性缺陷**（见下）。
-
-**隐患已移除，未再验证**：`ahead ≥ 1` 的路径在正确层号下从未成立过（1.10× 时 ahead 恒为 0），2.00 的
-ids 漂移说明它有问题。定位到的隐患是**本轮末尾预取下一轮前几层**（`issue(current + ahead - count)`）：
-那份拷贝抢在本轮最后几层消费之前，而 `consumed_run_` 只存最后一次记录，等待随即放行 ⇒ 覆盖仍然
-活着的 run。该分支已在 `0c6927c7` 删除，下一轮开头由 `current == 0` 的预发接管，代价实测为 0
-（`check --suite equiv` 4/4 PASS，183K streamed 仍 85.6 tok/s / 7.2 ms）。
-
-**但“`ahead ≥ 1` 正确”仍然未经验证**：`NINFER_STREAM_RING_RATIO` 旋钮已随测量结束移除，要验证必须
-临时加回并在 2.00 上跑 `check --case equiv-183k`。在完成前，默认值维持 1.10（正确、已验证）。
-
-**因此交付默认值维持 1.10（正确、已验证）**，并把"在 PCIe 4.0 上该选 1.5–2.0"作为下一步的实测项，
-而不是改常量交付；先修 `ahead ≥ 1` 的正确性，再谈默认值。
-
-### M-18 251K 速度的真实分解：稳态已超过移植前，摊销还没
-
-M-17 把 −17% 全归给"环变小、没有前视"，这不完整。逐轮样本（`decode_rounds.samples`）给出的分解是：
-
-| | 第 1 轮 | 稳态每轮 | decode 总计 | tok/s |
-|---|---:|---:|---:|---:|
-| 移植前（`cf90eaaf`，环 2×，静态） | 63.8 ms | **56.6 ms** | 0.910 s | 69.3 |
-| 移植后（`48746c74`，环 1.10×，首轮迁移） | 189.8 ms | 60.4 ms | 1.092 s | 57.7 |
-| 现在（`s14-ahead`，不首轮迁移 + 试-回退 + 前视门限） | 67.5 ms | **54.8 ms** | 1.012 s | 67.5 |
-
-**稳态每轮 54.8 ms 已经比移植前快 3.2%**（同一模型、同一 argv、同一张卡）。剩下的 tok/s 差距来自
-**一次性开销落在被测窗口里**，不是稳态吞吐：
-
-- 512 token（129 轮）的长跑：中位数 54.8 ms、平均 58.7 ms；尖峰在第 **2、6、72、76** 轮
-  （175.1 / 168.1 / 174.6 / 167.9 ms），合计约 560 ms，占 7.4 s 的 7.6%。
-- 这四次的间隔是 "2 → 6"（试 4 轮后回退）和 "72 → 76"（**冷却 64 轮后又试了一次**）。所以它是
-  `evaluate_partition` 的"迁移-测量-回退"实验，而不是图重放或首次上传。
-- 一次实验的代价无法避免（要比较两种布局就必须跑两种），**但重试可以避免**：回退后必须记住"这个
-  目标被否掉了"，直到工作集发生实质变化才允许再试。这是下一步的第一件事。
-
-**移植前 69.3 与现在 67.5 的差 = 560 ms / 7.4 s**；把这四次减到两次（一次实验），摊销后是
-`(129×54.8 + 340) ms = 7.41 s → 68.3 tok/s`；把重试也去掉是 `7.07 s → 71.6 tok/s`，**超过移植前**。
-
-**已验证的支持事实**：
-- 环 2× 的那一轮（迁移前）是 **54.4 ms**，说明"环 2× + 无帧"在本机就是 54–55 ms 一档，而控制器
-  选的 1.10× 是 60.2–60.4 ms。控制器原先的模型（"链路忙 ⇒ 只收不放"）看不到"环决定前视"这一项，
-  所以它做的决定是错的 —— 现在由 `kv_stream_ahead_of()`（纯几何）与计时实验共同兜住。
-- span 流水的阶梯现在按实测选（`kv_stream_span_tuner.h`：整层/半层/2 runs/1 run 四级，16 样本、
-  ≥0.5%、布局变即重置），本机实测会选择"整层"，与 M-17 的 2.2× 结论一致。
-
-**仍未见效的疑点（下一步）**：183K 上 `[partition]` 门限一次都没打印，说明那条分支在 16 轮里没被
-走到；251K 的尖峰于是最可能来自"迁移本身"而非门限之后的代码路径。定位方法已就位：
-`NINFER_STREAM_DEBUG=1` 会在门限被求值时打印 `ahead a → b, saving s of b bytes`，需要一轮带该
-环境变量的长跑（prompt 可复用 `equiv-183k` 的，bench 用例的 `prompt.json` 不落盘）。
-
-### M-19 追平并超过：251K 稳态 72.8 tok/s（移植前 69.3）
-
-M-18 里那四个 ~170 ms 尖峰的来源查清了，**不是控制器，是我自己的实验机制**：
-
-```
-[partition] trial start baseline=67.39 ring 1408 -> 1152 pages, streamed max 1017 -> 1001
-[partition] trial done mean=120.70 baseline=67.39 revert
-[partition] trial start baseline=58.43 ring 1408 -> 1152 pages, ...   ← 冷却 64 轮后又试一次
-[partition] trial done mean=117.61 baseline=58.43 revert
-```
-
-三个错都在我这边：
-
-1. **试-run 的均值里含了迁移那一轮**（174.5 ms），所以任何实验都必然"变慢"、必然回退。
-2. **基线取到首轮暖机**（67.39 是第 1 轮），不是一个稳态值。
-3. **被否掉的目标在冷却后又重试**，把第二次迁移又摊进窗口。
-
-另外 `ahead`（整层前视）用整数除法太粗：251K 上 1408 页 = 11 runs、1152 页 = 9 runs，对一层 8 runs
-都是 "0 层前视"，但实测 54.9 ms 与 60.6 ms 明显不同。改成**比例** `kv_stream_lookahead_ratio =
-ring_runs / runs_per_layer`（1.375 对 1.125），门限才看得见差别。
-
-修完之后（`s16-fair`，rk4v4，512 token）：
-
-| | 移植前 `cf90eaaf` | 现在 `s16-fair` |
-|---|---:|---:|
-| 稳态中位数 | 56.6 ms | **54.4 ms（+3.9%）** |
-| decode tok/s | 69.27 | **72.8（+5.0%）** |
-| 迁移实验 | 无（静态 2× 环） | **一次都没触发**（门限拒绝缩环：只省 1.6% 字节） |
-| 每轮上载 | 1193.6 MiB | 1116.2 MiB（−6.5%） |
-
-门限打印的原文：`[partition] lookahead 1.375 -> 1.125 saving 18350080 of 1166376960 bytes` ——
-省 1.6% 的字节却要放弃 18% 的前视余量，29% 的判据（`kPartitionSavingDivisor = 4`）当场拒绝。
-
-**为什么这不是"给它调了一个数"**：判据两边都是运行时量——`lookahead` 是布局几何、`saving` 是两种
-布局各自的每轮字节数，没有一项来自这张卡、这个模型或这条 PCIe；换一张卡只要比值不同就会给出不同
-的答案。实验本身（试 4 轮、比中位数、慢则回退）同样只用实测轮时。
-
-### M-20 rk8v4（交付格式）的稳态口径：也小幅领先
-
-`stream-251k-steady`（512 token，`s18-rk8v4`，`c4b02ae2`）：
-
-| | 移植前（M-12b，64 token） | 现在（512 token） |
-|---|---:|---:|
-| decode tok/s | 26.1 | **26.8（+2.7%）** |
-| 每轮中位数 | 151.0 ms | **147.9 ms（−2.1%）** |
-| 每轮上载 | 3603.0 MiB | **3366.9 MiB（−6.6%）** |
-| 暴露 | 114.3 ms | 107.0 ms |
-| 逐轮波动 | — | 129 轮 mean 148.1 / median 147.9：**没有尖峰** |
-
-rk8v4 的环是 20 runs、驻留窗口 1813 页、流式 2117 页（集中形状在这一档真正触发），所以前视比例
-1.x 远大于 1，门限不会把环缩掉；这条路径上也没有出现 251K/rk4v4 那种实验尖峰。
-
-**两种格式现在的结论一致**：稳态都不慢于移植前，字节都少 5–7%，logprobs 逐位相同。
-
-### M-21 130–180K：池装得下时零字节、零代价；装不下时自适应机制第一次真正被走到
-
-新增三个用例（`stream-150k` / `stream-180k` / `stream-150k-tight`）跑 `rk4v4`：
-
-| 用例 | 上下文 | 池子 | 每轮中位数 | decode | 流式状态 |
-|---|---:|---|---:|---:|---|
-| `stream-150k` | 149 966 | 装得下 | **36.8 ms** | **107.1 tok/s** | 窗口 2905 页，**每轮 0 字节** |
-| `stream-180k` | 179 954 | 装得下 | **37.2 ms** | **106.0 tok/s** | 同上 |
-| `stream-150k-tight` | 149 966 | `--kv-headroom-mib 1008` | ~39.6 ms | **99.4 tok/s** | 环 19 runs、流式 374 页/层、驻留 1978 |
-
-前两个是 R7.1 的直接验证：**`--kv-stream` 开着、池子装得下时，一个字节都不搬，速度就是全驻留速度**
-（对照 `equiv-100k` 全驻留 119.1 tok/s、`equiv-183k` 全驻留 106.2 tok/s 的曲线，150K/180K 的 107/106
-正落在曲线上）。用例的判据也从"必须搬字节"改成"必须不搬字节"（`stream_idle`），否则正确的行为会被
-判 FAIL——这是本轮修掉的一个测量口径错误。
-
-`stream-150k-tight` 是**迁移实验第一次在真机上被走到**（180K/183K/251K 的门限都拒绝了缩环）：
-
-```
-[partition] lookahead 6.333 -> 1.000 saving 155975680 of 419758080 bytes
-[partition] trial start baseline=45.18 ring 2432 -> 256 pages, streamed max 366 -> 230
-[partition] trial done mean=83.85 baseline=45.18 revert
-```
-
-控制器提出把环从 2432 页压到 256 页（前视 6.3× → 1.0×），省 37% 的每轮字节（超过 25% 门限，放行）；
-实验用 4 轮中位数测出 83.85 ms 对基线 45.18 ms，**回退并记住这个目标**。最终布局仍是最初的宽环
-（19 runs），稳态 39.6 ms/轮、99.4 tok/s。
-
-这条数据说明三件事：① 门限只是便宜的预筛，真正的裁判是实验；② 控制器的字节模型在本机会提出
-灾难性的缩环（85% 变慢），没有实验就会被采纳；③ 回退后的粘性拒绝生效，129 轮里只付一次迁移代价。
-
-### M-22 run 宽度不是杠杆：四点扫描，暴露恒为 6.0 ms
-
-`kv_stream_run_pages()` 现在可由 `NINFER_STREAM_RUN_PAGES` 扫（每条记录都带 `stream.run_pages`）。
-在 `stream-180k-tight`（183 K、pool 装不下、512 token、rk4v4）上扫四档：
-
-| run_pages | ring_runs | streamed 页/层 | 每轮中位数 | decode | 每轮上载 |
-|---:|---:|---:|---:|---:|---:|
-| 49 | 48 | 837 | 45.5 ms | 87.0 tok/s | 1410.0 MiB |
-| 96 | 25 | 840 | **45.4 ms** | **87.1 tok/s** | 1417.0 MiB |
-| 128（默认） | 19 | 842 | 45.5 ms | 87.0 tok/s | 1421.0 MiB |
-| 192 | 13 | 846 | 46.0 ms | 86.1 tok/s | 1430.0 MiB |
-
-**时间差 ±0.7%、字节差 1.4%，全部落在噪声内**；更关键的是**暴露在四档里都是 6.0 ms**（192 档 6.5 ms）。
-
-原因从布局恒等式就能看出来：规划器按"环 ≈ 1.10 × 一层流式量"给环，所以把 run 变窄会同时变多
-（49 页 → 48 runs，一层需 18 runs ⇒ 比例 2.7；128 页 → 19 runs，一层需 7 runs ⇒ 比例同样是 2.7）。
-**run 宽度只改变分量子的粒度，不改变前视的量。**
-
-**结论（两项任务）**：
-- **run 宽度**：实测不是杠杆 → 默认保持 128（来源：上游 32 页 × 256 token 按字节折算），旋钮保留为
-  可扫的测量接口并写进每条记录；换粒度换不动收益，所以不做"导出值 49"的默认切换。
-- **183 K 的 5.2%**：183 K 的每轮字节 ÷ 每轮时间 ≈ 1410 MiB / 45.4 ms ≈ **31 GB/s**，已经在这条链路的
-  实测上限（25.4 GB/s 标定值）之上；也就是说流式路径在这一档**本身是带宽受限的**，6.0 ms 的暴露是
-  "尾部那一小段拷贝排不到计算后面"，而不是发射粒度问题。再加前视只能 1:1 增字节（251 K 已实测更慢，
-  M-17）；把暴露压到 0.1 ms 的分帧路径代价是每轮 102.6 ms（M-17）。**因此这一档要么接受 6 ms，
-  要么从带宽侧解决（更大窗口 = 更多显存，或更快的链路），调度侧没有剩余空间可挖。**
-
-**旋钮的正确性**：默认宽度仍是 128（未被扫动），另用 `NINFER_STREAM_RUN_PAGES=49` 跑了一次
-`check --case equiv-183k`：campaign **PASS**，logprobs 与 resident 逐位相同
-（`20261109T124110Z-equiv-s23-rp49`；同口径 82.8 tok/s / 48.1 ms，比 128 的 85.2 / 46.4 略慢，与扫描
-表一致）。所以旋钮不破坏正确性，只是不划算。
-
-## M-23 流式守卫与门禁接线（2026-11-10，`kv-stream-27b-16g`）
-
-**做了什么**：把 `--kv-stream` 的四条排除（非 auto 容量、多序列、多设备、保留上下文）从
-`startup.cpp` 里的分支抽成纯函数 `kv_stream_rejection`（`src/core/kv_stream_guards.h`），
-由 `tests/test_kv_stream_guards.cpp` 覆盖 9 组组合与报错顺序；注册该测试与
-`test_kv_stream_span_tuner` 进 CTest；`tests/test_kv_stream_tool.py` 进 CI；补
-`docs/cli.md`、`docs/serving.md`、README What's New。
-
-**结果**：
-- `g++ -std=c++20 -O1 -Isrc -Iinclude tests/test_kv_stream_guards.cpp` → `kv stream guards: all checks passed`
-- 同上编 `test_kv_stream_span_tuner.cpp` → `kv stream span tuner: all checks passed`
-- 增量构建 `cmake --build build-sm89 -j 16` → 全绿（15 个目标）
-- 实跑 `--kv-capacity 8192 --kv-stream` → `error: --kv-stream sizes its KV pool from free memory: pass --kv-capacity auto`
-- **发现**：单请求 CLI **不暴露** `--max-concurrency`，序列守卫只经 Engine 生效（由单测覆盖）；
-  `--devices 0,1` 在本机先被 CUDA 拒（只有 1 张卡），多设备守卫同样由单测覆盖。
-
-## M-24 设备侧反馈内核的 oracle 与 sanitizer（2026-11-10，`kv-stream-27b-16g`）
-
-**做了什么**：新增 `tests/test_kv_stream_signal.cu`（GPU 用例，无卡退 77）并注册为
-`ninfer_kv_stream_signal_test`。oracle 是**测试自己的记账**：由它决定哪几个 run 被标记 ready，
-所以它预测的 samples/misses 就是规格；内核数与记账不一致就是反馈信号错了，而分区控制器正是跑在这两个数上。
-
-覆盖 8 组：ready=样本非 miss、未 ready=miss、四个 run 的标记互不串（共享环写错的形状）、
-miss 之后重新 ready 仍是样本（清标志的语义）、窗口时间、未采样的窗口报"无"而不是 0、
-未结束的窗口不报时间、被重启的窗口计为丢失。
-
-**结果**（主机 `kpa@192.168.2.13`，CUDA 13.4，sm_89）：
-
-```
-nvcc -std=c++20 -O2 -Isrc -Iinclude -arch=sm_89 tests/test_kv_stream_signal.cu \
-     build-sm89/src/core/libninfer_core.a -lcudart -o /tmp/t_signal
-/tmp/t_signal                                   → kv stream signal: all checks passed
-compute-sanitizer --tool racecheck  /tmp/t_signal → 0 hazards displayed (0 errors, 0 warnings)
-compute-sanitizer --tool synccheck  /tmp/t_signal → ERROR SUMMARY: 0 errors
-compute-sanitizer --tool initcheck  /tmp/t_signal → ERROR SUMMARY: 0 errors
-```
-
-**过程中的一次自我纠错**：第一版测试把 `copy_time()` 期望成"只要窗口里有拷贝就有数"，
-实测报 3 条失败。查实现（`kv_stream_signal.cu:98-118`）确认契约是"只有被 `begin_copy_sample`
-采样的那个 run 才有数，`uploads` 表示该窗口发出几个 run"，于是改成按真实契约断言（并补一条
-"未采样的窗口必须报无、不能报 0"）。**这是测试写错，不是内核错**——但正是它把契约记了下来。
-
-## M-25 交错运行的 A/B（2026-11-10，`kv-stream-27b-16g`）
-
-**做了什么**：`run_case` 的循环从「变体在外、rep 在内」改成「rep 在外、变体在内」——rep 1 的全
-变体、rep 2 的全变体……。理由写在代码注释里：报告比较的是变体，两个变体必须在同一热/时钟/页缓存
-状态下测；旧顺序里后跑的那个变体承担了前一个变体整块时间造成的漂移
-（`CONTRIBUTING.md` 的 Comparable measurements）。
-
-**提示词不加 nonce**：每个 rep 都是新进程，不存在跨 rep 的前缀缓存可复用；而两个变体的判据是
-**同一串 prompt ids**，逐 rep 加 nonce 会直接毁掉金标 ids 的对照。这一条在代码注释里写明。
-
-**结果**（`bench --case equiv-183k --reps 2`，`rk4v4`，提交 `0fcbe9fb`）：
-
-```
-equiv-183k/resident: rep 1/2 → rep 2/2
-equiv-183k/streamed: rep 1/2 → rep 2/2      （交错顺序在日志里可见）
-equiv-183k/resident: 106.8 tok/s, 37.1 ms/轮                  -> PASS
-equiv-183k/streamed: 85.4 tok/s, 46.6 ms/轮, 779.9 MiB/轮, 暴露 6.7 ms -> PASS
-campaign: 20261109T141717Z-bench-s24-interleave-0fcbe9fb -> PASS
-```
-
-两个变体都 PASS（逐位等价），数字与顺序跑时的 106.1 / 85.2 一致，说明交错没有改变结论，只改变了
-两臂的条件一致性。
-
-**顺带**：`tests/test_kv_stream_tool.py` 实际是 **11** 个用例（不是此前写的 12），在仓库根用
-`python -m pytest` 跑（CWD 进 sys.path 才能 `from tools.bench import …`）；主机上无 pytest 时可用
-`PYTHONPATH=. python3 tests/test_kv_stream_tool.py`，实测 `11/11 passed`。
+每次运行在 `bench/results/kv-stream/runs/` 留下 argv、设备身份、逐轮样本与判定；运行记录的入库策略见
+[bench/results/kv-stream/README](../../bench/results/kv-stream/README.md)。

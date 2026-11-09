@@ -60,7 +60,7 @@ RTX 4080 SUPER 有 16 376 MiB。Qwen3.8-27B 的 IQ3_S 文本权重上卡占 11.6
 - 机制、预算与真实上界：[kv-streaming-design](../docs/maintainer/kv-streaming-design.md)
 - 参考实现的逐条对照与移植图纸：[kv-streaming-fidelity](../docs/maintainer/kv-streaming-fidelity.md)
 - 复核与接手（来源、改动、不变量、已结与未结缺陷、PR 范围）：
-  [kv-streaming-worklog](../docs/maintainer/kv-streaming-worklog.md)
+  [kv-streaming-ledger](../bench/results/kv-stream/ledger.md)
 - 实测记录（每条的日期、提交、命令与结果）：
   [kv-streaming-measurements](../docs/maintainer/kv-streaming-measurements.md)
 - 外部资料（参考文章全文 + CUDA Graph 说明）：

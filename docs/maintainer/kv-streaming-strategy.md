@@ -7,7 +7,7 @@ parent: kv-streaming-design
 references:
   - kv-streaming-verification
   - kv-streaming-fidelity
-  - kv-streaming-worklog
+  - kv-streaming-verification
   - kv-streaming-measurements
   - adaptive-kv-streaming-inputs
 ---
@@ -20,17 +20,16 @@ references:
 | 文档 | 职责 |
 |---|---|
 | 本文件 | **为什么这样做、做到什么算完成**（战略、依据、验算、预测、分期） |
-| [fidelity](kv-streaming-fidelity.md) | 上游机制 × 我方现状的逐条比对（§11 为 2026-11-10 全表面复核） |
-| [worklog](kv-streaming-worklog.md) | 已经发生了什么：改动、缺陷账本、接手命令 |
-| [measurements](kv-streaming-measurements.md) | 原始证据：时间、提交、命令、结果、作废数字表 |
+| [fidelity](kv-streaming-fidelity.md) | 上游机制 × 我方现状的逐条比对（§11 为全表面复核） |
+| `bench/results/kv-stream/ledger.md`（记录区，不在 docs） | 历史台账：决策索引、作废数字、被否掉的路、缺陷账本 |
+| [measurements](kv-streaming-measurements.md) | 测量参考表：条件、数值、复现方式 |
 | [inputs](adaptive-kv-streaming-inputs.md) | 作者文章原文（R1–R13）与 CUDA Graph 附录 |
 
-上游代码在本机 `D:\GithubRepo\llama.cpp-adaptive-kv-streaming`（分支 `feature/adaptive-kv-stream`，
-HEAD `4ba0b9b25`），与本仓库无构建依赖，只作为**事实来源**引用。
+上游参考实现是作者的 llama.cpp fork（分支 `feature/adaptive-kv-stream`）；本文只引用其 `文件:行` 作为事实来源，不复制其代码或文档。
 
 ---
 
-## 0 现在到底处在什么状态（2026-11-10 评估，全部有实测依据）
+## 0 现在到底处在什么状态（全部有实测依据）
 
 **一句话**：`--kv-stream` 是**能跑、能出正确结果、比父分支更快**的 opt-in 功能，但**没达到交付条件**，
 而且离"吸收作者全部机制"只走了大约四分之一——缺的那四分之三正好是 prefill、图、调度器、多请求。
@@ -39,11 +38,11 @@ HEAD `4ba0b9b25`），与本仓库无构建依赖，只作为**事实来源**引
 
 | 能力 | 证据 |
 |---|---|
-| 262 144 上下文在 16 GB 卡上跑起来 | `rk4v4` 72.8 tok/s、`rk8v4` 26.8 tok/s，129 轮无尖峰（M-19/M-20） |
+| 262 144 上下文在 16 GB 卡上跑起来 | `rk4v4` 72.8 tok/s、`rk8v4` 26.8 tok/s，129 轮无尖峰（[measurements](kv-streaming-measurements.md) 表 1） |
 | 结果正确（开关流式逐位相同） | `check --suite equiv` 4/4 PASS，183 K 的 512 token ids + logprobs **0/512 有差** |
 | 质量无损 | 流式不改数值路径：同一 dtype 的 KV 字节相同，只有位置不同 |
 | 不支持的组合被显式拒绝 | 并发 / 多卡 / 前缀缓存（`startup.cpp:1361-1372`），不会静默出错 |
-| 自适应机制在真机生效 | 150 K 紧池：控制器提出缩环 → 实测慢 85% → 自动回退并粘性拒绝（M-21） |
+| 自适应机制在真机生效 | 150 K 紧池：控制器提出缩环 → 实测慢 85% → 自动回退并粘性拒绝[measurements](kv-streaming-measurements.md) 表 1 |
 | 可复现 | 每次运行落盘 argv、git、设备、逐轮样本；`stream-*` 用例与金标可重跑 |
 
 ### 0.2 不可用/未达标的边界
@@ -105,7 +104,7 @@ HEAD `4ba0b9b25`），与本仓库无构建依赖，只作为**事实来源**引
 2. **测量决定形状，代码里不留"应该"。** 已有反例：环比 `1.10` 在 251 K 上错的概率很高、
    run 宽度不是杠杆、开图在旧记录里是 −3%。任何形状参数都要有本机样本，且样本随记录走
    （`stream.run_pages`、`stream.ring_runs` 已经在报告里）。
-3. **逐位是正确性的唯一判据。** ids 相同不算；logprobs 逐位相同才算（M-16 的层号二次映射就是
+3. **逐位是正确性的唯一判据。** ids 相同不算；logprobs 逐位相同才算（层号二次映射就是
    ids 全对、logprob 差 0.08 nat）。
 4. **不许把"缩小范围"写成"别人的任务"。** SPEC 的"不在本次范围"必须逐条列出代价；交付条件
    对不上就写"未完成"，不写"基本完成"。
@@ -440,7 +439,7 @@ P3 才是重叠与调度器；P4 由图决定；P5 容量；P6 多请求与服�
 | Best default（`:160`） | 默认即最快无损配置 | 默认关、环 1.10、run 128 均为本机实测 | ✅ |
 | Best default / 产品模式（`:205-212`） | 产品模式走 CLI/服务选项或设备档案；env 只能用于诊断/A-B | `NINFER_STREAM_RUN_PAGES`、`_BOUNDED`、`_DEBUG`、`_VERIFY` 都是 env；`RUN_PAGES` 还被我当扫描接口用过 | ⚠️ 必须明确"诊断口"或改 CLI |
 | Comparable measurements（`:171`） | 同主机/同构建/同产物/同提示；提示加唯一 nonce；**交错运行**；无其他负载 | 同主机/构建/产物/提示 ✅；**未交错**（逐变体顺序跑）❌；未加 nonce（前缀缓存已被 `--kv-stream` 拒绝，影响为零，但要写明） | ⚠️ 需补交错 |
-| Docs describe current state（`:184`） | 文档只描述当前状态；**不含日期日志、运行/CI 历史、尝试过程、作者本机路径、上游页面副本**；测量是带条件的参考表 | `kv-streaming-worklog.md`（改动史、缺陷账本）、`kv-streaming-measurements.md`（M-01…M-22 日期日志、"作废数字"、"已被否掉的路"）**直接违反**；strategy 第 2 节引用了作者本机路径与上游行号（可接受为事实来源，但要收敛） | ❌ **违规** |
+| Docs describe current state（`:184`） | 文档只描述当前状态；**不含日期日志、运行/CI 历史、尝试过程、作者本机路径、上游页面副本**；测量是带条件的参考表 | 已整改：`docs/` 只留设计、策略、验证与参考表；历史台账移到 `bench/results/kv-stream/ledger.md`；strategy 只引用上游 `文件:行`（事实来源），不引用作者主机路径 | ✅ |
 | Docs：用户可见变更同 PR 更新（`:193`） | 族指南、`docs/cli.md`、`docs/serving.md`、`--help`、README Artifacts、What's New | `--help` ✅；`docs/cli.md` 里 `--kv-stream` **0 处** ❌；`docs/serving.md` 0 处（需说明流式不支持并发/前缀缓存）❌；README What's New 无条目 ❌ | ❌ 违规 |
 | 新 kernel 的测试（`:200`） | 独立 FP32/FP64 oracle + 覆盖每个 schedule + **一次 compute-sanitizer racecheck 与 synccheck** | `kv_stream_signal.cu`（`record_deadline<<<1,1>>>`）**没有** oracle 测试，也**没有** sanitizer 记录 | ❌ 违规 |
 | 测试注册（`tests/README.md`、`tests/cmake/CoreTests.cmake`） | 每个测试在 `CoreTests.cmake` 注册才进 CTest | layout/feedback/partition 已注册；**`test_kv_stream_span_tuner.cpp` 未注册** ⇒ 无门禁 | ❌ 违规 |

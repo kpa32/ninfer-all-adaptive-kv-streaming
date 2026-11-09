@@ -83,7 +83,7 @@ other references own narrower contracts:
 | [KV streaming verification](maintainer/kv-streaming-verification.md) | the test mechanism and the scoring rule: six check layers, C/P/K/T/G check ids, and a score that only a named check can earn |
 | [KV streaming strategy](maintainer/kv-streaming-strategy.md) | **the single plan**: guiding principles, the theory pinned to upstream file:line, NInfer's own properties and the deltas, the arithmetic with measured checks, falsifiable predictions, and the P0-P6 gates |
 | [KV streaming fidelity](maintainer/kv-streaming-fidelity.md) | the reference implementation point by point: upstream structure, our state, the gap matrix, R1-R13 and the port's build plan |
-| [KV streaming worklog](maintainer/kv-streaming-worklog.md) | review and takeover: sources, files changed against upstream commits, invariants, closed and open defects, PR scope and the commands |
+| [KV streaming ledger](../../bench/results/kv-stream/ledger.md) | the record area: which decision rests on which data, which numbers are void, which paths measurement rejected, and the defect ledger |
 | [KV streaming measurements](maintainer/kv-streaming-measurements.md) | the run records behind those numbers: date, commit, command and result of every measurement |
 | [KV streaming inputs](maintainer/adaptive-kv-streaming-inputs.md) | the reference article and the CUDA Graph notes behind that design; input, not a description of this repository |
 | [ReplaySSM GDN](maintainer/replayssm-gdn.md) | raw transition records and faithful commitment of the verified state prefix |

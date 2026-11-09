@@ -5,7 +5,7 @@ title: 自适应 KV 流式：设计与实施现状（16 GB 上的 262 144 上下
 status: active
 parent: ninfer-kv-streaming
 depends-on: [paged-kv-cache, kv-stream-op]
-references: [adaptive-kv-streaming-inputs, qwen3-5-model, kv-streaming-worklog, kv-streaming-measurements, kv-streaming-fidelity]
+references: [adaptive-kv-streaming-inputs, qwen3-5-model, kv-streaming-strategy, kv-streaming-measurements, kv-streaming-fidelity]
 ---
 
 # 自适应 KV 流式：原型设计
@@ -17,14 +17,14 @@ references: [adaptive-kv-streaming-inputs, qwen3-5-model, kv-streaming-worklog, 
 >
 > | 本文件 | 现状 | 权威 |
 > |---|---|---|
-> | §4/§5 的“环分成 `ring_depth` 个区域、层 `L` 用 `L mod depth`” | **已改为扁平 run 池 + 每层窗口**：窗口槽 `= layer_offset(layer) + page % resident(layer)`，环由任意层按 run 取用 | [fidelity](kv-streaming-fidelity.md) §5、[worklog](kv-streaming-worklog.md) §4 |
-> | §5.13 的帧式 span 流水（“设计，未实现”） | **已实现并由实测阶梯选择**（整层/半层/2 runs/1 run）；本机选“整层”，分帧档位在本机更慢 | worklog §8 #2、measurements M-17/M-22 |
-> | §5/§11 里 251 K 的 `69.2 tok/s / 56.7 ms / 1193.6 MiB` | 移植前基线；现在是 `72.8 tok/s / 54.4 ms / 1116.2 MiB`（512 token 稳态） | measurements M-19/M-20 |
-> | 环写死为“恰一层”或“2 ×” | 起点由规划器给（`1.10 ×`），之后由**几何前视比例 + 实测字节节省**的双判据决定是否移动，且每次移动都是可回退的实验 | worklog §8 #3、measurements M-19/M-21 |
-> | 控制器只按模型决策 | 追加**迁移实验**（试 4 轮、比中位数、慢则回退、被否目标不重试） | worklog §4、measurements M-19 |
+> | §4/§5 的“环分成 `ring_depth` 个区域、层 `L` 用 `L mod depth`” | **已改为扁平 run 池 + 每层窗口**：窗口槽 `= layer_offset(layer) + page % resident(layer)`，环由任意层按 run 取用 | [fidelity](kv-streaming-fidelity.md) §5。历史台账见 `bench/results/kv-stream/ledger.md` |
+> | §5.13 的帧式 span 流水（“设计，未实现”） | **已实现并由实测阶梯选择**（整层/半层/2 runs/1 run）；本机选“整层”，分帧档位在本机更慢 | [measurements](kv-streaming-measurements.md) 表 4 |
+> | §5/§11 里 251 K 的 `69.2 tok/s / 56.7 ms / 1193.6 MiB` | 移植前基线；现在是 `72.8 tok/s / 54.4 ms / 1116.2 MiB`（512 token 稳态） | [measurements](kv-streaming-measurements.md) 表 1 |
+> | 环写死为“恰一层”或“2 ×” | 起点由规划器给（`1.10 ×`），之后由**几何前视比例 + 实测字节节省**的双判据决定是否移动，且每次移动都是可回退的实验 | [measurements](kv-streaming-measurements.md) 表 1、表 4 |
+> | 控制器只按模型决策 | 追加**迁移实验**（试 4 轮、比中位数、慢则回退、被否目标不重试） | [strategy](kv-streaming-strategy.md) §5 |
 >
 > 施工过程、缺陷账本（已结 10 条 / 未结若干）、以及“哪些路已被实测否掉”都在
-> [worklog](kv-streaming-worklog.md)，**先读它再动手**。
+> [strategy](kv-streaming-strategy.md) 与 [verification](kv-streaming-verification.md)：**先读这两份再动手**。历史台账在 `bench/results/kv-stream/ledger.md`。
 
 
 本文件是**施工前的完整设计**：目标、参考实现解剖、NInfer 现状核实、数据模型、每轮执行

@@ -58,36 +58,36 @@ L6 是合并门槛。
 
 | ID | 检查 | 判据 | 状态 |
 |---|---|---|---|
-| P1 | 251 K `rk4v4` decode | ≥ 72.8 tok/s（54.4 ms/轮），逐轮 max/median ≤ 1.25 | **PASS**（M-19） |
-| P2 | 251 K `rk8v4` decode | ≥ 26.8 tok/s（147.9 ms/轮） | **PASS**（M-20） |
-| P3 | 183 K streamed decode | ≥ 85.2 tok/s（46.4 ms/轮） | **PASS**（M-22 基线） |
-| P4 | 251 K prefill | ≥ 1281 tok/s（`rk4v4`） | **PASS**（M-21 附记） |
+| P1 | 251 K `rk4v4` decode | ≥ 72.8 tok/s（54.4 ms/轮），逐轮 max/median ≤ 1.25 | **PASS**（[measurements](kv-streaming-measurements.md) 表 1） |
+| P2 | 251 K `rk8v4` decode | ≥ 26.8 tok/s（147.9 ms/轮） | **PASS**（[measurements](kv-streaming-measurements.md) 表 1） |
+| P3 | 183 K streamed decode | ≥ 85.2 tok/s（46.4 ms/轮） | **PASS**（[measurements](kv-streaming-measurements.md) 表 1） |
+| P4 | 251 K prefill | ≥ 1281 tok/s（`rk4v4`） | **PASS**（[measurements](kv-streaming-measurements.md) 表 2） |
 | P5 | 每轮字节 | ≤ 基线 +2%（1116.2 / 3366.9 MiB） | **PASS** |
 | P6 | 暴露时间 | 183 K ≤ 7.9 ms/轮；251 K 记录不设门限（带宽受限） | **PASS**（183 K） |
 | P7 | 全驻留不回退 | `equiv-100k` resident ≥ 118 tok/s，且 ≤120 K 不启用流式 | **PASS** |
-| P8 | 交错 A/B（`CONTRIBUTING:171`） | 两变体按 rep 交错；提示词不加 nonce（新进程、且会毁金标） | **PASS**：`equiv-183k --reps 2` 交错跑完，两臂 PASS（M-25） |
+| P8 | 交错 A/B（`CONTRIBUTING:171`） | 两变体按 rep 交错；提示词不加 nonce（新进程、且会毁金标） | **PASS**：`equiv-183k --reps 2` 交错跑完，两臂 PASS（[measurements](kv-streaming-measurements.md) 表 1） |
 
 ### 2.3 内核与工具（K / T）
 
 | ID | 检查 | 判据 | 状态 |
 |---|---|---|---|
-| K1 | `kv_stream_signal` 的 oracle | 测试自己的记账即规格：ready=样本、未 ready=miss、四 run 互不串、重新 ready 仍是样本、未采样窗口报"无" | **PASS**（`tests/test_kv_stream_signal.cu`，M-24） |
-| K2 | `compute-sanitizer --tool racecheck` | 0 error（`tests/README.md:96-110` 的跑法） | **PASS**：0 hazards（M-24） |
-| K3 | `compute-sanitizer --tool synccheck` | 0 error | **PASS**：0 errors；另跑 initcheck 也是 0（M-24） |
+| K1 | `kv_stream_signal` 的 oracle | 测试自己的记账即规格：ready=样本、未 ready=miss、四 run 互不串、重新 ready 仍是样本、未采样窗口报"无" | **PASS**（`tests/test_kv_stream_signal.cu`） |
+| K2 | `compute-sanitizer --tool racecheck` | 0 error（`tests/README.md:96-110` 的跑法） | **PASS**：0 hazards |
+| K3 | `compute-sanitizer --tool synccheck` | 0 error | **PASS**：0 errors；另跑 initcheck 也是 0 |
 | K4 | 跨架构可编 | `sm_70/75/80/86/89/120a` 全部构建通过 | 未做（本地仅 `sm_89`） |
-| T1 | bench 工具单测 | `tests/test_kv_stream_tool.py`（11 个用例，`python -m pytest` 在仓库根跑）纳入 CI | **PASS**（`ci.yml` 新增一步 + `change-scopes.py` 把该文件计入 python 范围；2026-11-10，提交 `9e7d7797`） |
-| T2 | span tuner + guards 注册 | `CoreTests.cmake` 有 `ninfer_kv_stream_span_tuner_test` 与 `ninfer_kv_stream_guards_test` | **PASS**（`9e7d7797`） |
+| T1 | bench 工具单测 | `tests/test_kv_stream_tool.py`（11 个用例，`python -m pytest` 在仓库根跑）纳入 CI | **PASS**（`ci.yml` 新增一步 + `change-scopes.py` 把该文件计入 python 范围） |
+| T2 | span tuner + guards 注册 | `CoreTests.cmake` 有 `ninfer_kv_stream_span_tuner_test` 与 `ninfer_kv_stream_guards_test` | **PASS**（文件已注册） |
 
 ### 2.4 门禁与文档（G，来自 `CONTRIBUTING.md`）
 
 | ID | 要求 | 现状 |
 |---|---|---|
-| G1 | `docs/cli.md` 写 `--kv-stream` | **PASS**：新增 "Streaming KV past the pool" 一节 + Common options 两行（`9e7d7797`） |
-| G2 | README What's New 一行 | **PASS**：`2026-11-10` 一行（`9e7d7797`） |
-| G3 | `docs/serving.md` 写明边界 | **PASS**：新增 "Streaming KV is not a server mode"（`9e7d7797`） |
-| G4 | 新 kernel 的 racecheck/synccheck 记录 | **PASS**（= K2/K3，M-24） |
+| G1 | `docs/cli.md` 写 `--kv-stream` | **PASS**：新增 "Streaming KV past the pool" 一节 + Common options 两行 |
+| G2 | README What's New 一行 | **PASS**：已有一行 |
+| G3 | `docs/serving.md` 写明边界 | **PASS**：新增 "Streaming KV is not a server mode" |
+| G4 | 新 kernel 的 racecheck/synccheck 记录 | **PASS**（= K2/K3） |
 | G5 | 测试注册进 CTest | 缺 span_tuner ⇒ FAIL（= T2） |
-| G6 | 测量交错运行 | **PASS**：`run_case` 改为 rep 在外、变体在内（M-25） |
+| G6 | 测量交错运行 | **PASS**：`run_case` 改为 rep 在外、变体在内（[measurements](kv-streaming-measurements.md) 表 1） |
 | G7 | 文档只写当前状态（无日期日志/尝试过程） | worklog/measurements 违反 ⇒ FAIL |
 | G8 | Conventional Commits | 遵守 ⇒ PASS |
 

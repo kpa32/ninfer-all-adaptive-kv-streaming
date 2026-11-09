@@ -163,7 +163,7 @@ resident addresses"，`llama-kv-stream-plan.cpp:405-407`），并用冷却时间
 "bounded span"和"整段一次"之间二选一（≥0.5% 才切）。我们只有整层一次（默认）和逐帧（更粗、
 实测更慢），**没有中间档，也没有实测选择**。
 
-**这一条解释了 M-12 的失败**：上游的 bounded span 是"为了把环压到 1.1 倍而付的代价"
+**这一条解释了帧式流水在本机的失败**：上游的 bounded span 是"为了把环压到 1.1 倍而付的代价"
 （换来更少字节），我们只付了代价（更多发射、波次不整齐），没拿到收益（环没变）。
 ——这也是之前"层内分帧更慢"结论的真正解释：**不是分帧错，是分帧没有配上缩环。**
 
@@ -355,8 +355,8 @@ prefill 侧同理：`begin_round` 的 `!prefill` 与 prefill 被排除在分帧�
 
 | 症状 | 直接原因 | 已有实测 |
 |---|---|---|
-| 251K decode 每轮 54.4 ms（rk4v4）、147.9 ms（rk8v4） | 无图（第 9 条）+ 无跨轮预取（第 10 条） | M-19/M-20 |
-| 251K prefill 1281 tok/s、搬 ~94 GiB | 不换布局（第 6 条）+ 不适配（第 7 条）+ 每 chunk 重传尾部 | M-21 附记 |
+| 251K decode 每轮 54.4 ms（rk4v4）、147.9 ms（rk8v4） | 无图（第 9 条）+ 无跨轮预取（第 10 条） | [measurements](kv-streaming-measurements.md) 表 1 |
+| 251K prefill 1281 tok/s、搬 ~94 GiB | 不换布局（第 6 条）+ 不适配（第 7 条）+ 每 chunk 重传尾部 | [measurements](kv-streaming-measurements.md) 表 2 |
 | prefill 形状对 prefill 不利 | decode 的集中布局被用于 prompt | 第 6 条 |
 | 控制器 `entering_decode_layout` 分支是死代码 | `kv_stream_space.cpp:407` 硬编码 false | 第 6 条 |
 | 集中布局可能从未真正被选中 | 同上 + 无测量记录形状 | 第 6 条 |

@@ -107,18 +107,6 @@ constexpr std::uint32_t kKVStreamRunPages = 128;
     return (streamed + split.run_pages - 1) / split.run_pages;
 }
 
-// How many whole layers the ring can start ahead of the one being read. Zero means the copies cannot
-// overlap the compute at all: the ring holds exactly one layer's streamed extent, so the next copy
-// waits for the current layer's consumption. Pure geometry, which is what lets the policy prefer
-// look-ahead without measuring the card.
-[[nodiscard]] inline std::uint32_t kv_stream_ahead_of(std::uint32_t active_pages,
-                                                     const KVStreamSplit& split) noexcept {
-    const std::uint32_t runs = kv_stream_runs_per_layer(active_pages, split);
-    const std::uint32_t ring = kv_stream_ring_runs(split);
-    if (runs == 0 || ring == 0) { return 0; }
-    return ring > runs ? ring / runs - 1 : 0;
-}
-
 
 // The most runs any layer's streamed pages take: what the ring has to hold at once.
 [[nodiscard]] inline std::uint32_t kv_stream_runs_per_layer(std::uint32_t active_pages,
@@ -135,6 +123,19 @@ constexpr std::uint32_t kKVStreamRunPages = 128;
 [[nodiscard]] inline std::uint32_t kv_stream_ring_runs(const KVStreamSplit& split) noexcept {
     return split.run_pages == 0 ? 0 : split.ring_pages / split.run_pages;
 }
+
+// How many whole layers the ring can start ahead of the one being read. Zero means the copies cannot
+// overlap the compute at all: the ring holds exactly one layer's streamed extent, so the next copy
+// waits for the current layer's consumption. Pure geometry, which is what lets the policy prefer
+// look-ahead without measuring the card.
+[[nodiscard]] inline std::uint32_t kv_stream_ahead_of(std::uint32_t active_pages,
+                                                     const KVStreamSplit& split) noexcept {
+    const std::uint32_t runs = kv_stream_runs_per_layer(active_pages, split);
+    const std::uint32_t ring = kv_stream_ring_runs(split);
+    if (runs == 0 || ring == 0) { return 0; }
+    return ring > runs ? ring / runs - 1 : 0;
+}
+
 
 namespace detail {
 

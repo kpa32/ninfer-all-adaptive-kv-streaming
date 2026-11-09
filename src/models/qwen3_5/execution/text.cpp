@@ -2173,10 +2173,22 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
             stream_layout_generation_ = kv_stream_space_->layout_generation();
             stream_span_tuner_.reset();
             stream_bounded_round_ = false;
+            stream_ladder_reported_ = false;
         }
         const bool streamed = kv_stream_space_->window_start() != 0;
         stream_span_tuner_.observe(kv_stream_space_->last_window_seconds() * 1000.0, streamed,
                                    stream_runs_per_frame_, kv_stream_space_->runs_per_layer());
+        if (stream_span_tuner_.selected() && !stream_ladder_reported_) {
+            stream_ladder_reported_ = true;
+            if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+                std::fprintf(stderr, "[stream] ladder measured %zu steps, chose %u runs per launch of %u, mean %.2f ms
+",
+                             stream_span_tuner_.trials(),
+                             stream_span_tuner_.chosen_runs_per_frame(),
+                             kv_stream_space_->runs_per_layer(),
+                             stream_span_tuner_.chosen_average_ms());
+            }
+        }
         plan_stream_round(x.ne[1]);
     }
     // A streamed round copies a layer's pages in runs before its attention and releases them after:

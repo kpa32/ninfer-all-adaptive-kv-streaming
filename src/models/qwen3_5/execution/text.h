@@ -451,6 +451,7 @@ private:
     // layout invalidates every sample (kv_stream_span_tuner.h).
     KVStreamSpanTuner stream_span_tuner_;
     std::uint32_t stream_layout_generation_ = 0;
+    bool stream_ladder_reported_            = false;
     bool stream_bounded_round_              = false;
     // The round's span geometry, planned once before its first layer and the same for every layer of
     // it: how many keys attention splits into per run, and how many keys the round sees at all.

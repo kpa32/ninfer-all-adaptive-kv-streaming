@@ -222,6 +222,24 @@ CASES: dict[str, Case] = {
         require_full_generation=True,
         streamed_flags=("--kv-headroom-mib", "1008"),
     ),
+    # The same 183 K shape with a pool that cannot hold it: this is where the copies cannot hide behind
+    # the compute (one run of margin against six runs of extent), so it is the case that prices the
+    # launch width and the run width on the exact shape the equivalence suite uses.
+    "stream-180k-tight": Case(
+        name="stream-180k-tight",
+        purpose=(
+            "183 K in a pool that cannot hold it: the copies have one run of margin, so the launch "
+            "width and the run width are what decide whether they hide."
+        ),
+        kind="perf",
+        target_tokens=180_000,
+        capacity=262_144,
+        max_new=512,
+        variants=("streamed",),
+        oracle="self",
+        require_full_generation=True,
+        streamed_flags=("--kv-headroom-mib", "1008"),
+    ),
     "stream-180k": Case(
         name="stream-180k",
         purpose=(

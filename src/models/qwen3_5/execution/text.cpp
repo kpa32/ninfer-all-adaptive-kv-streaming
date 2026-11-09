@@ -2193,17 +2193,19 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                         if (current == 0) {
                             for (std::uint32_t target = 0; target < ahead; ++target) { issue(target); }
                         }
-                        if (ahead != 0) {
-                            if (current + ahead < count) {
-                                issue(current + ahead);
-                            } else if (!prefill) {
-                                // The round's last layers prefetch the next round's first ones: the runs
-                                // they need are freed by this round's last consumption, a whole layer of
-                                // compute before the next round reads them.
-                                issue(current + ahead - count);
-                            }
+                        if (ahead == 0) {
+                            // The ring holds one layer's streamed extent and no more, so nothing can run
+                            // ahead: this layer copies for itself, and its copy waits for the previous
+                            // layer's consumption (the depth-one regime the article describes first).
+                            issue(current);
+                        } else if (current + ahead < count) {
+                            issue(current + ahead);
+                        } else if (!prefill) {
+                            // The round's last layers prefetch the next round's first ones: the runs they
+                            // need are freed by this round's last consumption, a whole layer of compute
+                            // before the next round reads them.
+                            issue(current + ahead - count);
                         }
-                        if (runs == 0) { issue(current); }
                     }
 
                     attn_mix(block, x, compact, ph);

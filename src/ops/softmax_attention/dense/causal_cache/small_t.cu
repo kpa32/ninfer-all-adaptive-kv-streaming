@@ -779,14 +779,20 @@ CausalAttentionFramePlan causal_attention_frame_plan(
             static_cast<std::int32_t>(envelope.max_visible_keys));
     });
     if (active <= 0) { return {}; }
-    // A split is `kv_heads` CTAs, so one wave of the device is `sms / kv_heads` splits: fewer and a
-    // launch leaves the device idle, more and it takes more than a wave (design 5.13.1).
+    // A split is `kv_heads` CTAs, so one wave of the device is `sms / kv_heads` splits. The frame
+    // count is the number of waves one whole-range launch would take, and the frame is
+    // `ceil(active / frames)` splits - so the frames add up to the same waves as that launch. Taking
+    // `sms / kv_heads` splits per frame instead (20 splits of 4 KV heads = 80 CTAs on 80 SMs) made
+    // 85 splits launch as five full waves where one launch needs 4.25, and that 0.75 of a wave cost
+    // more than the overlap gained: 69.2 -> 67.6 tok/s at 251K (M-12).
     std::int32_t splits = splits_per_frame;
     if (splits <= 0) {
         const std::int32_t kv_heads = static_cast<std::int32_t>(geometry.kv_heads);
         const std::int32_t sms =
             static_cast<std::int32_t>(detail::current_device_multiprocessors(0));
-        splits = kv_heads > 0 ? (sms + kv_heads - 1) / kv_heads : active;
+        const std::int32_t waves =
+            kv_heads > 0 && sms > 0 ? (active * kv_heads + sms - 1) / sms : 1;
+        splits = waves > 0 ? (active + waves - 1) / waves : active;
         if (splits < 1) { splits = 1; }
     }
     // A caller has as many frame slots as it planned for: grow a frame until the call fits them.

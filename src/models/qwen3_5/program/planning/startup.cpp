@@ -1504,7 +1504,17 @@ std::unique_ptr<SequencePlanImpl> build_sequence_candidate(const SequencePlannin
     impl->mtp_attention_window = inputs.mtp_attention_window;
     impl->features            = inputs.features;
     impl->expert_cache_bytes  = inputs.expert_cache_bytes;
-    impl->use_cuda_graph      = inputs.use_cuda_graph && !inputs.features.kv_stream;
+    // A streamed round decides its copies on the host - `begin_round` reads the device's own record
+    // of the last window, the tuner picks the launch width, and every layer issues its copies from
+    // the layer loop - so a capture of that round is a diagnostic, not a delivered route.
+    // NINFER_STREAM_CAPTURE=1 lets the graph path try it; everything else keeps the graph off under
+    // streaming, which is the measured default (kv-streaming-measurements.md, P4).
+    const bool stream_capture = [] {
+        const char* value = std::getenv("NINFER_STREAM_CAPTURE");
+        return value != nullptr && value[0] == '1';
+    }();
+    impl->use_cuda_graph      = inputs.use_cuda_graph &&
+                                (!inputs.features.kv_stream || stream_capture);
     impl->causal_scoring      = inputs.causal_scoring;
     impl->structured_output   = inputs.structured_output;
     impl->device              = inputs.device;

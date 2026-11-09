@@ -261,6 +261,22 @@ CASES: dict[str, Case] = {
         require_full_generation=True,
         streamed_flags=("--kv-headroom-mib", "1008"),
     ),
+    # The arithmetic point: with the delivery profile (rk8v4 + MTP3) a 190K context leaves the pool a
+    # 1900-page window, so a round moves ~1.66 GiB and the round rate lands near 50 tok/s. The capacity
+    # stays 262144 so the pool is planned exactly as the 251K case's, which is the context a user of
+    # this feature actually configures.
+    "stream-190k-rk8v4": Case(
+        name="stream-190k-rk8v4",
+        purpose="The context where rk8v4 + MTP3 still serves 50 tok/s: 190K under a 262K capacity.",
+        kind="perf",
+        target_tokens=190_000,
+        capacity=262_144,
+        max_new=512,
+        variants=("streamed",),
+        oracle="self",
+        require_full_generation=True,
+        kv_dtype="rk8v4",
+    ),
     "stream-180k": Case(
         name="stream-180k",
         purpose=(

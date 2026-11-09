@@ -92,9 +92,14 @@ void test_a_clear_cycle_reaches_the_ready_state_again(cudaStream_t copy, cudaStr
 
 void test_a_window_measures_its_device_time(cudaStream_t copy, cudaStream_t compute,
                                             void* staging) {
+    // The order the space uses: the window opens, one run of copies is sampled around its transfers,
+    // the run is marked ready, and the window closes. `copy_time` reports the sampled run and how many
+    // runs the window issued (`uploads`), which the caller scales to the window's occupancy.
     KVStreamSignal signal(2);
     signal.begin_window(compute);
+    signal.begin_copy_sample(copy);
     copy_some_bytes(copy, staging);
+    signal.end_copy_sample(copy);
     signal.clear_run(0, copy);
     signal.mark_run(0, copy);
     signal.end_window(compute);
@@ -106,11 +111,25 @@ void test_a_window_measures_its_device_time(cudaStream_t copy, cudaStream_t comp
     check(window.seconds > 0.0, "a finished window's time is positive");
     check(signal.windows_lost() == 0, "a window that was read is not lost");
 
-    // The copy sample is the one run the window timed, scaled by the runs it issued.
     const KVStreamSignal::CopyTime timed = signal.copy_time();
     check(timed.recorded, "a window that sampled a copy run reports its copy time");
     check(timed.seconds > 0.0, "a sampled copy run's time is positive");
     check(timed.uploads == 1, "the sampled window issued one upload");
+}
+
+void test_a_window_without_a_copy_sample_reports_none(cudaStream_t copy, cudaStream_t compute) {
+    // A window whose copies were never sampled says so instead of reporting zero seconds: the
+    // controller must not read "no sample" as "the copy engine was idle".
+    KVStreamSignal signal(2);
+    signal.begin_window(compute);
+    signal.clear_run(0, copy);
+    signal.mark_run(0, copy);
+    signal.end_window(compute);
+    signal.sample_deadline(0, compute);
+    (void)cudaStreamSynchronize(compute);
+    check(signal.window_time().recorded, "a finished window reports its time");
+    check(!signal.copy_time().recorded, "an unsampled window reports no copy time");
+    check(signal.copy_time().uploads == 0, "an unsampled window reports no uploads");
 }
 
 void test_an_unfinished_window_is_not_reported(cudaStream_t compute) {
@@ -158,6 +177,7 @@ int main() {
     test_each_run_keeps_its_own_flag(copy, compute);
     test_a_clear_cycle_reaches_the_ready_state_again(copy, compute);
     test_a_window_measures_its_device_time(copy, compute, staging);
+    test_a_window_without_a_copy_sample_reports_none(copy, compute);
     test_an_unfinished_window_is_not_reported(compute);
     test_a_restarted_window_is_counted_as_lost(compute);
 

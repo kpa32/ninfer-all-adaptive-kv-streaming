@@ -333,6 +333,10 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         if (partition_trial_rounds_ < kPartitionTrialRounds) { return false; }
         const double mean = partition_trial_sum_ms_ / static_cast<double>(partition_trial_rounds_);
         const bool slower = mean > partition_trial_baseline_ms_ * (1.0 + kPartitionRevertMargin);
+        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+            std::fprintf(stderr, "[partition] trial done mean=%.2f baseline=%.2f %s\n", mean,
+                         partition_trial_baseline_ms_, slower ? "revert" : "keep");
+        }
         partition_trial_active_ = false;
         partition_trial_sum_ms_ = 0.0;
         partition_trial_rounds_ = 0;
@@ -433,6 +437,12 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     partition_trial_before_   = split_;
     partition_trial_baseline_ms_ =
         layout_rounds_ != 0 ? layout_round_ms_ / static_cast<double>(layout_rounds_) : round_ms;
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        std::fprintf(stderr,
+                     "[partition] trial start baseline=%.2f ring %u -> %u pages, streamed max %u -> %u\n",
+                     partition_trial_baseline_ms_, split_.ring_pages, next->ring_pages,
+                     max_streamed_pages(), max_streamed_pages(*next));
+    }
     repartition(*next, streams);
     partition_trial_active_   = true;
     partition_trial_sum_ms_   = 0.0;

@@ -1683,6 +1683,17 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
         // events, and this loop only issues copies and waits.
         ops::CausalAttentionFrameHook frame_hook{};
         const ops::CausalAttentionFrameHook* framed = nullptr;
+        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+            static int printed = 0;
+            if (printed < 40) {
+                ++printed;
+                std::fprintf(stderr,
+                             "[stream] attn entry layer=%d T=%d phase=%d space=%d positions=%d "
+                             "batch=%d\n",
+                             fidx, T, static_cast<int>(ph), kv_stream_space_ != nullptr ? 1 : 0,
+                             positions ? 1 : 0, active_sequence_batch_);
+            }
+        }
         if (kv_stream_space_ != nullptr && !positions && active_sequence_batch_ == 0 &&
             ph != Phase::Prefill) {
             const auto geometry = ops::AttentionHeadGeometry{

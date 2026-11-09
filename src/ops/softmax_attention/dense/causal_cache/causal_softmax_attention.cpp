@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
@@ -814,6 +815,20 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
     auto scope = workspace.scope();
     const detail::CausalAttentionRoute route =
         detail::causal_attention_resolve_route(q.ne[1], width, batch, cache.storage, envelope);
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        static int printed = 0;
+        if (printed < 32) {
+            ++printed;
+            std::fprintf(stderr,
+                         "[stream] dispatch storage=%d route=%s q_heads=%d width=%d batch=%d "
+                         "frames=%s span=%d keys=%d segment=%u\n",
+                         static_cast<int>(cache.storage), detail::causal_attention_route_name(route),
+                         static_cast<int>(q.ne[1]), width, batch,
+                         frames == nullptr ? "no" : "yes",
+                         static_cast<int>(envelope.max_visible_keys), static_cast<int>(width),
+                         envelope.invariant_segment_keys);
+        }
+    }
     if (route == detail::CausalAttentionRoute::ChunkedSmallT) {
         const bool fusable = kv_cache_is_int8_family(cache.storage);
         const bool gated   = launch_chunked_small_t(

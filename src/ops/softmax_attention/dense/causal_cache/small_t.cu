@@ -17,6 +17,7 @@
 #include "ninfer/ops/softmax_attention.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <algorithm>
 #include <stdexcept>
@@ -331,6 +332,18 @@ void causal_attention_small_t_launch_for(const Tensor& q, CacheInput input, cons
             ? causal_small_t_wave_splits<Geometry>(q.ne[1] / Geometry::GroupSize, invocation.width,
                                                    implementation_window, cache.storage)
             : 0;
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        static int printed = 0;
+        if (printed < 32) {
+            ++printed;
+            std::fprintf(stderr,
+                         "[stream] small_t_for storage=%d width=%d window=%d splits=%d "
+                         "wave_splits=%d segmented=%d\n",
+                         static_cast<int>(cache.storage), invocation.width,
+                         implementation_window, splits, wave_splits,
+                         static_cast<int>(invocation.partition.segmented()));
+        }
+    }
 
     // BF16 keeps its row-tile warp count; INT8 selects its producer/consumer
     // geometry inside launch_tc_partial_i8.
@@ -453,6 +466,15 @@ void causal_attention_small_t_launch(const Tensor& q, const Tensor& k, const Ten
         causal_attention_small_t_k8v4_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
                                              envelope, column_begin, width, partial_acc, partial_m,
                                              partial_l, out, stream, partial_out, splits, frames);
+        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+            static int printed = 0;
+            if (printed < 32) {
+                ++printed;
+                std::fprintf(stderr,
+                             "[stream] small_t branch=k8v4 width=%d splits=[%d,%d) frames=%s\n",
+                             width, splits.begin, splits.end, frames == nullptr ? "no" : "yes");
+            }
+        }
         return;
     }
     if (splits.begin != 0 || splits.end != 0) {
@@ -475,9 +497,20 @@ void causal_attention_small_t_launch(const Tensor& q, const Tensor& k, const Ten
                                               partial_l, out, stream, partial_out);
         return;
     }
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        static int printed = 0;
+        if (printed < 32) {
+            ++printed;
+            std::fprintf(stderr,
+                         "[stream] small_t branch=shared storage=%d int8_family=%d width=%d "
+                         "splits=[%d,%d) frames=%s\n",
+                         static_cast<int>(cache.storage),
+                         static_cast<int>(kv_cache_is_int8_family(cache.storage)), width,
+                         splits.begin, splits.end, frames == nullptr ? "no" : "yes");
+        }
+    }
     const CausalAppendInput input{static_cast<const __nv_bfloat16*>(k.data),
-                                  static_cast<const __nv_bfloat16*>(v.data)};
-    const CausalSmallTInvocation invocation{
+                                  static_cast<const __nv_bfloat16*>(v.data)};    const CausalSmallTInvocation invocation{
         .valid_columns = valid_columns.data == nullptr ? nullptr : &valid_columns,
         .table_rows    = &table_rows,
         .full_width    = q.ne[2],

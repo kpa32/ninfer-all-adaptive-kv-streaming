@@ -43,7 +43,7 @@ public:
 
     // The rounds-per-launch this tuner wants right now: the widest candidate asks for every run in
     // one launch, which the caller runs as its ordinary unframed path.
-    [[nodiscard]] std::uint32_t candidate_runs_per_frame(std::uint32_t runs) const noexcept {
+    [[nodiscard]] std::uint32_t candidate_runs_per_frame(std::uint32_t runs) noexcept {
         sync(runs);
         if (levels_.empty()) { return runs; }
         return levels_[selected_ ? best_ : trial_];
@@ -51,7 +51,7 @@ public:
 
     // True when the candidate under trial is narrower than the whole layer, i.e. the caller has to
     // frame the launch and wait run by run.
-    [[nodiscard]] bool framed(std::uint32_t runs) const noexcept {
+    [[nodiscard]] bool framed(std::uint32_t runs) noexcept {
         return candidate_runs_per_frame(runs) < std::max<std::uint32_t>(runs, 1U);
     }
 

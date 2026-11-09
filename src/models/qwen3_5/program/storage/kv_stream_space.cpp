@@ -404,7 +404,7 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     // Start the experiment: remember the layout being left and the round time it measured, so the
     // next rounds can say whether this one is an improvement.
     partition_trial_before_   = split_;
-    partition_trial_baseline_ms =
+    partition_trial_baseline_ms_ =
         layout_rounds_ != 0 ? layout_round_ms_ / static_cast<double>(layout_rounds_) : round_ms;
     repartition(*next, streams);
     partition_trial_active_   = true;

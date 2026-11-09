@@ -370,6 +370,9 @@ private:
     static constexpr std::uint32_t kPartitionTrialRounds  = 4;
     static constexpr double kPartitionRevertMargin        = 0.005;
     static constexpr std::uint32_t kPartitionCooldownRounds = 64;
+    // A target that lowers the look-ahead has to save at least this fraction of a round's bytes: the
+    // overlap it gives up is worth more than a few percent of traffic (measurements M-17).
+    static constexpr std::uint64_t kPartitionSavingDivisor = 4;
     static constexpr std::uint32_t kNoLayer = std::numeric_limits<std::uint32_t>::max();
 };
 

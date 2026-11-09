@@ -404,6 +404,24 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     // Whether a move pays is decided by measuring it, never by a byte model: the bytes only say what
     // a round carries, while what a ring actually buys is look-ahead. A byte gate would also only ever
     // permit shrinking - growing the ring saves no bytes yet is exactly what recovers overlap.
+    // Does the target give up look-ahead? `ahead = ring_runs / one layer's runs - 1` is pure geometry: a
+    // ring that holds exactly one layer's streamed extent cannot start a copy before the previous layer
+    // has been read, so its round is compute + copy instead of the larger of the two. Bytes alone cannot
+    // see that trade - at 251K the controller's smaller ring saved 1% of a round's bytes and cost 10% of
+    // its time - so a target that lowers the look-ahead has to save enough bytes to be worth it. Both
+    // numbers here are measured or planned, never named per card.
+    if (kv_stream_ahead_of(active_, *next) < kv_stream_ahead_of(active_, split_)) {
+        std::uint64_t before_streamed = 0;
+        std::uint64_t after_streamed  = 0;
+        for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+            before_streamed += kv_stream_window_start(active_, split_, layer);
+            after_streamed += kv_stream_window_start(active_, *next, layer);
+        }
+        const std::uint64_t before_bytes = before_streamed * page_bytes_;
+        const std::uint64_t after_bytes  = after_streamed * page_bytes_;
+        const std::uint64_t saving       = before_bytes > after_bytes ? before_bytes - after_bytes : 0;
+        if (saving * kPartitionSavingDivisor < before_bytes) { return false; }
+    }
     // Start the experiment: remember the layout being left and the round time it measured, so the
     // next rounds can say whether this one is an improvement.
     partition_trial_before_   = split_;

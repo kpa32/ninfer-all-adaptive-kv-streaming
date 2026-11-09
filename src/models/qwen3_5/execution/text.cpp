@@ -2200,6 +2200,15 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                          kv_stream_space_ != nullptr ? 1 : 0);
         }
     }
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        static int printed = 0;
+        if (printed < 200) {
+            ++printed;
+            std::fprintf(stderr, "[stream] run_stage_layers stage=%zu phase=%d T=%d space=%d\n",
+                         stage, static_cast<int>(ph), x.ne[1],
+                         kv_stream_space_ != nullptr ? 1 : 0);
+        }
+    }
     // A stage-0 decode pass is one round of the streaming loop, and the round before it is done
     // with its copies by the time this one starts issuing them.
     if (kv_stream_space_ != nullptr && !prefill && stage == 0) {
@@ -2946,6 +2955,17 @@ void TextContext::run_tensor_parallel(Tensor& x, Phase ph, Tap& tap) {
 
 template <class Tap>
 void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        static int printed = 0;
+        if (printed < 200) {
+            ++printed;
+            std::fprintf(stderr,
+                         "[stream] run_layers phase=%d split=%d tp=%d staged=%d\n",
+                         static_cast<int>(ph), parameters_.text.split_execution() ? 1 : 0,
+                         stage_runtime_ != nullptr && stage_runtime_->tensor_parallel ? 1 : 0,
+                         stage_runtime_ != nullptr ? 1 : 0);
+        }
+    }
     if (!parameters_.text.split_execution()) {
         run_stage_layers(0, x, ph, tap);
         return;

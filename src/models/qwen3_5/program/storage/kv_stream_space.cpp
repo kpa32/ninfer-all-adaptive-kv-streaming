@@ -384,6 +384,40 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         if (evaluations_since_repartition_ != UINT32_MAX) { ++evaluations_since_repartition_; }
         return false;
     }
+    // A ring that holds one extent cannot overlap: every layer waits for its own copy, so the round is
+    // copies plus attention instead of the larger of the two. Buying the second extent costs window -
+    // at 251K `rk4v4` it is 72 pages per layer, about +7% of a round's bytes - and gains up to the
+    // attention share of the round (~8 ms of 54 ms there). Whether the trade pays is a property of the
+    // card and the format, not of the design: `rk8v4`'s attention share is ~4% and its extra bytes cost
+    // ~5.5 ms, so the same move is a wash. So it is proposed as a trial, once, through the same
+    // measure-and-revert path the controller uses, and a rejected one is not proposed again until the
+    // working set has moved.
+    if (partition_rejected_ring_ == 0 || active_ >= partition_rejected_active_ + partition_rejected_active_ / 10) {
+        const auto deeper = plan_kv_stream_lookahead(slot_count_, active_, layers_, split_.run_pages);
+        if (deeper && kv_stream_ring_runs(*deeper) != kv_stream_ring_runs(split_) &&
+            kv_stream_lookahead_ratio(active_, split_) < 2.0) {
+            if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+                std::fprintf(stderr, "[partition] lookahead trial: ring %u -> %u pages (%.2f -> %.2f)\n",
+                             split_.ring_pages, deeper->ring_pages,
+                             kv_stream_lookahead_ratio(active_, split_),
+                             kv_stream_lookahead_ratio(active_, *deeper));
+            }
+            partition_trial_before_   = split_;
+            partition_trial_baseline_ms_ =
+                layout_rounds_ != 0 ? layout_round_ms_ / static_cast<double>(layout_rounds_) : round_ms;
+            repartition(*deeper, streams);
+            partition_trial_active_       = true;
+            partition_trial_sum_ms_       = 0.0;
+            partition_trial_rounds_       = 0;
+            partition_trial_measured_     = 0;
+            partition_trial_target_ring_  = deeper->ring_pages;
+            layout_round_ms_              = 0.0;
+            layout_rounds_                = 0;
+            evaluations_since_repartition_ = 0;
+            window_measured_ = false;
+            return true;
+        }
+    }
     KVStreamPartitionParams params;
     params.total_pool_pages       = kv_stream_pool_pages(split_);
     params.layers                 = layers_;

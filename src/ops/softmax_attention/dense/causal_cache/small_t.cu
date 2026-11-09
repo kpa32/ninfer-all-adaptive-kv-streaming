@@ -241,22 +241,6 @@ void launch_tc_partial_bf16(const Tensor& q, CacheInput input, const Tensor& pos
 
 } // namespace
 
-std::int32_t causal_attention_active_splits(std::int32_t q_heads, std::int32_t tokens,
-                                            std::int32_t batch_size, std::int32_t window_tokens,
-                                            KvCacheStorage cache_storage,
-                                            CausalAttentionExecutionEnvelope envelope) {
-    const std::int32_t capacity = causal_attention_split_capacity(q_heads, tokens, cache_storage,
-                                                                  envelope, batch_size);
-    // A segmenting or strided partition (--invariant-attention, a position-split rank) divides the
-    // window its own way; a framed caller has no business there, and the whole-range answer keeps
-    // it from guessing.
-    if (envelope.invariant_segment_keys != 0 || window_tokens <= 0) { return capacity; }
-    return with_causal_query_geometry(q_heads, [&]<typename Geometry>() -> std::int32_t {
-        // The kernel's own rule, so a frame's page range is the range it reads.
-        return causal_small_t_quantized_active_splits<Geometry>(window_tokens, capacity, tokens);
-    });
-}
-
 std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t tokens,
                                              KvCacheStorage cache_storage,
                                              CausalAttentionExecutionEnvelope envelope,
@@ -314,14 +298,46 @@ std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t 
     });
 }
 
+// The keys one split of a `window` reads under `partition`: a segment of a segmented partition,
+// else the page-rounded share the kernel computes (causal_small_t_partition_range). It is the same
+// for every split, which is what makes a frame's page range a multiplication and not an estimate.
+inline std::int32_t causal_attention_split_keys(const CausalKeyPartition& partition,
+                                               std::int32_t window, std::int32_t active) {
+    if (active <= 0 || window <= 0) { return 0; }
+    if (partition.segmented()) { return partition.segment_keys; }
+    return div_up(div_up(window, kPagedKVPageSize), active) * kPagedKVPageSize;
+}
+
+// The splits a small-T call over `window` really launches, by the kernel's own rule
+// (causal_small_t_active_splits for the tuned splits, one per segment otherwise).
+template <typename Geometry>
+std::int32_t causal_attention_active_splits_for(const CausalSmallTInvocation& invocation,
+                                                KvCacheStorage storage, std::int32_t q_heads,
+                                                std::int32_t split_capacity, std::int32_t window,
+                                                std::int32_t implementation_window) {
+    if (window <= 0) { return split_capacity; }
+    if (invocation.partition.segmented()) {
+        const std::int32_t segments = div_up(window, invocation.partition.segment_keys);
+        return segments < split_capacity ? segments : split_capacity;
+    }
+    const std::int32_t wave_splits =
+        kv_cache_is_int8_family(storage) && invocation.batch_size == 1 &&
+                !invocation.partition.segmented()
+            ? causal_small_t_wave_splits<Geometry>(q_heads / Geometry::GroupSize, invocation.width,
+                                                   implementation_window, storage)
+            : 0;
+    return causal_small_t_active_splits<Geometry, true>(window, split_capacity, invocation.width,
+                                                        wave_splits);
+}
+
 template <typename Geometry, typename CacheInput>
 void causal_attention_small_t_launch_for(const Tensor& q, CacheInput input, const Tensor& pos,
                                          float scale, PagedKVBatchLayerView cache,
                                          const CausalSmallTInvocation& invocation,
                                          CausalAttentionExecutionEnvelope envelope,
                                          Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
-                                         Tensor& out, cudaStream_t stream,
-                                         const void* gate = nullptr) {
+                                         Tensor& out, cudaStream_t stream, const void* gate = nullptr,
+                                         const CausalAttentionFrameHook* frames = nullptr) {
     const auto logical_capacity      = static_cast<std::int32_t>(envelope.max_visible_keys);
     const auto implementation_window = static_cast<std::int32_t>(envelope.max_visible_keys);
     const auto splits    = causal_attention_split_capacity(q.ne[1], invocation.width, cache.storage,
@@ -375,41 +391,87 @@ void causal_attention_small_t_launch_for(const Tensor& q, CacheInput input, cons
         }                                                                                          \
     } while (0)
 
-    switch (invocation.width) {
-    case 1:
-        NINFER_CAUSAL_SMALL_T_DISPATCH(1, 2);
-        break;
-    case 2:
-        NINFER_CAUSAL_SMALL_T_DISPATCH(2, 4);
-        break;
-    case 3:
-        NINFER_CAUSAL_SMALL_T_DISPATCH(3, 4);
-        break;
-    case 4:
-        NINFER_CAUSAL_SMALL_T_DISPATCH(4, 4);
-        break;
-    case 5:
-        NINFER_CAUSAL_SMALL_T_DISPATCH(5, 4);
-        break;
-    case 6:
-        NINFER_CAUSAL_SMALL_T_DISPATCH(6, 4);
-        break;
-    case 7:
-        if constexpr (Geometry::GroupSize == 6) {
-            NINFER_CAUSAL_SMALL_T_DISPATCH(7, 4);
+    // The split table lives in one place: `dispatch` covers the splits of the invocation it is
+    // handed, so a framed call passes each frame its own range while every other field (window,
+    // column, batch, partition) stays the whole call's (design 5.13).
+    const auto dispatch = [&](const CausalSmallTInvocation& invocation) {
+        switch (invocation.width) {
+        case 1:
+            NINFER_CAUSAL_SMALL_T_DISPATCH(1, 2);
             break;
-        }
-        throw std::invalid_argument("unsupported query-row tile");
-    case 8:
-        if constexpr (Geometry::GroupSize == 6) {
-            NINFER_CAUSAL_SMALL_T_DISPATCH(8, 4);
+        case 2:
+            NINFER_CAUSAL_SMALL_T_DISPATCH(2, 4);
             break;
+        case 3:
+            NINFER_CAUSAL_SMALL_T_DISPATCH(3, 4);
+            break;
+        case 4:
+            NINFER_CAUSAL_SMALL_T_DISPATCH(4, 4);
+            break;
+        case 5:
+            NINFER_CAUSAL_SMALL_T_DISPATCH(5, 4);
+            break;
+        case 6:
+            NINFER_CAUSAL_SMALL_T_DISPATCH(6, 4);
+            break;
+        case 7:
+            if constexpr (Geometry::GroupSize == 6) {
+                NINFER_CAUSAL_SMALL_T_DISPATCH(7, 4);
+                break;
+            }
+            throw std::invalid_argument("unsupported query-row tile");
+        case 8:
+            if constexpr (Geometry::GroupSize == 6) {
+                NINFER_CAUSAL_SMALL_T_DISPATCH(8, 4);
+                break;
+            }
+            throw std::invalid_argument("unsupported query-row tile");
+        default:
+            throw std::invalid_argument("causal_attention_small_t_launch: unsupported T");
         }
-        throw std::invalid_argument("unsupported query-row tile");
-    default:
-        throw std::invalid_argument("causal_attention_small_t_launch: unsupported T");
-    }
+    };
 #undef NINFER_CAUSAL_SMALL_T_DISPATCH
+
+    // The splits this call covers and the keys one of them reads: a frame asks for the pages of the
+    // splits it launches, and a whole-range call asks for the whole window's.
+    const std::int32_t split_begin = invocation.split_begin < 0 ? 0 : invocation.split_begin;
+    const std::int32_t split_end =
+        invocation.split_end > 0 && invocation.split_end < splits ? invocation.split_end : splits;
+    const std::int32_t per_frame = frames == nullptr ? 0 : frames->splits_per_frame;
+    if (per_frame <= 0) {
+        dispatch(invocation);
+    } else {
+        // A frame is `per_frame` splits in ascending key order, waited for before its launch and
+        // recorded as consumed after it; the reduce below still runs once, over every partial a
+        // whole-range launch would have written (design 5.13.2).
+        const std::int32_t active = causal_attention_active_splits_for<Geometry>(
+            invocation, cache.storage, q.ne[1], splits, frames->window_tokens,
+            implementation_window);
+        const std::int32_t split_keys = causal_attention_split_keys(
+            invocation.partition, frames->window_tokens, active);
+        std::int32_t frame = 0;
+        for (std::int32_t begin = split_begin; begin < split_end; ++frame) {
+            const std::int32_t end = begin + per_frame < split_end ? begin + per_frame : split_end;
+            const std::int32_t first = split_keys == 0 ? 0 : begin * split_keys / kPagedKVPageSize;
+            const std::int32_t after =
+                split_keys == 0
+                    ? 0
+                    : static_cast<std::int32_t>((static_cast<std::int64_t>(end) * split_keys +
+                                                 kPagedKVPageSize - 1) /
+                                                kPagedKVPageSize);
+            if (frames->wait != nullptr) {
+                frames->wait(frames->context, frame, first, after - first);
+            }
+            CausalSmallTInvocation ranged = invocation;
+            ranged.split_begin            = begin;
+            ranged.split_end              = end;
+            dispatch(ranged);
+            if (frames->consumed != nullptr) {
+                frames->consumed(frames->context, frame, first, after - first);
+            }
+            begin = end;
+        }
+    }
 
     constexpr int kReduceBlock = 256;
     constexpr int kDChunk      = Geometry::GroupSize == 6 ? 256 : 64;
@@ -463,27 +525,25 @@ void causal_attention_small_t_launch(const Tensor& q, const Tensor& k, const Ten
                                      float* partial_out, CausalSplitRange splits,
                                      const CausalAttentionFrameHook* frames) {
     if (cache.storage == KvCacheStorage::Fp8KeyNvfp4Value) {
+        // The asymmetric FP8-K/NVFP4-V route reduces with its own kernel and keeps the whole range:
+        // a streaming caller that cannot frame falls back to copying a layer at a time.
+        if (splits.begin != 0 || splits.end != 0 ||
+            (frames != nullptr && frames->splits_per_frame > 0)) {
+            throw std::invalid_argument(
+                "framed launches need an INT8-family cache (rk8v4, rk4v4, rk2v4, int8)");
+        }
         causal_attention_small_t_k8v4_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
                                              envelope, column_begin, width, partial_acc, partial_m,
-                                             partial_l, out, stream, partial_out, splits, frames);
-        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-            static int printed = 0;
-            if (printed < 32) {
-                ++printed;
-                std::fprintf(stderr,
-                             "[stream] small_t branch=k8v4 width=%d splits=[%d,%d) frames=%s\n",
-                             width, splits.begin, splits.end, frames == nullptr ? "no" : "yes");
-            }
-        }
+                                             partial_l, out, stream, partial_out);
         return;
     }
     if (splits.begin != 0 || splits.end != 0) {
         throw std::invalid_argument(
-            "a split range needs the asymmetric FP8-K/NVFP4-V small-T kernel");
+            "a split range needs an INT8-family cache (rk8v4, rk4v4, rk2v4, int8)");
     }
     if (frames != nullptr && frames->splits_per_frame > 0) {
         throw std::invalid_argument(
-            "framed launches need the asymmetric FP8-K/NVFP4-V small-T kernel");
+            "framed launches need an INT8-family cache (rk8v4, rk4v4, rk2v4, int8)");
     }
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
         causal_attention_small_t_fp8_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
@@ -510,7 +570,8 @@ void causal_attention_small_t_launch(const Tensor& q, const Tensor& k, const Ten
         }
     }
     const CausalAppendInput input{static_cast<const __nv_bfloat16*>(k.data),
-                                  static_cast<const __nv_bfloat16*>(v.data)};    const CausalSmallTInvocation invocation{
+                                  static_cast<const __nv_bfloat16*>(v.data)};
+    const CausalSmallTInvocation invocation{
         .valid_columns = valid_columns.data == nullptr ? nullptr : &valid_columns,
         .table_rows    = &table_rows,
         .full_width    = q.ne[2],
@@ -519,11 +580,13 @@ void causal_attention_small_t_launch(const Tensor& q, const Tensor& k, const Ten
         .batch_size    = q.ne[3],
         .partition     = causal_attention_key_partition(envelope, cache),
         .partial_out   = partial_out,
+        .split_begin   = splits.begin,
+        .split_end     = splits.end,
     };
     with_causal_query_geometry(q.ne[1], [&]<typename Geometry>() {
         causal_attention_small_t_launch_for<Geometry>(q, input, pos, scale, cache, invocation,
                                                       envelope, partial_acc, partial_m, partial_l,
-                                                      out, stream, gate);
+                                                      out, stream, gate, frames);
     });
 }
 
@@ -689,8 +752,27 @@ CausalAttentionFramePlan causal_attention_frame_plan(
     CausalAttentionExecutionEnvelope envelope, std::int32_t max_frames) {
     const auto q_heads = static_cast<std::int32_t>(geometry.query_heads);
     if (window_tokens <= 0) { return {}; }
-    const std::int32_t active = detail::causal_attention_active_splits(
-        q_heads, width, batch, window_tokens, storage, envelope);
+    // Only the INT8 family frames: it shares one small-T kernel and one reducer that write every
+    // split's partial into the slots a whole-range launch would (`small_t_i8_launch.cuh`,
+    // `causal_attention_small_t_reduce_output_kernel`). The asymmetric FP8-K/NVFP4-V route and the
+    // FP8, NVFP4 and BF16 small-T routes reduce with their own kernels and keep the whole range, so
+    // their caller copies a layer at a time.
+    if (!kv_cache_is_int8_family(storage)) { return {}; }
+    const detail::CausalKeyPartition partition{
+        .segment_keys = static_cast<std::int32_t>(envelope.invariant_segment_keys)};
+    const std::int32_t capacity =
+        detail::causal_attention_split_capacity(q_heads, width, storage, envelope, batch);
+    // The splits the kernel will launch, by the kernel's own rule, so a frame's page range is the
+    // range its launch reads instead of an estimate that drifts out of the ring (design 5.13).
+    const std::int32_t active = with_causal_query_geometry(q_heads, [&]<typename Geometry>() {
+        detail::CausalSmallTInvocation invocation{};
+        invocation.width            = width;
+        invocation.batch_size       = batch;
+        invocation.partition        = partition;
+        return detail::causal_attention_active_splits_for<Geometry>(
+            invocation, storage, q_heads, capacity, window_tokens,
+            static_cast<std::int32_t>(envelope.max_visible_keys));
+    });
     if (active <= 0) { return {}; }
     // A split is `kv_heads` CTAs, so one wave of the device is `sms / kv_heads` splits: fewer and a
     // launch leaves the device idle, more and it takes more than a wave (design 5.13.1).
@@ -708,14 +790,14 @@ CausalAttentionFramePlan causal_attention_frame_plan(
         if (splits < fewest) { splits = fewest; }
     }
     const std::int32_t frames = (active - 1) / splits + 1;
-    // The keys one split reads: the geometry's own tile count per split, rounded up, because a
-    // split covers `ceil(tiles / active)` whole tiles and the tiles past the window's end belong to
-    // no split. A frame is `splits` such spans, and the caller copies that many pages plus one on
-    // each side, which also covers a split that begins mid-page.
-    const std::int32_t tiles = 1 + (window_tokens - 1) / detail::kCausalSmallTK8v4TileKeys;
-    const std::int32_t units = (tiles - 1) / active + 1;
-    const std::int32_t keys  = splits * units * detail::kCausalSmallTK8v4TileKeys;
-    const std::int32_t pages = 1 + (keys - 1) / kPagedKVPageSize + 1;
+    // The keys one split reads, by the same rule the kernel partitions with
+    // (causal_small_t_partition_range): a segment of a segmented partition, else the page-rounded
+    // share of the window. It is uniform over splits, so a frame of `splits` of them is exactly
+    // `splits × split_keys` keys, and its pages are that divided by kPagedKVPageSize.
+    const std::int32_t split_keys =
+        detail::causal_attention_split_keys(partition, window_tokens, active);
+    const std::int32_t keys  = splits * split_keys;
+    const std::int32_t pages = (keys + kPagedKVPageSize - 1) / kPagedKVPageSize;
     return {frames, pages, splits};
 }
 

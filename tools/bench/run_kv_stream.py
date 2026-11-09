@@ -571,6 +571,31 @@ def apply_spec_override(argv: list[str], extra: Sequence[str]) -> list[str]:
     return out
 
 
+def with_pinned(argv: list[str], flag: str, value: str) -> list[str]:
+    """Replace a pinned flag's value instead of appending a second one.
+
+    `rk4v4` is the measured test stand-in; the delivery format is `rk8v4` (handoff 0.0), and a
+    record has to say which one it ran, so the override replaces the value in place and the argv
+    the record stores stays the one the process read.
+    """
+    out: list[str] = []
+    replaced = False
+    skip = False
+    for token in argv:
+        if skip:
+            skip = False
+            continue
+        if token == flag:
+            out += [flag, value]
+            replaced = True
+            skip = True
+            continue
+        out.append(token)
+    if not replaced:
+        out += [flag, value]
+    return out
+
+
 def request_argv(
     binary: Path,
     model: Path,
@@ -1346,6 +1371,7 @@ def command_footprint(args: argparse.Namespace) -> int:
             args.timeout,
             with_report=True,
             extra=extra,
+            dtype=args.kv_dtype,
         )
         memory = result.report.get("memory", {}) if result.report else {}
         stream = result.report.get("stream", {}) if result.report else {}
@@ -1441,6 +1467,7 @@ def command_window(args: argparse.Namespace) -> int:
             work / f"headroom-{headroom}",
             args.timeout,
             with_report=True,
+            dtype=args.kv_dtype,
         )
         stream = result.report.get("stream", {}) if result.report else {}
         entry = {
@@ -1665,6 +1692,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=3600.0)
     parser.add_argument("--allow-busy", action="store_true", help="run even if the card is in use")
+    parser.add_argument(
+        "--kv-dtype",
+        default="",
+        help=(
+            "override the pinned --kv-dtype rk4v4 (e.g. rk8v4, the delivery format); the record "
+            "keeps the value the run actually read"
+        ),
+    )
     parser.add_argument(
         "--no-logprobs",
         action="store_true",

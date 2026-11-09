@@ -38,6 +38,14 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
                           std::int32_t logical_capacity, std::int32_t implementation_window,
                           std::int32_t splits, std::int32_t wave_splits, Tensor& partial_acc,
                           Tensor& partial_m, Tensor& partial_l, cudaStream_t stream) {
+    // The splits this launch covers, `[split_begin, split_end)`, and the call's whole capacity: a
+    // sub-range launch writes the same partial slots over the same keys as a whole-range one, so
+    // `splits` is what the grid's width would otherwise have told the kernel (design 5.13).
+    const std::int32_t split_begin = invocation.split_begin;
+    const std::int32_t split_end =
+        invocation.split_end > 0 && invocation.split_end < splits ? invocation.split_end : splits;
+    const std::int32_t span = split_end - split_begin;
+    if (span <= 0) { return; }
     Tensor& cache_k       = cache.k_pages;
     Tensor& cache_v       = cache.v_pages;
     Tensor& cache_k_scale = cache.k_scale_pages;
@@ -47,6 +55,10 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
     const bool packed_values = cache_v.dtype == DType::U8;
 #if defined(NINFER_TIER_VOLTA)
     if (current_device_volta()) {
+        if (span != splits) {
+            throw std::invalid_argument(
+                "a split range needs the tiled kernel; this device runs the Volta one");
+        }
         // Volta's own kernel (small_t_sm70.cuh) takes every INT8-family storage: the same grid,
         // active splits and partial outputs. The tiled kernels below are the other tiers'; a build
         // of Volta alone does not compile them.
@@ -93,7 +105,7 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
     if constexpr (kBuildPostVolta) {
         auto launch = [&]<int WarpsPerCta, int MinBlocksPerSm, int KeyBlock, bool DynamicArena,
                           int QkSplit = 1, bool EarlyFetch = false>() {
-            const dim3 grid(q.ne[1] / Geometry::GroupSize, splits, invocation.batch_size);
+            const dim3 grid(q.ne[1] / Geometry::GroupSize, span, invocation.batch_size);
             constexpr std::size_t kDynamicBytes =
                 DynamicArena ? static_cast<std::size_t>(4 * KeyBlock * kCausalHeadDim) : 0u;
             auto issue_pv = [&]<bool PackedValues, KvKeyCoding Keys, bool PvF16>() {
@@ -125,7 +137,7 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
                         cache.block_tables.ne[0], invocation.full_width, invocation.column_begin,
                         logical_capacity, wave_splits, scale, static_cast<float*>(partial_acc.data),
                         static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data),
-                        invocation.partition);
+                        invocation.partition, split_begin, splits);
             };
             auto issue = [&]<bool PackedValues, KvKeyCoding Keys>() {
                 // Invariant reductions keep the products of every key tile in FP32.
@@ -175,7 +187,7 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
                                                                  Masked, CacheInput, PvF16>;
                 constexpr int kArena = CausalSmallTI8PipelinedShape::kArenaBytes;
                 raise_dynamic_shared_memory(kernel, kArena);
-                const dim3 grid(q.ne[1] / Geometry::GroupSize, splits, invocation.batch_size);
+                const dim3 grid(q.ne[1] / Geometry::GroupSize, span, invocation.batch_size);
                 kernel<<<grid, CausalSmallTI8PipelinedShape::kThreads, kArena, stream>>>(
                     static_cast<const __nv_bfloat16*>(q.data), input,
                     static_cast<const std::int32_t*>(pos.data),
@@ -192,7 +204,8 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
                         : static_cast<const std::int32_t*>(invocation.table_rows->data),
                     cache.block_tables.ne[0], invocation.full_width, invocation.column_begin,
                     logical_capacity, wave_splits, scale, static_cast<float*>(partial_acc.data),
-                    static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data));
+                    static_cast<float*>(partial_m.data), static_cast<float*>(partial_l.data),
+                    split_begin, splits);
             };
             if (small_t_pv_f16()) {
                 issue.template operator()<true>();

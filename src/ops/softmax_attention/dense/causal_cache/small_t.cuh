@@ -131,9 +131,12 @@ __host__ __device__ __forceinline__ int causal_small_t_default_splits(int window
 
 // wave_splits, when positive, is the launch's split count per full wave of CTAs: a count above it
 // drops to the fewest whole waves that still keep every split within kCausalSmallTSplitKeyLimit.
+// Host and device share it: the host sizes a streaming frame's page range from the same count the
+// kernel launches, so the copy and the launch cannot disagree (design 5.13).
 template <typename Geometry, bool Int8>
-__device__ __forceinline__ int causal_small_t_active_splits(int window, int launch_capacity,
-                                                            int tokens, int wave_splits = 0) {
+__host__ __device__ __forceinline__ int causal_small_t_active_splits(int window, int launch_capacity,
+                                                                    int tokens,
+                                                                    int wave_splits = 0) {
     if (window <= 0) { return launch_capacity; }
     int splits = 0;
     if constexpr (Int8) {

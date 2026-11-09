@@ -22,10 +22,6 @@ enum class CausalAttentionRoute { SmallT, ChunkedSmallT, Prompt };
 // block divides it.
 inline constexpr std::int32_t kPromptWaveRows = 128;
 
-// Keys of one K tile in the asymmetric FP8-K/NVFP4-V small-T route: the launch bakes this block
-// into its kernel, and the frame plan below reads a split's keys through it, so both name it here.
-inline constexpr std::int32_t kCausalSmallTK8v4TileKeys = 32;
-
 // Shared memory of the standard INT8-family prompt kernel's tile (prompt_i8.cuh), and whether the
 // blocks of a shape set hold it (ops/common/device_tier.h). Turing's 64 KiB do not: there every
 // INT8-family prompt runs on the fast kernel, and the "attn_pack_gqa" and "attn_prompt_fast"
@@ -99,13 +95,9 @@ std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t 
                                              CausalAttentionExecutionEnvelope envelope,
                                              std::int32_t batch_size = 1);
 
-// The splits a small-T call over `window_tokens` visible keys actually launches: the capacity above
-// capped by the geometry's policy for that window, which is what the kernel computes on the device.
-// A caller that feeds a layer's keys in frames needs it to know each frame's page range.
-std::int32_t causal_attention_active_splits(std::int32_t q_heads, std::int32_t tokens,
-                                            std::int32_t batch_size, std::int32_t window_tokens,
-                                            KvCacheStorage cache_storage,
-                                            CausalAttentionExecutionEnvelope envelope);
+// The splits a small-T call over `window_tokens` visible keys actually launches live in
+// small_t.cu (causal_attention_active_splits_for): a frame plan and the launch that reads it must
+// take the count from one function, including a segmented partition's one-per-segment rule.
 
 CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::int32_t width,
                                                     std::int32_t batch_size, KvCacheStorage storage,

@@ -1,3 +1,13 @@
+---
+id: kv-streaming-measurements
+type: architecture-design
+title: KV 流式测量存根：每条结论的日期、提交、命令与结果
+status: active
+parent: kv-streaming-design
+references:
+  - kv-streaming-worklog
+---
+
 # KV 流式：测量存根
 
 每条记录都是真实运行的输出，用来说明"当时为什么这么改"。设计结论在

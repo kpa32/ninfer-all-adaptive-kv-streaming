@@ -42,7 +42,7 @@ L6 是合并门槛。
 | ID | 检查 | 命令 / 判据 | 状态 | 证据 |
 |---|---|---|---|---|
 | C1 | 等价套件（`rk4v4`，8 K / 100 K / 183 K） | `run_kv_stream.py check --suite equiv` ⇒ 4/4，ids 与 logprobs 逐位 | **PASS** | `20261109T113826Z-equiv-s17-suite-c4b02ae2` |
-| C2 | `rk8v4` 逐位（110 K，全驻留装得下） | 同上，新增 `equiv-rk8v4` 用例 | 未跑 | — |
+| C2 | `rk8v4` 逐位（100 K，全驻留装得下） | `check --case equiv-100k-rk8v4` ⇒ ids 与 logprobs 逐位 | **PASS**（`20261109T163448Z-equiv-c2`，见 [measurements](kv-streaming-measurements.md) 表 3） |
 | C3 | `int8` 262 144 启动 + 512 token 稳态 | `bench --kv-dtype int8 --case stream-251k-steady` | 未跑 | — |
 | C4 | 262 144 prefill 逐位 | 251 K 上 resident(不可行)/流式 vs 金标 ids + 尾 token logprob | 未跑（183 K 已过） | C1 覆盖 183 K |
 | C5 | 活体重分区（迁移）逐位 | 训练期强制迁移一次，前后 512 token 逐位 | 未跑 | — |

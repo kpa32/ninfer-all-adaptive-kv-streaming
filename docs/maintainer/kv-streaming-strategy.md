@@ -242,7 +242,7 @@ references:
 |---|---|---|---|
 | Y1 | 251 K `rk4v4` decode 的上界 ≈ 46 ms/轮（86 tok/s），且要把暴露压到 0 才能到 | M3 | P1/P3 后仍 >48 ms 即预测错 |
 | Y2 | 251 K **开 CUDA Graph 不会超过 +1%**（很可能 −1…−3%） | M6 + 旧记录 −3% | P0 的 graph on/off 8 组样本 |
-| Y3 | prefill 的分阶段适配能让 `rk8v4` 的 prefill 流量从 582.9 GiB 降到 ≤450 GiB（窗口由 prefill 需求决定而不是 decode 需求） | M4 | P2 后 `stream.prefill.upload_bytes` |
+| Y3 | prefill 的分阶段适配能让 `rk8v4` 的 prefill 流量从 582.9 GiB 降到 ≤450 GiB（窗口由 prefill 需求决定而不是 decode 需求） | M4 | P2 后 `stream.prefill.upload_bytes` | **证伪（P1，`rk4v4`）**：环 1.10 → 1.0 只还出 8 页/层，251 K 实测 95.2 → 93.7 GiB（−1.6%）；`rk8v4` 的 −23% 需要窗口 +12%，池里没有那些页 |
 | Y4 | prefill 的**时间**几乎不会因流式而变（±1%），因为它被计算掩盖 | M5 | P1/P2 后同上下文 A/B |
 | Y5 | 跨轮预取（P3）在 `r=2.0` 下能让 251 K 每轮下降 4–8%，代价是 +4% 字节 | M2 的 `bytes=C/(L−r)`：`r 1.38→2.0` ⇒ 字节 +4.3% | P3 后逐轮样本 |
 | Y6 | `rk8v4` 的等价性可在 **110 K** 闭环（全驻留装得下），不必等更大显存的卡 | M1 在 110 K 的代入：`16 层 × 1719 页 × 104 448 B = 2.87 GB = 2.67 GiB`，加权重 11.6 GiB ⇒ 14.3 GiB，小于卡的 15.6 GiB 可用 | P6 录金标 + 同构建 resident/streamed 逐位 |
@@ -321,7 +321,7 @@ P3 才是重叠与调度器；P4 由图决定；P5 容量；P6 多请求与服�
 | 期 | 内容 | 上游对应 | 验收（可驳回） |
 |---|---|---|---|
 | **P0** | 基线 + 可视化：graph on/off 各一组（183 K、251 K × `rk4v4`、`rk8v4`）；报告写进布局形状（uniform/concentrated）、`entering_decode_layout`、repartition 次数、**每层窗口**。**并入合规快项**：`docs/cli.md` 补 `--kv-stream`、README What's New 一行、注册 `test_kv_stream_span_tuner.cpp`、`kv_stream_signal.cu` 的 oracle 测试 + `compute-sanitizer` racecheck/synccheck、env 旋钮定性、文档结构整改方案（把日期日志移出 `docs/`） | M6、Y2、`CONTRIBUTING.md:184/193/200` | 8 组样本落盘并验证 Y2；四项门禁全绿（CTest 含新测试、sanitizer 无报错、`docs/cli.md` 有条目、What's New 有行） |
-| **P1** | **分阶段布局**：prompt 用 uniform、decode 用 concentrated、下一个 prompt chunk 回退 uniform；布局代数进表发布与图缓存键；`aee6bb66c` 的 ubatch 组合（256/512/768/1024）各跑一次。上游三个 prefill 提交**不移植**（理由见 §9.4 的判定：本机 prefill 只慢 0.3%、计算侧暴露 0，且我们的 staging 已是每次 128 页一次 memcpy） | R9、R12、§9.4 | 251 K prefill 流量按 M4 下降、时间不变差（Y3/Y4）；ubatch 四档各跑通；decode 不退 |
+| **P1** | **分阶段布局**：prompt 用 uniform、decode 用 concentrated、下一个 prompt chunk 回退 uniform；布局代数进表发布与图缓存键；`aee6bb66c` 的 ubatch 组合（256/512/768/1024）各跑一次。上游三个 prefill 提交**不移植**（理由见 §9.4 的判定：本机 prefill 只慢 0.3%、计算侧暴露 0，且我们的 staging 已是每次 128 页一次 memcpy） | R9、R12、§9.4 | **完成（布局切换）**：池启动即 prompt 形状（uniform、环 1.0），decode 首轮进入 1.10，`layout_generation=1`；251 K prefill 上载 95.2 → 93.7 GiB（−1.6%）、prefill 1285 → 1286 tok/s、decode 54.5 vs 54.4 ms。**Y3 证伪**（−23% 需窗口 +12%，池不允许）。ubatch 四档未跑 |
 | **P2** | 每 chunk 适配（prefill 也跑控制器与阶梯）+ 写路径脏行/镜像（`f0957c082` 的"稳定页"） | R8、R10 | prefill 期出现 `[partition]`；回写 ≤ 脏页量；251 K/183 K 逐位不变 |
 | **P3** | **跨轮重叠**（这是 251K 最后一个杠杆，上限已算清）：本轮把下一轮的头几层拷贝在**本轮末**发出，用生产者依赖（拷贝等"写该页的 attention"完成）与槽位所有权保证安全。前置事实：池已是卡上限（启动后剩 53.5 MiB）、拷贝 47.2 ms 已在 24.7 GB/s、重叠已达 33 ms、天花板 47.2 ms（= 86 tok/s） | 引（R5/R11）、C8 | 251 K 每轮中位 ≤ 50 ms（对 54.4 基线 ≥8%）且 `check --case equiv-183k` 与 251 K 逐位 PASS；失败则明确否掉并记录 |
 | **P4** | CUDA Graph：按 P0 的 Y2 决定补图内换页或维持关图（维持必须写清代价） | R11、C7 | 251 K `rk4v4` 不慢于 72.8 tok/s；graph vs eager 512/512 逐位 |

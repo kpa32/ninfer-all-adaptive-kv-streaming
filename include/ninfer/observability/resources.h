@@ -208,7 +208,7 @@ struct StreamedKvStats {
     std::uint32_t resident_pages = 0; // window pages per layer
     std::uint32_t streamed_pages = 0; // pages outside the window at the last round
     std::uint32_t layers         = 0;
-    std::uint32_t ring_depth     = 0;
+    std::uint32_t ring_runs      = 0;  // copy/consume runs the shared ring holds
     std::uint32_t pages_per_layer = 0; // logical pages of one layer at the planned capacity
     std::uint64_t page_bytes      = 0; // one page of one layer, every plane
     std::uint64_t host_bytes      = 0; // pinned authority: every page of every layer

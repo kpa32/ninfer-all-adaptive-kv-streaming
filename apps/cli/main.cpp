@@ -242,7 +242,7 @@ void print_generation_summary(const ninfer::GenerationResult& result,
                                          format_bytes(streamed.window_bytes) + ")");
         print_metric("stream outside window",
                      std::to_string(streamed.streamed_pages) + " pages");
-        print_metric("stream ring", std::to_string(streamed.ring_depth) + " regions, " +
+        print_metric("stream ring", std::to_string(streamed.ring_runs) + " runs, " +
                                        format_bytes(streamed.ring_bytes));
         print_metric("stream host KV", format_bytes(streamed.host_bytes) + " pinned");
         print_metric("stream device KV", format_bytes(streamed.device_bytes));

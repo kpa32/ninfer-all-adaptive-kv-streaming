@@ -2181,8 +2181,9 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
         if (stream_span_tuner_.selected() && !stream_ladder_reported_) {
             stream_ladder_reported_ = true;
             if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-                std::fprintf(stderr, "[stream] ladder measured %zu steps, chose %u runs per launch of %u, mean %.2f ms
-",
+                std::fprintf(stderr,
+                             "[stream] ladder measured %zu steps, chose %u runs per launch of %u, "
+                             "mean %.2f ms\n",
                              stream_span_tuner_.trials(),
                              stream_span_tuner_.chosen_runs_per_frame(),
                              kv_stream_space_->runs_per_layer(),

@@ -46,7 +46,7 @@ L6 是合并门槛。
 | C3 | `int8` 262 144 启动 + 512 token 稳态 | `bench --kv-dtype int8 --case stream-251k-steady` | **PASS**：236.1 ms/轮、16.8 tok/s、5483 MiB/轮、暴露 203 ms；prefill 1331 tok/s | 见 [measurements](kv-streaming-measurements.md) 表 1、表 2 |
 | C4 | 262 144 prefill 逐位 | 251 K 上 resident(不可行)/流式 vs 金标 ids + 尾 token logprob | **PASS**：`check --case stream-251k`（`20261109T183207Z-equiv-e524df8a`），ids 与 `golden/stream-251k.ids` 相同，logprobs 的 sha256 `8a06a1d4…` 与金标一致 | 金标为 `oracle: self`（原版在 262 K 起不来），因此这是同构建回归，不是与原版的等价 |
 | C5 | 活体重分区（迁移）逐位 | 训练期强制迁移一次，前后 512 token 逐位 | **PASS**：`check --case stream-150k-tight`（`20261109T184516Z-equiv-4c511b31`）里流式臂跑了 4 次迁移（`layout_generation=4`，两次 `[partition] trial start` + 两次 `revert`），512 token 的 ids 与 logprobs 仍与金标逐位相同 | 金标为 `oracle: self`；迁移由现有控制器提案，未新增开关 |
-| C6 | 零窗口 / `ratio=1.0` 可规划且可跑 | 单测 ∈ L1；GPU 需一次 `--kv-stream-ring-ratio 1.0` 跑通 | 半（仅 L1） | `test_kv_stream_layout` |
+| C6 | 零窗口 / `ratio=1.0` 可规划且可跑 | 单测 ∈ L1；GPU 需一次 `--kv-stream-ring-ratio 1.0` 跑通 | **半**：L1 的零窗口与 `ratio=1.0` 规划全过；GPU 侧的 `--kv-stream-ring-ratio` 已在 `6a44fc25` 移除（扫描可能规划出错误切分），原判据无法复现。用 `--kv-headroom-mib 3072` 的极限池验证了窗口收缩路径可跑（761 页/层、`streamed_pages=0`、upload=0），零窗口本身仍只由 L1 覆盖 | 要恢复 GPU 判据，需先恢复一个“只给诊断用”的 ratio 旗标 |
 | C7 | 一进程两请求（`reset()` 路径） | `7dc5fccd5` 的串行提示场景，逐位 | 未跑 | — |
 | C8 | graph vs eager 逐位 | `--no-cuda-graph` 对照 | 未跑（依赖 P4） | — |
 | C9 | 环→表→attention 字节一致 | `NINFER_STREAM_VERIFY=1` 逐字节 oracle | 手动可用，**未入 CTest** | `bench/results/kv-stream/ledger.md` |

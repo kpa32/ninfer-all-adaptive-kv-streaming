@@ -64,6 +64,40 @@ struct KVStreamSplit {
     }
 };
 
+// Which shape a split has. Three plans read the same `resident_pages` (the narrowest window), so the
+// report has to carry the shape as well: only it says whether a record ran the reference's decode
+// layout (streams concentrated into a few layers, the rest fully resident) or the uniform one, and
+// only it tells a reader whether `resident_pages * layers` is the window's size at all.
+enum class KVStreamShape { all_resident, uniform, concentrated };
+
+[[nodiscard]] inline KVStreamShape kv_stream_shape_of(const std::vector<std::uint32_t>& layer_resident,
+                                                      std::uint32_t active_pages) noexcept {
+    if (layer_resident.empty()) { return KVStreamShape::uniform; }
+    const std::uint32_t first = layer_resident.front();
+    bool same              = true;
+    bool any_streaming     = false;
+    for (const std::uint32_t pages : layer_resident) {
+        if (pages != first) { same = false; }
+        if (pages < active_pages) { any_streaming = true; }
+    }
+    if (!any_streaming) { return KVStreamShape::all_resident; }
+    return same ? KVStreamShape::uniform : KVStreamShape::concentrated;
+}
+
+[[nodiscard]] inline KVStreamShape kv_stream_shape(const KVStreamSplit& split,
+                                                   std::uint32_t active_pages) noexcept {
+    return kv_stream_shape_of(split.layer_resident, active_pages);
+}
+
+[[nodiscard]] inline const char* kv_stream_shape_name(KVStreamShape shape) noexcept {
+    switch (shape) {
+        case KVStreamShape::all_resident: return "all-resident";
+        case KVStreamShape::concentrated: return "concentrated";
+        case KVStreamShape::uniform: break;
+    }
+    return "uniform";
+}
+
 // Ring slots relative to one layer's streamed pages. Above one leaves room to begin the next layer
 // early; the reference's measured default is 1.10 (`llama-kv-stream-plan.h`). The default is a
 // parameter everywhere because the ratio is a measured trade on the card in hand (bytes against

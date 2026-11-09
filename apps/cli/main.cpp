@@ -240,6 +240,20 @@ void print_generation_summary(const ninfer::GenerationResult& result,
                                          format_bytes(streamed.page_bytes) + "/page");
         print_metric("stream window", std::to_string(streamed.resident_pages) + " pages/layer (" +
                                          format_bytes(streamed.window_bytes) + ")");
+        if (streamed.shape != 0) {
+            std::uint32_t least = streamed.layer_resident.empty() ? streamed.resident_pages
+                                                                  : streamed.layer_resident.front();
+            std::uint32_t most  = least;
+            for (const std::uint32_t pages : streamed.layer_resident) {
+                if (pages < least) { least = pages; }
+                if (pages > most) { most = pages; }
+            }
+            print_metric("stream layout", std::string(ninfer::kv_stream_shape_label(streamed.shape)) +
+                                              ", window " + std::to_string(least) +
+                                              ".." + std::to_string(most) + " pages/layer, " +
+                                              std::to_string(streamed.layout_generation) +
+                                              " boundary moves");
+        }
         print_metric("stream outside window",
                      std::to_string(streamed.streamed_pages) + " pages");
         print_metric("stream run", std::to_string(streamed.run_pages) + " pages, " +

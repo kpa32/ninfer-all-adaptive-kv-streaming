@@ -216,6 +216,15 @@ struct StreamedKvStats {
     std::uint64_t device_bytes    = 0; // pool slots this space owns
     std::uint64_t window_bytes    = 0; // device bytes the resident windows hold
     std::uint64_t ring_bytes      = 0; // device_bytes - window_bytes
+    // The layout the record ran in. `resident_pages` is the narrowest window, which is the same
+    // number for every shape; the per-layer windows, the frontier they were measured against and the
+    // number of boundary moves are what identify it.
+    std::vector<std::uint32_t> layer_resident;
+    std::uint32_t active_pages      = 0;
+    std::uint32_t layout_generation = 0;
+    // 0 = no round ran yet, 1 = all-resident, 2 = uniform, 3 = concentrated. A scalar rather than a
+    // string because this struct crosses the model/runtime boundary by value; the label is derived.
+    std::uint32_t shape             = 0;
     std::uint64_t rounds          = 0;
     std::uint64_t upload_bytes    = 0;
     std::uint64_t download_bytes  = 0;
@@ -240,5 +249,16 @@ struct StreamedKvStats {
     double copy_busy_ratio          = 0.0;
     std::vector<StreamedKvRoundSample> round_samples;
 };
+
+// The label a report prints for `StreamedKvStats::shape`.
+[[nodiscard]] inline const char* kv_stream_shape_label(std::uint32_t shape) noexcept {
+    switch (shape) {
+        case 1: return "all-resident";
+        case 2: return "uniform";
+        case 3: return "concentrated";
+        default: break;
+    }
+    return "";
+}
 
 } // namespace ninfer

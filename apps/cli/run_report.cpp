@@ -93,6 +93,12 @@ json stream_stats(const StreamedKvStats& stream) {
     json out;
     out["enabled"]           = true;
     out["resident_pages"]    = stream.resident_pages;
+    out["layer_resident"]    = stream.layer_resident;
+    // The live frontier is reset when the request ends, so an absent value says "not recorded", not
+    // "zero pages": printing 0 would read as an empty context beside a full round series.
+    if (stream.active_pages != 0) { out["active_pages"] = stream.active_pages; }
+    if (stream.shape != 0) { out["shape"] = kv_stream_shape_label(stream.shape); }
+    out["layout_generation"] = stream.layout_generation;
     out["streamed_pages"]    = stream.streamed_pages;
     out["layers"]            = stream.layers;
     out["ring_runs"]         = stream.ring_runs;

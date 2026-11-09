@@ -8,12 +8,17 @@
 
 namespace {
 
+using ninfer::KVStreamShape;
 using ninfer::KVStreamSlotMap;
 using ninfer::KVStreamSplit;
+using ninfer::kv_stream_all_resident;
 using ninfer::kv_stream_pool_pages;
 using ninfer::kv_stream_ring_runs;
 using ninfer::kv_stream_runs_of_layer;
 using ninfer::kv_stream_runs_per_layer;
+using ninfer::kv_stream_shape;
+using ninfer::kv_stream_shape_name;
+using ninfer::kv_stream_shape_of;
 using ninfer::kv_stream_window_slot;
 using ninfer::kv_stream_window_start;
 using ninfer::plan_kv_stream_split;
@@ -194,6 +199,35 @@ void refuses_what_it_cannot_serve() {
     }
 }
 
+// The report tells three plans apart, and it has to: all three carry the same narrowest window, so a
+// record's shape is the only field that says whether its round time belongs beside another's.
+void the_shape_is_what_identifies_the_layout() {
+    constexpr std::uint32_t kPages  = 128;
+    constexpr std::uint32_t kLayers = 8;
+    const auto full = kv_stream_all_resident(kPages, kLayers, 8);
+    check(kv_stream_shape(full, kPages) == KVStreamShape::all_resident,
+          "a pool that holds the context is all-resident");
+    const auto uniform = plan_kv_stream_uniform(kLayers * 40, kPages, kLayers, 8);
+    check(uniform.has_value(), "a partial pool plans");
+    if (uniform) {
+        check(kv_stream_shape(*uniform, kPages) == KVStreamShape::uniform,
+              "equal windows are the uniform shape");
+    }
+    // The same narrowest window as `uniform`, but one layer keeps the whole context: this is the
+    // reference's decode layout, and `resident_pages * layers` under-reports its window.
+    KVStreamSplit mixed;
+    mixed.layer_resident.assign(kLayers, 40);
+    mixed.layer_resident[0] = kPages;
+    mixed.ring_pages        = 8;
+    mixed.run_pages         = 8;
+    check(kv_stream_shape(mixed, kPages) == KVStreamShape::concentrated,
+          "a fully resident layer beside a windowed one is the concentrated shape");
+    check(std::string(kv_stream_shape_name(kv_stream_shape(mixed, kPages))) == "concentrated",
+          "the shape names itself for the report");
+    check(kv_stream_shape_of({}, kPages) == KVStreamShape::uniform,
+          "an empty plan falls back to uniform rather than claiming all-resident");
+}
+
 } // namespace
 
 int main() {
@@ -207,6 +241,7 @@ int main() {
     a_context_that_fits_needs_no_ring();
     re_sizing_follows_the_context();
     refuses_what_it_cannot_serve();
+    the_shape_is_what_identifies_the_layout();
     if (!failures.empty()) {
         for (const auto& [message, count] : failures) {
             std::cerr << "FAIL (" << count << "x): " << message << '\n';

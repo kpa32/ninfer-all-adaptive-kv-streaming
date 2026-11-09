@@ -218,6 +218,12 @@ public:
         std::uint64_t deadline_misses    = 0;
         std::uint64_t copy_busy_windows  = 0;
         double copy_busy_ratio           = 0.0;
+        // The geometry of the layout in force, which a round time is only comparable inside: the
+        // per-layer window (a concentrated plan gives different layers different windows), the
+        // frontier those windows are measured against, and how many times the boundary moved.
+        std::vector<std::uint32_t> layer_resident;
+        std::uint32_t active_pages       = 0;
+        std::uint32_t layout_generation  = 0;
         std::vector<RoundSample> round_samples;
     };
 

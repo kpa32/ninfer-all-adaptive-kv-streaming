@@ -890,6 +890,11 @@ StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
     out.deadline_misses   = deadline_misses_;
     out.copy_busy_windows = copy_busy_windows_;
     out.copy_busy_ratio   = copy_busy_ratio_;
+    // The shape a round ran in: every measurement is only comparable inside one, and the report is
+    // the only place a campaign can learn which one produced it.
+    out.layer_resident      = split_.layer_resident;
+    out.active_pages        = active_;
+    out.layout_generation   = layout_generation_;
     out.timing_samples = timing_samples_;
     out.timing_lost    = timing_lost_;
     if (report_) {

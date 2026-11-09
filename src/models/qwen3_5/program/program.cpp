@@ -771,9 +771,26 @@ StreamedKvStats Program::streamed_kv_stats() {
     out.page_bytes      = stats.page_bytes;
     out.host_bytes      = stats.host_bytes;
     out.device_bytes    = stats.device_bytes;
-    out.window_bytes    = static_cast<std::uint64_t>(stats.resident_pages) * stats.page_bytes *
-                       stats.layers;
-    out.ring_bytes       = stats.device_bytes - out.window_bytes;
+    out.layer_resident  = stats.layer_resident;
+    out.active_pages    = stats.active_pages;
+    out.layout_generation = stats.layout_generation;
+    // The shape is derived, never assumed: three plans share the narrowest-window number this report
+    // has always carried, so a record has to say which one it ran before its round time is compared
+    // with another record's. It is measured against the planned capacity, not the live frontier: the
+    // frontier is reset when the request ends, while the layout the request ran in is not.
+    out.shape = static_cast<std::uint32_t>(
+                    kv_stream_shape_of(stats.layer_resident, stats.pages_per_layer)) +
+                1U;
+    // The window is the sum of the per-layer windows: with a concentrated plan the layers hold
+    // different numbers of pages, so `resident_pages * layers` under-reports it.
+    std::uint64_t resident_pages_total = 0;
+    if (!stats.layer_resident.empty()) {
+        for (const std::uint32_t pages : stats.layer_resident) { resident_pages_total += pages; }
+    } else {
+        resident_pages_total = std::uint64_t(stats.resident_pages) * stats.layers;
+    }
+    out.window_bytes = resident_pages_total * stats.page_bytes;
+    out.ring_bytes   = stats.device_bytes > out.window_bytes ? stats.device_bytes - out.window_bytes : 0;
     out.rounds           = stats.rounds;
     out.upload_bytes     = stats.upload_bytes;
     out.download_bytes   = stats.download_bytes;

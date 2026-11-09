@@ -476,6 +476,15 @@ It serves one sequence on one device with a pool sized from measured free memory
 retain or checkpoint context; any other combination is rejected at startup with the flag that fixes
 it (`--max-concurrency 1`, one device, `--kv-capacity auto`, `--no-prefix-reuse`).
 
+A streamed pool is divided by the phase a pass runs in: a prompt keeps the ring at one layer's
+extent (its copies are hidden behind its own attention, so a deeper ring would only take window
+away), and the first decode round moves to the deeper ring that overlaps it. On a 16 GB card at
+251 K that leaves prompt and decode each measured at their best shape; the switch costs one page
+migration per request. `--prefill-chunk` also sizes the prompt's workspace out of the same pool, so
+`--kv-stream` wants 256 or 512: at 1024 the workspace takes 202 MiB of window on a 251 K context and
+a decode round takes 63.9 ms instead of 54.1 ms (see [measurements](maintainer/kv-streaming-measurements.md)
+table 7).
+
 `--kv-stream-report` additionally times the copies and the compute they exposed, per round and per
 layer, and writes them to `--report-json`. The timing events cost device time of their own, so a run
 that is not being measured does not record them.

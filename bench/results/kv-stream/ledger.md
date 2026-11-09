@@ -159,3 +159,28 @@
 
 **顺带修掉的潜伏崩溃**：`repartition()` 改 `ring_runs_` 却不扩 `ready_run_`/`consumed_run_` 事件数组，
 环一变大即越界（SIGSEGV）。已加 `grow_events()`。
+
+## 决策记录：251K 的池已经是卡的上限，剩余空间只有"跨轮重叠"那 7 ms
+
+给每轮加"轮边界空档"字段（compute 起点到本轮首个 copy 的设备时间差）时得到的真实结论，与预期不同：
+
+| 量 | 值 | 出处 |
+|---|---:|---|
+| 每轮拷贝时间 | 47.2 ms | `rounds_series[].copy_seconds` |
+| 每轮时间（中位） | 54.4 ms | `decode_rounds` |
+| 计算侧暴露 | 14.4 ms | `rounds_series[].exposed_seconds` |
+| 启动后剩余显存 | **53.5 MiB** | `memory.available_after_startup_bytes` |
+| 规划留白 | 64 MiB | `memory.planned_slack_bytes` |
+| 池负载 | 3.55 GiB | `memory.kv_payload_bytes` |
+
+推论（都不需要新探针）：
+
+1. **池已经是上限**：3.85 GiB 可用里 3.55 GiB 全给池，只剩 53.5 MiB。`kDefaultKvStreamHeadroomBytes` 默认
+   就是 64 MiB（`include/ninfer/base.h:70`），bench 用例里 1008 MiB 只用于 183K 的对齐。**没有可回收的窗口**。
+2. **拷贝已在链路速度**：1113 MiB ÷ 47.2 ms = 24.7 GB/s（标定 25.4）。⇒ 每轮字节是物理下限。
+3. **重叠已经做了大半**：`copy 47.2 + compute ≈ 40 − round 54.4 ≈ 33 ms` 已经重叠；剩下 7.2 ms 未重叠。
+4. 因此 251K 的天花板就是 `max(拷贝 47.2, 计算 40) ≈ 47.2 ms`（≈ 86 tok/s），**只剩跨轮预取那 7 ms 可拿**。
+
+**仪表的处置**：该字段用 `cudaEventElapsedTime` 读"上一轮的 compute 起点 ↔ 本轮首个 copy"，主机跑在
+设备前面时事件未完成，读到的是 0 —— 而它想证的东西已被表中的四个数界住，所以整套探针**撤回**
+（不进树）。要证"跨轮预取有用"，直接看每轮时间是否从 54.4 掉到 47–50 即可。

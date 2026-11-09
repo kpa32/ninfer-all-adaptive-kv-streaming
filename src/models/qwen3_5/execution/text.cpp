@@ -1470,125 +1470,6 @@ void TextContext::mtp_propose_batch(const Tensor& hidden, Tensor& logits, Tensor
     proposal_argmax(hidden, logits, draft_tokens);
 }
 
-// Copies the frames of `feed` up to and including `frame`: one frame is one run of copies, because
-// the frame is already the unit sized to the gap between two launches - splitting it further only
-// adds the stream waits that order it, and measured that cost more than it hid. Issuing a frame
-// twice is avoided by `issued`, and a frame whose pages are all resident moves nothing while still
-// recording the event its launch waits on.
-void feed_stream_frames(StreamFrameFeed& feed, std::int32_t frame) {
-    if (feed.space == nullptr || feed.page_width <= 0) { return; }
-    static const bool debug = std::getenv("NINFER_STREAM_DEBUG") != nullptr;
-    for (; feed.issued <= frame; ++feed.issued) {
-        // The plan's width is the frame's own page span (`causal_attention_frame_plan`), and one
-        // spare page on each side covers a launch whose first key is not the first key of that
-        // page. Copying a page twice costs a copy of it; leaving one out is a wrong result.
-        const std::int32_t first = feed.issued * feed.page_width - 1;
-        const std::int32_t last  = first + feed.page_width + 2;
-        const std::uint32_t moved = feed.space->upload_frame(
-            feed.layer, static_cast<std::uint32_t>(feed.issued), first, last - first, feed.copy,
-            false);
-        feed.space->seal_frame(feed.layer, static_cast<std::uint32_t>(feed.issued), feed.copy);
-        if (debug) {
-            std::fprintf(stderr, "[stream] layer=%u frame=%d pages=[%d,%d) moved=%u window=%u\n",
-                         feed.layer, feed.issued, first, last, moved,
-                         feed.space->window_start());
-        }
-    }
-}
-
-void stream_frame_wait(void* context, std::int32_t frame, std::int32_t, std::int32_t) {
-    auto& feed = *static_cast<StreamFrameFeed*>(context);
-    // Everything this layer reads was queued before the call started (`feed_stream_frames`), so the
-    // wait is the only ordering left. A frame past the last one that moved pages reads resident keys
-    // only and waits for nothing.
-    if (frame > feed.sealed_frame) { return; }
-    feed.space->wait_ready_frame(feed.layer, static_cast<std::uint32_t>(frame), feed.compute);
-}
-
-void stream_frame_consumed(void* context, std::int32_t frame, std::int32_t, std::int32_t) {
-    auto& feed = *static_cast<StreamFrameFeed*>(context);
-    // The ring slots this frame read are the ones the layer `ring_depth` back wrote, so the copy
-    // that refills them waits on this event. A frame that copied nothing wrote none.
-    if (frame > feed.sealed_frame) { return; }
-    CUDA_CHECK(cudaEventRecord(
-        feed.space->consumed_frame_event(feed.layer, static_cast<std::uint32_t>(frame)),
-        feed.compute));
-}
-
-void TextContext::plan_stream_round(std::int32_t width) {
-    stream_framed_round_   = false;
-    stream_window_tokens_  = 0;
-    stream_splits_per_frame_ = 0;
-    stream_frame_pages_    = 0;
-    stream_frame_count_    = 0;
-    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-        static int printed = 0;
-        if (printed < 12) {
-            ++printed;
-            std::fprintf(stderr,
-                         "[stream] plan.entry width=%d space=%d kv=%d envelope=%d layers=%zu\n",
-                         width, kv_stream_space_ != nullptr ? 1 : 0,
-                         batch_text_kv_ != nullptr ? 1 : 0,
-                         active_causal_attention_envelope_ != nullptr ? 1 : 0,
-                         config_.layer_types.size());
-        }
-    }
-    if (kv_stream_space_ == nullptr || batch_text_kv_ == nullptr ||
-        active_causal_attention_envelope_ == nullptr || width <= 0) {
-        return;
-    }
-    // Framing is opt-in, because it measured slower than copying a layer at 251K on this card
-    // (M-12: 64.0-67.7 tok/s against 69.2): the link, not the exposed wait, is the binding
-    // constraint there, and the extra launches and stream events cost more than the overlap buys.
-    // The delivered round copies a layer at a time; NINFER_STREAM_FRAMES=1 runs the framed path.
-    if (std::getenv("NINFER_STREAM_FRAMES") == nullptr) { return; }
-    // A measurement knob, not a product option: it makes one build copy a layer at a time so a
-    // campaign can price framing against that on the same binary (design 5.13.2).
-    if (std::getenv("NINFER_STREAM_NO_FRAMES") != nullptr) { return; }
-    // Every streaming layer reads the same cache, so the first full-attention layer names the
-    // storage the round's launches will take.
-    std::uint32_t full = 0;
-    while (full < config_.layer_types.size() && config_.layer_types[full] != MixerKind::FullAttention) {
-        ++full;
-    }
-    if (full == config_.layer_types.size()) { return; }
-    const std::size_t kv_rank =
-        stage_runtime_ != nullptr && stage_runtime_->tensor_parallel ? tensor_rank_ : 0;
-    const PagedKVBatchLayerView view = batch_text_kv_->batch_layer_view(full, kv_rank);
-    // The keys the round sees: the frontier's pages, which is what the caller states to the op
-    // instead of it reading device metadata back.
-    const auto window_tokens = static_cast<std::int32_t>(
-        kv_stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize));
-    if (window_tokens <= 0) { return; }
-    const auto geometry = ops::AttentionHeadGeometry{
-        dimension(config_.attention->head_dim),
-        dimension(config_.attention->num_attention_heads),
-        dimension(config_.attention->num_key_value_heads)};
-    ops::CausalAttentionExecutionEnvelope envelope = *active_causal_attention_envelope_;
-    envelope.invariant_segment_keys                = batch_text_kv_->attention_segment_keys();
-    const auto plan = ops::causal_attention_frame_plan(
-        geometry, width, 1, window_tokens, 0, view.storage, envelope,
-        static_cast<std::int32_t>(StreamedKVSpace::kFrameSlots));
-    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-        std::fprintf(stderr,
-                     "[stream] plan width=%d window=%d storage=%d frames=%d pages=%d spf=%d\n",
-                     width, window_tokens, static_cast<int>(view.storage), plan.frames, plan.pages,
-                     plan.splits_per_frame);
-    }
-    if (plan.frames <= 1 || plan.splits_per_frame <= 0 || plan.pages <= 0) { return; }
-    stream_framed_round_     = true;
-    stream_window_tokens_    = window_tokens;
-    stream_splits_per_frame_ = plan.splits_per_frame;
-    stream_frame_pages_      = plan.pages;
-    stream_frame_count_      = plan.frames;
-    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-        std::fprintf(stderr,
-                     "[stream] round frames=%d pages=%d spf=%d window=%d storage=%d\n", plan.frames,
-                     plan.pages, plan.splits_per_frame, window_tokens,
-                     static_cast<int>(view.storage));
-    }
-}
-
 void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase ph) {
     const auto& p  = std::get<AttentionParameters>(w.mixer);
     cudaStream_t s = ctx_.stream;
@@ -1688,40 +1569,6 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
     const bool rotated_output = rotated(p.output.hadamard_signs);
     const Tensor& kv_table_rows =
         active_kv_table_rows_ != nullptr ? *active_kv_table_rows_ : io_.text_kv_table_row;
-    // A streaming decode feeds this layer's keys a frame at a time so its copies run under its own
-    // launches instead of only under the next layer's (design 5.13.2). The frame geometry is the
-    // round's (`plan_stream_round`), so every layer of a round copies the same width and the caller
-    // has already decided - before it copied - that this round frames. One sequence only: a
-    // speculative decode states its batch as one, so single-sequence is `<= 1`, not `== 0`.
-    ops::CausalAttentionFrameHook frame_hook{};
-    const ops::CausalAttentionFrameHook* framed  = nullptr;
-    const auto stream_layer                      = static_cast<std::uint32_t>(fidx);
-    if (stream_framed_round_ && !positions && active_sequence_batch_ <= 1 &&
-        ph != Phase::Prefill && stream_layer < stream_feeds_.size()) {
-        StreamFrameFeed& feed = stream_feeds_[stream_layer];
-        feed.page_width       = stream_frame_pages_;
-        feed.compute          = s;
-        // The whole layer is queued before its first launch: the link is then busy for the layer's
-        // whole copy while the launches read it frame by frame, which is the only arrangement in
-        // which a copy never waits for a launch and a launch never waits for a copy it could have
-        // started earlier (design 5.13.2).
-        feed_stream_frames(feed, stream_frame_count_ - 1);
-        frame_hook = ops::CausalAttentionFrameHook{stream_window_tokens_, stream_splits_per_frame_,
-                                                   stream_frame_wait, stream_frame_consumed, &feed};
-        framed     = &frame_hook;
-        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-            static int printed = 0;
-            if (printed < 40) {
-                ++printed;
-                std::fprintf(stderr,
-                             "[stream] attn layer=%u active=%u T=%d window=%d frames=%d "
-                             "pages=%d spf=%d batch=%d\n",
-                             stream_layer, kv_stream_space_->active_pages(), T,
-                             stream_window_tokens_, stream_frame_count_, stream_frame_pages_,
-                             stream_splits_per_frame_, active_sequence_batch_);
-            }
-        }
-    }
     if (active_sequence_batch_ != 0) {
         const std::int32_t width = active_sequence_width_;
         if (width <= 0 || width * active_sequence_batch_ != T) {
@@ -1757,7 +1604,7 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
             static_cast<float>(1.0 / std::sqrt(static_cast<double>(config.attention->head_dim))),
             batch_text_kv_->batch_layer_view(fidx, kv_rank), envelope, work_, a_batch, s,
             rotated_output || positions ? nullptr : &gate_batch, positions ? &partial : nullptr,
-            framed);
+            nullptr);
     } else if (!active_segments_.empty()) {
         // Each segment attends over its own sequence exactly as its prefill alone would.
         for (const SegmentBinding& segment : active_segments_) {
@@ -1791,20 +1638,7 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
              dimension(config.attention->num_key_value_heads)},
             static_cast<float>(1.0 / std::sqrt(static_cast<double>(config.attention->head_dim))),
             cache_view, envelope, work_, a, s,
-            rotated_output || positions ? nullptr : &gate, positions ? &partial : nullptr, framed);
-    }
-    if (framed != nullptr) {
-        // The next layer's frames follow this layer's on the copy stream, now that this layer's
-        // launches are all enqueued: at a layer boundary the link then has the next layer's copy
-        // ready to start the moment this layer's last launch is enqueued, instead of waiting for
-        // that layer's first launch to ask for it.
-        const auto next_layer = static_cast<std::size_t>(fidx) + 1;
-        if (next_layer < stream_feeds_.size()) {
-            StreamFrameFeed& next = stream_feeds_[next_layer];
-            next.page_width       = stream_frame_pages_;
-            next.compute          = s;
-            feed_stream_frames(next, stream_frame_count_ - 1);
-        }
+            rotated_output || positions ? nullptr : &gate, positions ? &partial : nullptr, nullptr);
     }
     if (positions) {
         // The rank's query heads' gates, contiguous for the merge.
@@ -2219,29 +2053,18 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
     // with its copies by the time this one starts issuing them.
     if (kv_stream_space_ != nullptr && !prefill && stage == 0) {
         kv_stream_space_->begin_round(ctx_.stream);
-        // A round's frames start over: the copies of round r-1 have been consumed by now, so the
-        // first frame of each layer can be issued again (design 5.13.2).
-        for (StreamFrameFeed& feed : stream_feeds_) {
-            feed.issued       = 0;
-            feed.sealed_frame = -1;
-        }
-        // The frame geometry is the round's, not the layer's: the caller copies before it launches,
-        // so it has to know the frame width before the first layer runs.
-        plan_stream_round(x.ne[1]);
     }
-    // A framed round copies a frame at a time inside each layer; every other round copies a layer
-    // before its attention and records it consumed after. The two are exclusive per round: a layer
-    // that feeds frames must not also be copied whole (design 5.13.2).
-    const bool layer_copy = kv_stream_space_ != nullptr && (prefill || !stream_framed_round_);
+    // A streamed round copies a layer's pages in runs before its attention and releases them after:
+    // the ring is one flat pool of runs, and how far ahead a copy may run is the ring's size over one
+    // layer's extent, not a count this loop keeps (kv_stream_space.h, kv_stream_layout.h).
+    const bool layer_copy = kv_stream_space_ != nullptr;
     if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
         static int printed = 0;
         if (printed < 8) {
             ++printed;
             std::fprintf(stderr,
-                         "[stream] stage=%zu phase=%d framed=%d layer_copy=%d feeds=%zu "
-                         "window_start=%u active=%u\n",
-                         stage, static_cast<int>(ph), stream_framed_round_ ? 1 : 0,
-                         layer_copy ? 1 : 0, stream_feeds_.size(),
+                         "[stream] stage=%zu phase=%d layer_copy=%d window_start=%u active=%u\n",
+                         stage, static_cast<int>(ph), layer_copy ? 1 : 0,
                          kv_stream_space_ == nullptr ? 0U : kv_stream_space_->window_start(),
                          kv_stream_space_ == nullptr ? 0U : kv_stream_space_->active_pages());
         }
@@ -2268,51 +2091,46 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                 auto scope = work_.scope();
                 if (full) {
                     if (layer_copy) {
-                        // The ring is one buffer for every layer, in `ring_depth` regions: a layer's
-                        // pages are copied into the region the layer that far back has finished
-                        // reading, which is why a copy is ordered after that layer's consumption
-                        // and not the previous one's. Issuing this layer's copy `ring_depth - 1`
-                        // layers ahead is what makes it overlap their attention instead of stalling
-                        // in front of it - the loop ran depth one first, and every layer exposed
-                        // 1.42 ms of its 2.66 ms copy for it (design 5.11).
-                        const std::uint32_t depth   = kv_stream_space_->ring_depth();
+                        // The ring is one flat pool of runs that any layer may own. A run's copy waits
+                        // on the consumed event of the run it takes, so the pipeline depth is the
+                        // ring's size over one layer's extent (the split's ratio), not a count this
+                        // loop keeps: a ring of one extent serialises the layers, a ring of one extent
+                        // plus a margin lets the next layer start as this one reads (the reference
+                        // does the same per slot, fattn.cu `kv_stream_graph_upload`).
+                        const std::uint32_t runs    = kv_stream_space_->runs_per_layer();
                         const std::uint32_t count   = kv_stream_space_->layers();
                         const std::uint32_t current = static_cast<std::uint32_t>(compact);
+                        const std::uint32_t ahead =
+                            runs == 0 ? 0
+                                      : std::max<std::uint32_t>(1U, kv_stream_space_->ring_runs() / runs) - 1U;
                         const auto issue = [&](std::uint32_t target) {
-                            const std::uint32_t region = (target + count - depth) % count;
-                            CUDA_CHECK(cudaStreamWaitEvent(
-                                kv_stream_copy_, kv_stream_space_->consumed_event(region), 0));
-                            kv_stream_space_->upload(target, kv_stream_copy_);
+                            (void)kv_stream_space_->upload(target, kv_stream_copy_);
                         };
-                        // The first layers of the first round have nothing ahead of them to overlap,
-                        // so they are issued here rather than by an earlier layer.
+                        // The first layers of the first round have nothing ahead of them to overlap.
                         if (current == 0) {
-                            for (std::uint32_t target = 0; target + 1 < depth; ++target) {
-                                issue(target);
+                            for (std::uint32_t target = 0; target < ahead; ++target) { issue(target); }
+                        }
+                        if (ahead != 0) {
+                            if (current + ahead < count) {
+                                issue(current + ahead);
+                            } else if (!prefill) {
+                                // The round's last layers prefetch the next round's first ones: the runs
+                                // they need are freed by this round's last consumption, a whole layer of
+                                // compute before the next round reads them.
+                                issue(current + ahead - count);
                             }
                         }
-                        if (current + depth - 1 < count) {
-                            issue(current + depth - 1);
-                        } else if (!prefill) {
-                            // The round's last layers prefetch the next round's first ones: the
-                            // region they need is freed by this round's last consumption, which is
-                            // a whole layer of compute before the next round reads it. Without this
-                            // a round starts with `depth` copies that nothing can overlap, and they
-                            // measured as the 11 ms a round that no ring depth removed (design
-                            // 5.12).
-                            issue(current + depth - 1 - count);
-                        }
-                        // The wait is measured: whatever it costs here is copy time this round
-                        // could not hide behind compute.
+                        if (runs == 0) { issue(current); }
+                        // The wait is measured: whatever it costs here is copy time this round could
+                        // not hide behind compute.
                         kv_stream_space_->wait_ready(current, ctx_.stream);
                     }
 
                     attn_mix(block, x, compact, ph);
                     if (layer_copy) {
-                        CUDA_CHECK(cudaEventRecord(
-                            kv_stream_space_->consumed_event(
-                                static_cast<std::uint32_t>(compact)),
-                            ctx_.stream));
+                        // The runs this layer read are free again; the copy that refills them waits on
+                        // this event, which is what turns the ring into a pipeline.
+                        kv_stream_space_->consume(static_cast<std::uint32_t>(compact), ctx_.stream);
                     }
                 } else {
                     gdn_mix(block, x, compact, ph);

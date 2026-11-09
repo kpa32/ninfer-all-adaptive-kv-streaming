@@ -81,6 +81,9 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     // One deadline flag per layer: a layer's streamed pages are copied as one run, so a layer is the
     // unit that can be late.
     signal_ = std::make_unique<KVStreamSignal>(layers_);
+    // The ring this cache was planned with; the controller may only shrink it to one layer's streamed
+    // extent, which it recomputes each evaluation.
+    minimum_ring_pages_ = split_.ring_pages;
     create_events(ready_frame_, layers_ * kFrameSlots);
     create_events(consumed_frame_, layers_ * kFrameSlots);
     region_layer_.assign(split_.ring_depth, kNoLayer);
@@ -302,6 +305,9 @@ void StreamedKVSpace::begin_round(cudaStream_t compute) {
     }
     ++rounds_;
     round_streamed_pages_ = window_start();
+    // The controller runs once per round, on the window that just closed: whether the boundary still
+    // pays for itself is decided from measurement, never from the plan that started the run.
+    (void)evaluate_partition(RankStreams(compute));
 }
 
 bool StreamedKVSpace::close_signal_window() noexcept {
@@ -316,6 +322,9 @@ bool StreamedKVSpace::close_signal_window() noexcept {
         deadline_misses_  += delta.misses;
         round_.deadline_samples = delta.samples;
         round_.deadline_misses  = delta.misses;
+        window_samples_        = delta.samples;
+        window_misses_         = delta.misses;
+        window_measured_       = delta.has_evaluation;
     }
     KVStreamBusySample sample;
     sample.copy_seconds    = copy.seconds;
@@ -326,9 +335,123 @@ bool StreamedKVSpace::close_signal_window() noexcept {
     round_.copy_busy_ratio = kv_stream_copy_busy_ratio(sample);
     if (copy.recorded) {
         copy_busy_ratio_ = round_.copy_busy_ratio;
+        window_busy_     = round_.copy_busy_ratio;
         ++copy_busy_windows_;
     }
     return true;
+}
+
+bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
+    // The reference only evaluates with a fresh deadline window (or at the first decode round, whose
+    // working set is known even though no feedback exists yet): a ratio nobody measured must not
+    // move the pool (kv-cache.cpp, `entering_decode_layout || delta.has_evaluation`).
+    const bool entering = entering_decode_layout_ && window_start() != 0;
+    if (!window_measured_ && !entering) {
+        if (evaluations_since_repartition_ != UINT32_MAX) { ++evaluations_since_repartition_; }
+        return false;
+    }
+    KVStreamPartitionParams params;
+    params.total_pool_pages         = kv_stream_pool_pages(split_, layers_);
+    params.layers                   = layers_;
+    params.active_pages_per_layer   = active_;
+    // The least ring this layout can run with is one layer's whole streamed extent: a region must
+    // hold every page the layer reads in one call.
+    params.minimum_ring_pages       = split_.resident_pages < active_ ? active_ - split_.resident_pages : 0;
+    params.previous_resident_pages  = split_.resident_pages;
+    params.previous_ring_pages      = split_.ring_pages;
+    params.deadline_miss_ratio      = window_measured_ && window_samples_ != 0
+                                          ? static_cast<double>(window_misses_) /
+                                                static_cast<double>(window_samples_)
+                                          : 0.0;
+    params.copy_engine_busy_ratio   = window_busy_;
+    // The ring is shared by every layer in turn, so its peak occupancy is the pages one layer's
+    // streamed extent puts in it, times the regions in flight, capped by the ring itself.
+    const std::uint64_t in_flight =
+        std::uint64_t(split_.ring_depth) * window_start();
+    params.ring_peak_occupancy_ratio = kv_stream_ring_peak_ratio(
+        static_cast<std::uint32_t>(in_flight < split_.ring_pages ? in_flight : split_.ring_pages),
+        split_.ring_pages);
+    params.starved_evaluations          = starved_evaluations_;
+    params.overprovisioned_evaluations  = overprovisioned_evaluations_;
+    params.evaluations_since_repartition = evaluations_since_repartition_;
+    params.entering_decode_layout       = entering;
+    const KVStreamPartition decision = kv_stream_partition_adapt(params);
+    window_measured_ = false;
+    entering_decode_layout_ = false;
+    if (!decision.valid) { return false; }
+    starved_evaluations_         = decision.starved_evaluations;
+    overprovisioned_evaluations_ = decision.overprovisioned_evaluations;
+    if (!decision.changed) {
+        if (evaluations_since_repartition_ != UINT32_MAX) { ++evaluations_since_repartition_; }
+        return false;
+    }
+    // The controller answers in slots; this layout can only express a whole number of regions, so
+    // the round's ring becomes the floor the planner sizes them by: the shallowest ring that covers
+    // it wins, and every spare slot goes to the window (kv_stream_layout.h).
+    const auto next = plan_kv_stream_split_for_ring(slot_count_, pages_per_layer_, layers_,
+                                                    decision.ring_pages);
+    if (!next || (next->resident_pages == split_.resident_pages &&
+                  next->ring_pages == split_.ring_pages)) {
+        return false;
+    }
+    repartition(*next, streams);
+    evaluations_since_repartition_ = 0;
+    return true;
+}
+
+void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams) {
+    if (next.ring_depth == 0 || next.resident_pages > pages_per_layer_ ||
+        next.resident_pages > active_) {
+        throw std::invalid_argument("A streamed KV partition is out of range");
+    }
+    if (kv_stream_pool_pages(next, layers_) > slot_count_) {
+        throw std::invalid_argument("A streamed KV partition exceeds the pool");
+    }
+    const std::uint32_t next_window_start =
+        active_ > next.resident_pages ? active_ - next.resident_pages : 0;
+    if (kv_stream_ring_extent(next, layers_) < next_window_start) {
+        throw std::invalid_argument("A streamed KV partition's region is shallower than a layer's \
+stream");
+    }
+    if (next.resident_pages == split_.resident_pages && next.ring_pages == split_.ring_pages &&
+        next.ring_depth == split_.ring_depth) {
+        return;
+    }
+    const std::uint32_t old_window_start = window_start();
+    // Every page keeps its bytes where they are and changes only the slot it is named by, except the
+    // pages that cross the boundary: those are written back to or read from their host record. The
+    // host authority holds every page, so either direction has exactly one source of truth.
+    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+        for (std::uint32_t page = 0; page < active_; ++page) {
+            const bool was_streamed = page < old_window_start;
+            const bool now_streamed = page < next_window_start;
+            const std::int32_t old_slot = kv_stream_slot(layer, page, active_, split_, layers_);
+            const std::int32_t new_slot = kv_stream_slot(layer, page, active_, next, layers_);
+            if (was_streamed && !now_streamed) {
+                // The page becomes resident: its current bytes are in the ring, and the host record is
+                // the one source both halves agree on.
+                cache_->page_pool().copy_from_host_pages(
+                    host_pages(layer).subview(page, 1).data(), host_layout_, new_slot, 1, streams);
+            } else if (!was_streamed && now_streamed) {
+                // The page leaves the window: its bytes must reach the host before the slot stops
+                // being its own, exactly as a page the frontier drops does.
+                cache_->page_pool().copy_to_host_pages(
+                    old_slot, 1, host_pages(layer).subview(page, 1), streams);
+            }
+            if (old_slot != new_slot) { publish_slot(layer, page, new_slot, streams); }
+        }
+    }
+    split_     = next;
+    ring_base_ = layers_ * split_.resident_pages;
+    // The regions no longer hold what they claimed: the next round copies each layer's extent into
+    // the slots the new partition names.
+    region_layer_.assign(split_.ring_depth, kNoLayer);
+    region_pages_.assign(split_.ring_depth, 0);
+    // The host copies above ran on the compute stream; the uploads that read them run on the copy
+    // stream, so they are ordered behind this mark.
+    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+        CUDA_CHECK(cudaEventRecord(dropped_[layer], streams[0]));
+    }
 }
 
 void StreamedKVSpace::wait_ready(std::uint32_t layer, cudaStream_t compute) {

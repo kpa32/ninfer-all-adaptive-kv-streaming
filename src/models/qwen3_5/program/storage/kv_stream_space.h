@@ -3,6 +3,7 @@
 #include "core/host_kv_arena.h"
 #include "core/kv_stream_feedback.h"
 #include "core/kv_stream_layout.h"
+#include "core/kv_stream_partition.h"
 #include "core/kv_stream_signal.h"
 #include "core/paged_kv_cache.h"
 #include "models/qwen3_5/state/decoder_state.h"
@@ -195,6 +196,18 @@ public:
     // round opens its window (kv_stream_feedback.h).
     void begin_round(cudaStream_t compute);
 
+    // The controller's decision for this round, applied when it moves the boundary (port of the
+    // reference implementation's `kv_stream_adapt` + `reconfigure`/`repartition`): the ring this
+    // round's window needed, how late its copies were, and how busy the link was decide whether the
+    // window may grow. Returns true when the pool moved.
+    bool evaluate_partition(RankStreams streams);
+
+    // Moves the boundary between the resident window and the ring inside this space's fixed pool.
+    // Every slot is re-addressed, so the pages that change sides migrate once - a page leaving the
+    // window is written back to its host record first, a page entering it is read back from there -
+    // and the block tables are republished. Rare by design: the controller rate-limits it.
+    void repartition(const KVStreamSplit& next, RankStreams streams);
+
     // Waits on `layer`'s ready event on the compute stream and measures how much of that wait was
     // real, which is the copy time this round could not hide.
     void wait_ready(std::uint32_t layer, cudaStream_t compute);
@@ -303,6 +316,20 @@ private:
     std::uint64_t deadline_misses_    = 0;
     std::uint64_t copy_busy_windows_  = 0;
     double copy_busy_ratio_           = 0.0;
+    // The last closed window's signals, which is what the controller evaluates: a window still in
+    // flight is not a measurement yet.
+    std::uint64_t window_samples_ = 0;
+    std::uint64_t window_misses_  = 0;
+    double window_busy_           = 0.0;
+    bool window_measured_         = false;
+    // The controller's state: the ring may never shrink below the size the cache was planned with
+    // (the reference sets its minimum from the initial ring), and a repartition costs a table
+    // rebuild, so it runs at most once per cooldown.
+    std::uint32_t minimum_ring_pages_           = 0;
+    std::uint32_t evaluations_since_repartition_ = UINT32_MAX;
+    std::uint32_t starved_evaluations_          = 0;
+    std::uint32_t overprovisioned_evaluations_  = 0;
+    bool entering_decode_layout_                = true;
 };
 
 } // namespace ninfer::models::qwen3_5

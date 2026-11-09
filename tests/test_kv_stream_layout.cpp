@@ -1,299 +1,185 @@
 #include "core/kv_stream_layout.h"
+#include "core/kv_stream_slot_map.h"
 
 #include <cstdint>
 #include <iostream>
 #include <map>
-#include <set>
+#include <string>
 
 namespace {
 
+using ninfer::KVStreamSlotMap;
 using ninfer::KVStreamSplit;
 using ninfer::kv_stream_pool_pages;
-using ninfer::kv_stream_region;
-using ninfer::kv_stream_region_offset;
-using ninfer::kv_stream_ring_extent;
-using ninfer::kv_stream_ring_slot;
-using ninfer::kv_stream_slot;
+using ninfer::kv_stream_ring_runs;
+using ninfer::kv_stream_runs_per_layer;
 using ninfer::kv_stream_window_slot;
+using ninfer::kv_stream_window_start;
 using ninfer::plan_kv_stream_split;
+using ninfer::resize_kv_stream_split;
 
-// One line per distinct failure, however many frontiers reach it: a broken mapping would otherwise
-// print once per page and hide everything else.
+constexpr std::uint32_t kLayers = 16;
+
 std::map<std::string, int> failures;
 
-void check(bool condition, const char* message) {
+void check(bool condition, const std::string& message) {
     if (!condition) { ++failures[message]; }
 }
 
+void check_equal(std::uint32_t actual, std::uint32_t expected, const std::string& message) {
+    if (actual != expected) { ++failures[message]; }
+}
+
 // The all-resident split must reproduce the layout the paged cache has today: layer L's page p is
-// slot L * pages_per_layer + p, so switching to the flat pool with no streaming cannot move a byte.
+// slot L * pages_per_layer + p, so a pool that holds everything moves no byte.
 void all_resident_matches_today() {
-    constexpr std::uint32_t kLayers = 16;
-    constexpr std::uint32_t kPages  = 64;
+    constexpr std::uint32_t kPages = 64;
     const auto split = plan_kv_stream_split(kLayers * kPages, kPages, kLayers);
     check(split.has_value(), "a full budget must plan");
-    check(split->resident_pages == kPages && split->ring_pages == 0,
-          "a full budget keeps every page resident");
+    if (!split) { return; }
+    check_equal(split->resident_pages, kPages, "a full budget keeps every page resident");
+    check_equal(split->ring_pages, 0, "a full budget needs no ring");
     for (std::uint32_t layer = 0; layer < kLayers; ++layer) {
         for (std::uint32_t page = 0; page < kPages; ++page) {
-            const auto slot = kv_stream_slot(layer, page, kPages, *split, kLayers);
-            check(slot == static_cast<std::int32_t>(layer * kPages + page),
-                  "an all-resident slot is the paged layout's page index");
+            check_equal(static_cast<std::uint32_t>(kv_stream_window_slot(layer, page, *split)),
+                        layer * kPages + page, "an all-resident page keeps today's slot");
         }
     }
 }
 
-// The 262 144 shape measured on the card: 4096 pages per layer, 16 full-attention layers, and the
-// 2.64 GB a 16 GB card has left after weights and the MTP pool. The pool holds 6.2 contexts, so the
-// ring buys its second region and costs 13.5% of the window for it.
-void the_measured_262144_split() {
-    constexpr std::uint32_t kBudget = 25300;
+// The measured geometry at 262144 tokens: 4096 pages of context per layer, 16 full-attention layers,
+// and a pool of 31572 slots (the one the shipping 251K run used). The ring must be just above one
+// streamed extent - the article's 1.10 - and every other slot must be window.
+void the_shipping_262144_geometry() {
     constexpr std::uint32_t kPages  = 4096;
-    constexpr std::uint32_t kLayers = 16;
+    constexpr std::uint32_t kBudget = 31572;
     const auto split = plan_kv_stream_split(kBudget, kPages, kLayers);
-    check(split.has_value(), "262 144 must plan");
-    check(split->ring_depth == 2, "262 144 keeps two layers' streamed pages in flight");
-    check(split->resident_pages == 1222, "262 144 keeps 1222 pages of each layer resident");
-    check(split->ring_pages == 5748, "262 144 shares a 5748-slot ring, two regions deep");
-    check(kv_stream_ring_extent(*split, kLayers) == kPages - split->resident_pages,
-          "a region is exactly one layer's streamed pages");
-    check(kv_stream_pool_pages(*split, kLayers) <= kBudget, "the split fits the budget");
-    // The largest feasible resident window for two regions: one more page per layer would not fit.
-    const std::uint64_t one_more = kv_stream_pool_pages(
-        KVStreamSplit{split->resident_pages + 1,
-                      split->ring_depth * (kPages - split->resident_pages - 1), split->ring_depth},
-        kLayers);
-    check(one_more > kBudget, "the split takes every page the budget can keep resident");
-}
-
-// Two properties the attention depends on, at every frontier: one layer's pages never share a
-// slot, resident slots never overlap the ring, and no slot leaves the pool.
-// A page keeps the slot it was given for as long as it is resident, and takes the ring slot for
-// good once it leaves: two table writes in a page's life, not one per page boundary.
-void a_page_changes_slot_at_most_twice() {
-    constexpr std::uint32_t kLayers = 16;
-    constexpr std::uint32_t kPages  = 256;
-    constexpr std::uint32_t kBudget = 3000;
-    const auto split                = plan_kv_stream_split(kBudget, kPages, kLayers);
-    check(split.has_value(), "the streaming budget must plan");
+    check(split.has_value(), "the shipping geometry plans");
     if (!split) { return; }
-    const std::uint32_t resident = split->resident_pages;
-    for (std::uint32_t layer = 0; layer < 1; ++layer) {
-        for (std::uint32_t page = 0; page < kPages; ++page) {
-            std::set<std::int32_t> seen;
-            for (std::uint32_t active = page + 1; active <= kPages; ++active) {
-                const auto slot = kv_stream_slot(layer, page, active, *split, kLayers);
-                seen.insert(slot);
-                const bool resident_now = page + resident >= active;
-                if (resident_now) {
-                    check(slot == kv_stream_window_slot(layer, page, *split),
-                          "a resident page keeps its window slot as the context grows");
-                } else {
-                    check(slot == kv_stream_ring_slot(layer, page, *split, kLayers),
-                          "a streamed page maps to its ring slot for good");
-                }
+    check(kv_stream_pool_pages(*split, kLayers) <= kBudget, "the split fits its pool");
+    const std::uint32_t streamed = kPages - split->resident_pages;
+    check(split->ring_pages >= streamed, "the ring holds one layer's streamed extent");
+    check(static_cast<double>(split->ring_pages) <= 1.25 * static_cast<double>(streamed),
+          "the ring stays near the reference's ratio instead of a whole extra extent");
+    check_equal(split->ring_pages % split->run_pages, 0, "the ring is a whole number of runs");
+    // The window is what the old layout could not reach: two extents of ring left it at 1670.
+    check(split->resident_pages > 1670, "a ratio-sized ring keeps a larger window than depth two");
+}
+
+// Every page changes slot at most twice: once when the window takes it, and (when the context grows
+// past its window) never again, because a streamed page is addressed by its run, not by its index.
+void a_resident_page_keeps_its_slot() {
+    constexpr std::uint32_t kPages = 132;
+    const auto split = plan_kv_stream_split(16 * 40, kPages, kLayers, 8);
+    check(split.has_value(), "a partially resident pool plans");
+    if (!split) { return; }
+    for (std::uint32_t active = split->resident_pages; active <= kPages; ++active) {
+        const std::uint32_t start = kv_stream_window_start(active, *split);
+        for (std::uint32_t page = start; page < active; ++page) {
+            const auto first = kv_stream_window_slot(0, page, *split);
+            for (std::uint32_t later = active; later <= kPages; ++later) {
+                if (kv_stream_window_start(later, *split) > page) { break; }
+                check(kv_stream_window_slot(0, page, *split) == first,
+                      "a resident page keeps its slot while it stays resident");
             }
-            check(seen.size() <= 2, "a page changes slot at most once");
         }
     }
 }
 
-using ninfer::plan_kv_stream_split_for_ring;
-
-// The ring is the article's prefetch room: just deep enough to hold the working-set floor, and every
-// spare slot belongs to the window. With a floor of zero the shallowest depth wins, which is the
-// largest window the pool can hold at all.
-void a_ring_floor_trades_lookahead_for_window() {
-    constexpr std::uint32_t kLayers = 16;
-    constexpr std::uint32_t kPages  = 128;
-    const std::uint32_t budget      = 1200;
-
-    const auto shallow = plan_kv_stream_split_for_ring(budget, kPages, kLayers, 0);
-    check(shallow.has_value(), "a pool that holds a layer must plan a ring-floor split");
-    if (shallow) {
-        check(shallow->ring_depth == 1, "a floor of zero takes the shallowest ring");
-        check(kv_stream_pool_pages(*shallow, kLayers) <= budget,
-              "a ring-floor split never exceeds its budget");
-        const std::uint32_t streamed = kPages - shallow->resident_pages;
-        check(shallow->ring_pages == streamed, "a depth-one ring holds one streamed extent");
+// Runs are what the copy and the consumer work in: contiguous slots, never straddling the ring, and
+// distinct runs never overlap while the ring holds one layer's extent.
+void runs_are_contiguous_and_disjoint() {
+    KVStreamSlotMap map(256, 8);
+    check_equal(map.slots(), 256, "a ring that is a whole number of runs keeps every run");
+    check_equal(map.runs(), 32, "the run count follows the ring size");
+    std::map<std::uint32_t, int> used;
+    for (std::uint32_t run = 0; run < map.runs(); ++run) {
+        const auto slot = map.next();
+        check_equal(slot.count, 8, "a run covers the run's pages");
+        check_equal(slot.begin % 8, 0, "a run starts on a run boundary");
+        for (std::uint32_t i = 0; i < slot.count; ++i) { ++used[slot.begin + i]; }
     }
-
-    // A floor that one region cannot cover must buy a second region, and pay for it in window.
-    const std::uint32_t one_region = shallow ? shallow->ring_pages : 0;
-    const auto deep = plan_kv_stream_split_for_ring(budget, kPages, kLayers, one_region + 1);
-    check(deep.has_value(), "a deeper floor still plans");
-    if (shallow && deep) {
-        check(deep->ring_depth == 2, "a floor beyond one region takes two");
-        check(deep->ring_pages >= one_region + 1, "the deeper ring covers its floor");
-        check(deep->resident_pages <= shallow->resident_pages,
-              "lookahead is bought with window, never with pool");
-        check(kv_stream_pool_pages(*deep, kLayers) <= budget, "the deeper split still fits");
-    }
-
-    // No depth can hold a floor larger than the whole pool: the deepest split that fits is the
-    // answer, because refusing to run would leave the context unserved.
-    const auto unreachable = plan_kv_stream_split_for_ring(budget, kPages, kLayers, 100000);
-    check(unreachable.has_value(), "an unreachable floor still yields the deepest fitting split");
-    if (unreachable) {
-        check(unreachable->ring_depth >= 1, "the deepest fitting split has a ring");
-        check(kv_stream_pool_pages(*unreachable, kLayers) <= budget, "and it fits the pool");
-    }
-
-    // A pool that cannot hold one layer's pages has no split, floor or not.
-    check(!plan_kv_stream_split_for_ring(kPages - 1, kPages, kLayers, 0).has_value(),
-          "a pool smaller than one layer is refused");
+    for (const auto& [slot, count] : used) { check(count == 1, "a slot is handed out once per lap"); }
+    // The cursor has wrapped exactly once and points at the first run again.
+    check_equal(map.next().begin, 0, "the allocator is a lap");
 }
 
-void slots_stay_inside_their_regions() {
-    constexpr std::uint32_t kLayers = 16;
-    constexpr std::uint32_t kPages  = 96;
-    for (std::uint32_t budget = kPages; budget <= kLayers * kPages; budget += 7) {
-        const auto split = plan_kv_stream_split(budget, kPages, kLayers);
-        check(split.has_value(), "any budget that holds one layer must plan");
+void a_short_ring_rounds_down_to_whole_runs() {
+    KVStreamSlotMap map(250, 8);
+    check_equal(map.slots(), 248, "a ring shorter than the run multiple loses the remainder");
+    check_equal(map.runs(), 31, "only whole runs are handed out");
+    for (std::uint32_t run = 0; run < 40; ++run) {
+        const auto slot = map.next();
+        check(slot.begin + slot.count <= map.slots(), "a run never leaves the ring");
+    }
+}
+
+// A run that holds a layer's tail is shorter than a full run; the planner still rounds the ring to
+// whole runs so the copy can address it as one range.
+void the_plan_rounds_the_ring_to_whole_runs() {
+    constexpr std::uint32_t kPages = 4096;
+    for (std::uint32_t run : {8U, 16U, 32U, 128U}) {
+        const auto split = plan_kv_stream_split(31572, kPages, kLayers, run);
+        check(split.has_value(), "any run size plans");
         if (!split) { continue; }
-        const std::uint32_t pool = kv_stream_pool_pages(*split, kLayers);
-        check(pool <= budget, "the split never exceeds its budget");
-        for (std::uint32_t active = 1; active <= kPages; ++active) {
-            const std::uint32_t window_start =
-                active > split->resident_pages ? active - split->resident_pages : 0;
-            check(window_start <= kv_stream_ring_extent(*split, kLayers),
-                  "a layer's streamed pages fit one ring region");
-            for (std::uint32_t layer = 0; layer < kLayers; ++layer) {
-                std::set<std::int32_t> slots;
-                for (std::uint32_t page = 0; page < active; ++page) {
-                    const auto slot = kv_stream_slot(layer, page, active, *split, kLayers);
-                    check(slot >= 0 && static_cast<std::uint32_t>(slot) < pool,
-                          "a slot stays inside the pool");
-                    check(slots.insert(slot).second, "two pages of one layer never share a slot");
-                    if (page >= window_start) {
-                        check(slot >= static_cast<std::int32_t>(layer * split->resident_pages) &&
-                                  slot < static_cast<std::int32_t>((layer + 1) * split->resident_pages),
-                              "a resident page lands in its layer's own region");
-                    } else {
-                        check(slot >= static_cast<std::int32_t>(kLayers * split->resident_pages),
-                              "a streamed page lands in the shared ring");
-                        // Two layers attend at once only if the ring is deeper than the distance
-                        // between them: a page's region is its layer's, so the regions in flight
-                        // never coincide.
-                        const std::uint32_t extent = kv_stream_ring_extent(*split, kLayers);
-                        const std::uint32_t region =
-                            (static_cast<std::uint32_t>(slot) - kLayers * split->resident_pages) /
-                            extent;
-                        check(region == layer % split->ring_depth,
-                              "a streamed page lands in its layer's own ring region");
-                    }
-                }
-                // The identity mapping is what keeps the streamed half of every table static.
-                if (split->resident_pages == 0) {
-                    for (std::uint32_t page = 0; page < active; ++page) {
-                        check(kv_stream_slot(layer, page, active, *split, kLayers) ==
-                                  static_cast<std::int32_t>(page),
-                              "with no resident pages a page is its own slot");
-                    }
-                }
-            }
-        }
+        check_equal(split->ring_pages % run, 0, "the ring is whole runs");
+        check_equal(split->run_pages, run, "the split keeps the requested run size");
+        check_equal(kv_stream_ring_runs(*split), split->ring_pages / run, "ring runs follow the ring");
+        const std::uint32_t streamed = kPages - split->resident_pages;
+        check(kv_stream_ring_runs(*split) >= (streamed + run - 1) / run,
+              "the ring holds every run of one layer's extent");
+    }
+}
+
+// The article's first rule, on the split side: when a request's context fits the pool, nothing
+// streams, so the ring is not addressed and every page stays resident.
+void a_context_that_fits_needs_no_ring() {
+    const auto planned = plan_kv_stream_split(31572, 4096, kLayers);
+    check(planned.has_value(), "the shipping geometry plans");
+    if (!planned) { return; }
+    const auto fitted = resize_kv_stream_split(*planned, 31572, 1900, kLayers);
+    check(fitted.has_value(), "a short context re-sizes");
+    if (!fitted) { return; }
+    check_equal(fitted->ring_pages, 0, "a context that fits streams nothing");
+    check_equal(fitted->resident_pages, 1900, "every page of the context stays resident");
+    check(kv_stream_pool_pages(*fitted, kLayers) <= 31572, "the fitted split fits the pool");
+}
+
+// Growing the context keeps giving the ring what it needs and the window the rest, and never lets the
+// ring fall below the extent it must hold.
+void re_sizing_follows_the_context() {
+    const auto planned = plan_kv_stream_split(31572, 4096, kLayers);
+    check(planned.has_value(), "the shipping geometry plans");
+    if (!planned) { return; }
+    std::uint32_t previous_resident = 0;
+    for (std::uint32_t active = 2000; active <= 4096; active += 97) {
+        const auto fitted = resize_kv_stream_split(*planned, 31572, active, kLayers);
+        check(fitted.has_value(), "a growing context stays servable");
+        if (!fitted) { continue; }
+        check(kv_stream_pool_pages(*fitted, kLayers) <= 31572, "a re-sized split fits the pool");
+        const std::uint32_t streamed = kv_stream_window_start(active, *fitted);
+        check(fitted->ring_pages >= streamed, "the ring always holds the streamed extent");
+        check(fitted->resident_pages != 0, "the window never collapses to nothing");
+        check(fitted->resident_pages <= previous_resident || previous_resident == 0
+                  ? true
+                  : fitted->resident_pages <= previous_resident,
+              "the window never grows as the context grows");
+        previous_resident = fitted->resident_pages;
     }
 }
 
 void refuses_what_it_cannot_serve() {
-    check(!plan_kv_stream_split(4095, 4096, 16).has_value(),
-          "a budget below one layer is refused, not degraded");
-    // One layer's pages and nothing beside them plan as a window of zero, which is the anchor the
-    // planner models a minimal pool with; the cache itself refuses to be built from it.
-    const auto anchor = plan_kv_stream_split(4096, 4096, 16);
-    check(anchor.has_value() && anchor->resident_pages == 0 && anchor->ring_pages == 4096,
-          "a pool of one layer's pages plans with no window");
-    check(!plan_kv_stream_split(25300, 4096, 0).has_value(), "no layers is refused");
-    check(!plan_kv_stream_split(25300, 0, 16).has_value(), "no pages is refused");
-    const auto single = plan_kv_stream_split(4096, 4096, 1);
-    check(single.has_value() && single->resident_pages == 4096 && single->ring_pages == 0,
-          "one layer that fits needs no ring");
-    // No budget above one layer's pages can be refused for a single layer.
-    check(plan_kv_stream_split(5000, 4096, 1).has_value(), "one layer above its pages still plans");
-}
-
-// The framed ring: the layout the 251 K round moves to (design 5.13.1). A frame is one launch's
-// keys, so the ring holds the frames in flight instead of one layer's whole streamed extent, and
-// every page keeps a slot that is a pure function of `(layer, page)`.
-void a_framed_ring_rotates_through_the_streamed_pages() {
-    constexpr std::uint32_t kLayers = 16;
-    constexpr std::uint32_t kPages  = 4096;
-    constexpr std::uint32_t kBudget = 48358;
-    // 19 splits per launch (one wave: 76 SMs / 4 KV heads) of 49 pages each at this capacity.
-    constexpr std::uint32_t kFrame = 19 * 49;
-    const auto split = plan_kv_stream_split(kBudget, kPages, kLayers, 2, kFrame);
-    check(split.has_value(), "the framed layout must plan");
-    if (!split) { return; }
-    check(split->frame_pages == kFrame, "a framed ring keeps the frame the planner was given");
-    check(split->frames_per_layer == 5, "4096 pages at 931 a frame is five frames");
-    check(split->ring_depth == 2 && split->ring_pages == 2 * kFrame,
-          "a framed ring is as deep as its frames, not as deep as the streamed extent");
-    check(kv_stream_ring_extent(*split, kLayers) == kFrame, "a region holds one frame");
-    check(split->resident_pages == 2906, "the window takes every page the frames leave");
-    check(kv_stream_pool_pages(*split, kLayers) <= kBudget, "the framed split fits its budget");
-    // Larger frames are what a deeper ring costs: every page of window a frame does not take.
-    std::uint32_t previous = 48358;
-    for (std::uint32_t frame = 64; frame <= 2048; frame += 64) {
-        const auto other = plan_kv_stream_split(kBudget, kPages, kLayers, 2, frame);
-        check(other.has_value(), "every frame size that leaves a window must plan");
-        if (!other) { continue; }
-        check(kv_stream_pool_pages(*other, kLayers) <= kBudget, "a framed split never exceeds it");
-        check(other->resident_pages <= previous, "a larger frame never leaves more window");
-        previous = other->resident_pages;
-    }
-
-    // The slot a page gets, and the rolling order the scheduler fills frames in: a slot is refilled
-    // only by a frame `ring_depth` frames later, which the consumer has already read.
-    std::map<std::int32_t, std::uint64_t> occupant;
-    std::uint64_t order = 0;
-    for (std::uint32_t layer = 0; layer < kLayers; ++layer) {
-        for (std::uint32_t page = 0; page < kPages; ++page) {
-            const std::uint64_t frame =
-                static_cast<std::uint64_t>(layer) * split->frames_per_layer + page / kFrame;
-            const std::uint32_t region = static_cast<std::uint32_t>(frame % split->ring_depth);
-            check(kv_stream_region(layer, page, *split) == region,
-                  "a page's region is its frame's place in the rolling order");
-            check(kv_stream_region_offset(page, *split) == page % kFrame,
-                  "a page sits at its own offset inside the frame");
-            const auto slot = kv_stream_ring_slot(layer, page, *split, kLayers);
-            check(slot >= static_cast<std::int32_t>(kLayers * split->resident_pages) &&
-                      slot < static_cast<std::int32_t>(kv_stream_pool_pages(*split, kLayers)),
-                  "a streamed page lands inside the ring");
-            const auto [it, fresh] = occupant.emplace(slot, frame);
-            if (!fresh) {
-                check(frame >= it->second + split->ring_depth,
-                      "a slot is refilled only after the frame that held it was read");
-                it->second = frame;
-            }
-            ++order;
-        }
-    }
-    check(order == static_cast<std::uint64_t>(kLayers) * kPages, "every page was placed once");
-}
-
-void a_bigger_budget_never_residents_less() {
-    constexpr std::uint32_t kLayers = 16;
-    constexpr std::uint32_t kPages  = 512;
-    std::uint32_t previous       = 0;
-    std::uint32_t previous_depth = 1;
-    for (std::uint32_t budget = kPages; budget <= kLayers * kPages; ++budget) {
-        const auto split = plan_kv_stream_split(budget, kPages, kLayers);
-        check(split.has_value(), "every budget above one layer plans");
-        if (!split) { continue; }
-        // A deeper ring spends window on its extra region; that one step is the only one allowed
-        // to shrink it, and it must not cost more than a fifth of what it had.
-        if (split->ring_depth == previous_depth || previous == 0) {
-            check(split->resident_pages >= previous, "resident pages never shrink as the budget grows");
-        } else {
-            check(split->resident_pages * 5 >= previous * 4,
-                  "a deeper ring costs at most a fifth of the window");
-        }
-        check(split->resident_pages * split->ring_depth + split->ring_pages ==
-                  split->ring_depth * kPages,
-              "every region plus the window is the layer's capacity");
-        previous       = split->resident_pages;
-        previous_depth = split->ring_depth;
+    check(!plan_kv_stream_split(0, 64, kLayers).has_value(), "a pool of nothing is refused");
+    check(!plan_kv_stream_split(kLayers * 64, 64, 0).has_value(), "a pool without layers is refused");
+    check(!plan_kv_stream_split(10, 64, kLayers).has_value(),
+          "a pool smaller than one layer is refused");
+    check(!plan_kv_stream_split(4096, 4096, kLayers, 0).has_value(), "a run of zero pages is refused");
+    const auto planned = plan_kv_stream_split(31572, 4096, kLayers);
+    if (planned) {
+        check(!resize_kv_stream_split(*planned, 31572, 0, kLayers).has_value(),
+              "a context of zero pages has no split");
+        check(!resize_kv_stream_split(*planned, 100, 4096, kLayers).has_value(),
+              "a pool too small for the context's ring has no split");
     }
 }
 
@@ -301,13 +187,14 @@ void a_bigger_budget_never_residents_less() {
 
 int main() {
     all_resident_matches_today();
-    the_measured_262144_split();
-    a_page_changes_slot_at_most_twice();
-    a_ring_floor_trades_lookahead_for_window();
-    slots_stay_inside_their_regions();
-    a_framed_ring_rotates_through_the_streamed_pages();
+    the_shipping_262144_geometry();
+    a_resident_page_keeps_its_slot();
+    runs_are_contiguous_and_disjoint();
+    a_short_ring_rounds_down_to_whole_runs();
+    the_plan_rounds_the_ring_to_whole_runs();
+    a_context_that_fits_needs_no_ring();
+    re_sizing_follows_the_context();
     refuses_what_it_cannot_serve();
-    a_bigger_budget_never_residents_less();
     if (!failures.empty()) {
         for (const auto& [message, count] : failures) {
             std::cerr << "FAIL (" << count << "x): " << message << '\n';

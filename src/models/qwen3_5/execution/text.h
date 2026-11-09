@@ -5,6 +5,7 @@
 #include "core/arena.h"
 #include "core/device.h"
 #include "core/gdn_replay_records.h"
+#include "core/kv_stream_span_tuner.h"
 #include "core/linear_attention_state.h"
 #include "core/tensor.h"
 #include "core/weight.h"

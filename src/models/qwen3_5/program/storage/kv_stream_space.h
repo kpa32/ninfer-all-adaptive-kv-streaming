@@ -344,6 +344,7 @@ private:
     bool entering_decode_layout_                 = true;
     // The `NINFER_STREAM_VERIFY` diagnostic: how many streamed pages it still compares, and the one-page
     // pinned staging area it reads a ring slot into.
+    std::uint64_t trace_seq_ = 0;
     int verify_budget_ = 20000;
     int verify_after_budget_ = 64;
     std::unique_ptr<HostKVArena> verify_arena_;

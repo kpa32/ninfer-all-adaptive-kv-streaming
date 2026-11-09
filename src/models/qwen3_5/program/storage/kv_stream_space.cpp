@@ -460,6 +460,11 @@ std::uint32_t StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
         // ring that holds one extent plus a margin lets the next layer start as this one reads, which
         // is what the split's ratio buys (kv_stream_layout.h).
         if (run_used_[ring_run]) {
+            if (std::getenv("NINFER_STREAM_TRACE") != nullptr) {
+                std::fprintf(stderr, "[trace] %llu upload layer=%u run=%u overwrites=%u\n",
+                             static_cast<unsigned long long>(trace_seq_++), layer, ring_run,
+                             run_owner_[ring_run]);
+            }
             CUDA_CHECK(cudaStreamWaitEvent(copy, consumed_run_[ring_run], 0));
             // `NINFER_STREAM_SAFE` is a diagnostic that removes the ordering question entirely: the host
             // waits for the run's previous reader before the copy is enqueued, so a copy can never
@@ -641,12 +646,12 @@ void StreamedKVSpace::verify_after_attention(std::uint32_t layer) {
                 }
             }
         }
-        std::fprintf(stderr,
-                     "[verify-after] MISMATCH layer=%u page=%u slot=%u active=%u streamed=%u "
+        std::fprintf(stderr, "[verify-after] MISMATCH layer=%u page=%u slot=%u active=%u streamed=%u "
                      "first_byte=%zu last_byte=%zu differs=%zu/%zu first_run=%u runs=%u ring=%u "
-                     "holds=%s%u\n",
+                     "seq=%llu holds=%s%u\n",
                      layer, page, slot, active_, streamed, first_diff, last_diff, differs, page_bytes_,
                      layer_first_run_[layer], layer_runs_[layer], ring_runs_,
+                     static_cast<unsigned long long>(trace_seq_),
                      found_layer < 0 ? "nothing" : "host(layer,page)=",
                      found_layer < 0 ? 0U : (static_cast<unsigned>(found_layer) << 16) | found_page);
     } else {
@@ -662,7 +667,12 @@ void StreamedKVSpace::consume_run(std::uint32_t layer, std::uint32_t run, cudaSt
     if (compute == nullptr) {
         throw std::invalid_argument("A streamed KV consume needs a compute stream");
     }
-    CUDA_CHECK(cudaEventRecord(consumed_run_[(layer_first_run_[layer] + run) % ring_runs_], compute));
+    const std::uint32_t ring_run = (layer_first_run_[layer] + run) % ring_runs_;
+    CUDA_CHECK(cudaEventRecord(consumed_run_[ring_run], compute));
+    if (std::getenv("NINFER_STREAM_TRACE") != nullptr) {
+        std::fprintf(stderr, "[trace] %llu consume layer=%u run=%u\n",
+                     static_cast<unsigned long long>(trace_seq_++), layer, ring_run);
+    }
 }
 
 std::uint32_t StreamedKVSpace::first_run(std::uint32_t layer) const {

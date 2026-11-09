@@ -1504,19 +1504,25 @@ void TextContext::plan_stream_round(std::int32_t width) {
     stream_splits_per_run_ = 0;
     stream_window_tokens_  = 0;
     stream_runs_           = 0;
+    stream_runs_per_frame_ = 0;
     if (kv_stream_space_ == nullptr || batch_text_kv_ == nullptr || width <= 0) { return; }
-    // One launch per run only pays when the runs are wider than one attention split and the ring was
-    // planned for it; the tuner has to have measured it on this layout (kv_stream_span_tuner.h).
+    // How many of a layer's runs go into one launch is measured, never assumed: the ladder starts at
+    // "all of them" (the ordinary unframed path) and a narrower step only survives if it makes the
+    // round faster on this card, this cache format and this ring (kv_stream_span_tuner.h).
     //
     // The callbacks are driven by the page range each launch names, not by a span index, so a run may
     // be any whole number of pages (kv_stream_space.h).
-    // `NINFER_STREAM_BOUNDED=0` and `=1` pin the pipeline for a verification run; unset follows the
-    // tuner, which is what the delivered path does.
+    //
+    // `NINFER_STREAM_BOUNDED=0` and `=1` pin the widest and narrowest steps for a verification run;
+    // unset follows the tuner, which is what the delivered path does.
     const char* bounded_env = std::getenv("NINFER_STREAM_BOUNDED");
     const bool pinned_off   = bounded_env != nullptr && bounded_env[0] == '0';
     const bool pinned_on    = bounded_env != nullptr && bounded_env[0] == '1';
-    if (pinned_off || (!pinned_on && !stream_span_tuner_.use_bounded())) { return; }
-    if (kv_stream_space_->runs_per_layer() <= 1) { return; }
+    const std::uint32_t runs = kv_stream_space_->runs_per_layer();
+    if (runs <= 1) { return; }
+    const std::uint32_t per_frame =
+        pinned_off ? runs : (pinned_on ? 1U : stream_span_tuner_.candidate_runs_per_frame(runs));
+    if (per_frame >= runs) { return; }
     const std::uint32_t segment_keys = batch_text_kv_->attention_segment_keys();
     if (segment_keys == 0) { return; }
     const std::uint32_t run_keys = kv_stream_space_->run_pages() *
@@ -1524,10 +1530,11 @@ void TextContext::plan_stream_round(std::int32_t width) {
     const std::uint32_t splits_per_run = (run_keys + segment_keys - 1) / segment_keys;
     if (splits_per_run == 0) { return; }
     stream_bounded_round_  = true;
-    stream_splits_per_run_ = static_cast<std::int32_t>(splits_per_run);
+    stream_splits_per_run_ = static_cast<std::int32_t>(splits_per_run * per_frame);
     stream_window_tokens_  = static_cast<std::int32_t>(
         kv_stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize));
-    stream_runs_           = kv_stream_space_->runs_per_layer();
+    stream_runs_           = runs;
+    stream_runs_per_frame_ = per_frame;
 }
 
 void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase ph) {
@@ -2161,7 +2168,7 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
         }
         const bool streamed = kv_stream_space_->window_start() != 0;
         stream_span_tuner_.observe(kv_stream_space_->last_window_seconds() * 1000.0, streamed,
-                                   stream_bounded_round_);
+                                   stream_runs_per_frame_, kv_stream_space_->runs_per_layer());
         plan_stream_round(x.ne[1]);
     }
     // A streamed round copies a layer's pages in runs before its attention and releases them after:

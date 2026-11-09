@@ -457,6 +457,8 @@ private:
     std::int32_t stream_splits_per_run_ = 0;
     std::int32_t stream_window_tokens_  = 0;
     std::uint32_t stream_runs_          = 0;
+    // How many of a layer's runs the launches of the round under trial hold; zero when unframed.
+    std::uint32_t stream_runs_per_frame_ = 0;
     const qwen3_5::PagedKVCache* batch_mtp_kv_  = nullptr;
     LinearAttentionStatePool& state_;
     qwen3_5::RoundState& io_;

@@ -512,7 +512,7 @@ void StreamedKVSpace::verify_streamed_page(std::uint32_t layer, std::uint32_t st
         cache_->page_pool().copy_to_host_pages(slot, 1, verify_arena_->writable_view(*verify_host_),
                                                RankStreams());
         CUDA_CHECK(cudaDeviceSynchronize());
-        const auto* got  = verify_host_->data();
+        const auto* got  = verify_arena_->view(*verify_host_).data();
         const auto* want = host_pages(layer).subview(page, 1).data();
         if (std::memcmp(got, want, page_bytes_) != 0) {
             std::size_t first_diff = 0;

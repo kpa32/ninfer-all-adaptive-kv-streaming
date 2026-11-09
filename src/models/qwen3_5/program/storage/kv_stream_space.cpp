@@ -1,5 +1,6 @@
 #include "models/qwen3_5/program/storage/kv_stream_space.h"
 
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 
@@ -517,10 +518,26 @@ void StreamedKVSpace::verify_streamed_page(std::uint32_t layer, std::uint32_t st
         if (std::memcmp(got, want, page_bytes_) != 0) {
             std::size_t first_diff = 0;
             while (first_diff < page_bytes_ && got[first_diff] == want[first_diff]) { ++first_diff; }
+            // Which record does the slot actually hold? The fingerprint names the writer, which is what
+            // decides whether the table, the copy or the reuse gate is wrong.
+            char holder[64] = "none";
+            bool named      = false;
+            for (std::uint32_t other_layer = 0; other_layer < layers_ && !named; ++other_layer) {
+                for (std::uint32_t other_page = 0; other_page < active_; ++other_page) {
+                    if (std::memcmp(got, host_pages(other_layer).subview(other_page, 1).data(),
+                                    page_bytes_) != 0) {
+                        continue;
+                    }
+                    std::snprintf(holder, sizeof(holder), "layer=%u page=%u", other_layer,
+                                  other_page);
+                    named = true;
+                    break;
+                }
+            }
             std::fprintf(stderr,
                          "[verify] MISMATCH layer=%u page=%u slot=%u active=%u streamed=%u "
-                         "first_byte=%zu\n",
-                         layer, page, slot, active_, streamed, first_diff);
+                         "first_byte=%zu holds=%s\n",
+                         layer, page, slot, active_, streamed, first_diff, holder);
         } else {
             std::fprintf(stderr, "[verify] ok layer=%u page=%u slot=%u streamed=%u\n", layer, page,
                          slot, streamed);

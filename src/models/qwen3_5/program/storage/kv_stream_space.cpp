@@ -309,7 +309,10 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     // report like any other.
     if (const char* env = std::getenv("NINFER_STREAM_WINDOW_PAGES")) {
         const long forced_pages = std::strtol(env, nullptr, 10);
-        if (forced_pages >= 0 && forced_pages <= static_cast<long>(pages_per_layer_)) {
+        // One page per layer is the floor a streamed cache can write through; zero is refused by
+        // `repartition`, so the diagnostic names the smallest legal window rather than a plan whose
+        // write path does not exist.
+        if (forced_pages >= 1 && forced_pages <= static_cast<long>(pages_per_layer_)) {
             KVStreamSplit forced;
             forced.layer_resident.assign(layers_, static_cast<std::uint32_t>(forced_pages));
             forced.run_pages  = split_.run_pages;
@@ -574,6 +577,15 @@ void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams
         throw std::invalid_argument("A streamed KV partition does not match the cache's layers");
     }
     for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+        // A window of zero pages names every page's resident slot 0 and leaves the token being
+        // appended no device slot to land in: the plan is arithmetic, the write path is not. A
+        // streamed cache therefore keeps at least one page per layer (measured: a zero-window run
+        // emitted a different id at token 39 while reporting a clean layout).
+        if (next.resident_of(layer) == 0) {
+            throw std::invalid_argument(
+                "A streamed KV partition needs at least one resident page per layer: the token being "
+                "written lands in it");
+        }
         if (next.resident_of(layer) > pages_per_layer_ || next.resident_of(layer) > active_) {
             throw std::invalid_argument("A streamed KV partition window is out of range");
         }

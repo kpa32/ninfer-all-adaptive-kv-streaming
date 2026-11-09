@@ -166,6 +166,22 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
             " pages of context over " + std::to_string(config.full_attention_layers) +
             " layers. Lower --max-context or free device memory");
     }
+    if (plan.features.kv_stream && text_stream) {
+        // A window of zero pages is arithmetically feasible and has no write path: the token being
+        // appended lands in the layer's resident window, so every streaming layer keeps at least one
+        // page there (kv_stream_space.cpp, repartition). Refusing the pool here names the flag that
+        // fixes it instead of failing at the first append.
+        for (const std::uint32_t pages : text_stream->layer_resident) {
+            if (pages == 0) {
+                throw std::invalid_argument(
+                    "--kv-stream needs at least one resident page per streaming layer: the pool has " +
+                    std::to_string(physical_pages) + " page groups for " +
+                    std::to_string(logical_pages) + " pages of context over " +
+                    std::to_string(config.full_attention_layers) +
+                    " layers. Lower --max-context or free device memory");
+            }
+        }
+    }
     // The MTP cache holds its own whole context and never streams, so it keeps the logical page
     // count rather than the streaming text pool's slot count.
     const std::uint32_t mtp_base_pages =

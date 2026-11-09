@@ -489,6 +489,22 @@ table 7).
 layer, and writes them to `--report-json`. The timing events cost device time of their own, so a run
 that is not being measured does not record them.
 
+**Diagnostics, not options.** A streamed pool's shape is decided by measurement, so the shape
+parameters are environment variables rather than flags; none is a product mode, and each record
+carries the shape it ran with (`stream.run_pages`, `stream.ring_runs`, `stream.layer_resident`).
+
+| variable | effect | measured default |
+|---|---|---|
+| `NINFER_STREAM_RUN_PAGES` | pages one copy and one look-ahead step cover | 128 (49/96/128/192 differ by ±0.7%) |
+| `NINFER_STREAM_RING_RATIO` | ring depth as a multiple of one layer's streamed extent | 1.10 |
+| `NINFER_STREAM_BOUNDED` | `0` one whole-layer copy per round, `1` one run per frame | unset: the span tuner picks; whole layers win on this card |
+| `NINFER_STREAM_WINDOW_PAGES` | force the window per layer (≥1) | unset: the planner's shape |
+| `NINFER_STREAM_VERIFY` | compare every streamed page's ring bytes with its host record | off (synchronises) |
+| `NINFER_STREAM_DEBUG` | streamed-round log lines | off |
+
+`NINFER_STREAM_VERIFY` is the byte oracle: its comparison and mismatch counts are in
+`--report-json` under `stream.verify`, and a record with no checks proves nothing about the bytes.
+
 The plan, its measured limits and the open work are in
 [streaming design](maintainer/kv-streaming-design.md) and
 [strategy](maintainer/kv-streaming-strategy.md); the run records behind every number are in

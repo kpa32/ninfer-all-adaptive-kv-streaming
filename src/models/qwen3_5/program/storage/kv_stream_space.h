@@ -233,6 +233,7 @@ public:
 
 private:
     void verify_streamed_page(std::uint32_t layer, std::uint32_t streamed);
+    void verify_after_attention(std::uint32_t layer);
     void publish_slot(std::uint32_t layer, std::uint32_t page, std::int32_t slot,
                       RankStreams streams);
     // Reads every complete pair of timing events into the round in flight (or the prompt's
@@ -344,6 +345,7 @@ private:
     // The `NINFER_STREAM_VERIFY` diagnostic: how many streamed pages it still compares, and the one-page
     // pinned staging area it reads a ring slot into.
     int verify_budget_ = 20000;
+    int verify_after_budget_ = 64;
     std::unique_ptr<HostKVArena> verify_arena_;
     std::optional<HostKVAllocation> verify_host_;
     static constexpr std::uint32_t kNoLayer = std::numeric_limits<std::uint32_t>::max();

@@ -89,6 +89,27 @@ references:
 
 run 宽度四档的时间差在 ±0.7% 内、暴露恒 6.0 ms ⇒ 宽度不是这一档的杠杆；前视比例才是。
 
+## 表 5 CUDA Graph（183 000，`rk4v4`，512 新 token）
+
+| 臂 | 每轮时间 | tok/s | 观测 |
+|---|---:|---:|---|
+| graph on（默认，全驻留） | 37.1 ms | 106.9 | 两次独立运行一致 |
+| graph off（`--no-cuda-graph`，全驻留） | 37.7 / 37.8 ms | 105.1 / 105.0 | 两次独立运行 |
+| 流式臂（两臂都关图，噪声基准） | 46.4 / 46.7 / 46.2 ms | 85.2 / 85.2 / 85.7 | 极差 0.5 ms |
+
+`equiv-183k` 的 resident 臂，graph on（`20261109T192253Z`）vs off（`20261109T192831Z`、
+`20261109T193412Z`）；两次 off 的 512 ids 与 on 逐位相同，即 C8。
+
+- **收益 0.65 ms/轮（1.75%）**，与“每轮约 500–700 个 kernel × 1.3 µs 间隙”同量级：CPU 提交
+  （约 1.5–2 ms）被 37 ms 的 GPU 工作完全掩盖，graph 只消掉 kernel 之间的 GPU 间隙。
+  251 000 的每轮 54.4 ms 把同样的 0.65 ms 稀释成约 1.3%。
+- **流式布局下不可捕获**：图路径为每个并发捕获行预留一页（`graphs.cpp reserve_capture_rows` 的
+  `physical_page(alloc, 0)`），而流式地址提交时 `page_count = 0`（页由 `StreamedKVSpace` 发布），
+  所以捕获在 380 µs 内以 `KV logical page is outside the address space` 失败
+  （`20261109T191653Z`）。要让它成立，图内还必须包含每层的 copy issue 与其 `consumed` record：
+  251 K 的环只有 11 run、一层要 46 run，`ahead = 0` 的串行档下把 issue 移到图外会等一个只有
+  replay 才会 record 的事件而死锁。
+
 ## 复现
 
 ```bash
@@ -101,6 +122,9 @@ python3 tools/bench/run_kv_stream.py check  --suite equiv
 
 # 单独一例、指定格式（--kv-dtype 在子命令之前）
 python3 tools/bench/run_kv_stream.py --kv-dtype rk8v4 bench --case stream-251k-steady --reps 1
+
+# 追加一条臂的旗标（例如关图）
+python3 tools/bench/run_kv_stream.py bench --case equiv-183k --reps 1 --extra=--no-cuda-graph
 ```
 
 每次运行在 `bench/results/kv-stream/runs/` 留下 argv、设备身份、逐轮样本与判定；运行记录的入库策略见

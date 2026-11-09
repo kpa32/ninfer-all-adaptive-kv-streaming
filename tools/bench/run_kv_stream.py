@@ -1878,7 +1878,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     bench.add_argument("--tag", default="")
     # An arm of a comparison is one flag apart from its baseline (--no-cuda-graph is the one this
     # campaign uses), so the flags are passed through instead of being spelled out per case.
-    bench.add_argument("--extra", nargs="+", default=[], help="flags appended to every request")
+    bench.add_argument(
+        "--extra",
+        nargs="+",
+        default=[],
+        help="flags appended to every request; a flag that starts with -- is passed as --extra=--flag",
+    )
     bench.set_defaults(func=command_bench, record_golden=False, force=False)
 
     report = sub.add_parser("report", help="regenerate INDEX.md from the records")

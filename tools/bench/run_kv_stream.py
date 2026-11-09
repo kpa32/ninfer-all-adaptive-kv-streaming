@@ -182,6 +182,38 @@ CASES: dict[str, Case] = {
         oracle="self",
         require_full_generation=True,
     ),
+    # The interval the feature exists for: a pool that holds most - and at the low end all - of one
+    # layer's context, so the ring can collapse and a round carries far less. These three points are
+    # the measured answer to "does the adaptive boundary actually move here", which 183 K and 251 K
+    # cannot show because their ring is already the right size.
+    "stream-150k": Case(
+        name="stream-150k",
+        purpose=(
+            "The middle of the range: a window that holds most of the context, so the controller "
+            "should shrink the ring and a round should carry much less than at 251 K."
+        ),
+        kind="perf",
+        target_tokens=150_000,
+        capacity=262_144,
+        max_new=64,
+        variants=("streamed",),
+        oracle="self",
+        require_full_generation=True,
+    ),
+    "stream-180k": Case(
+        name="stream-180k",
+        purpose=(
+            "Just past the point where a 16 GB pool stops holding the whole context at this cache "
+            "type: the first size where streaming is unavoidable."
+        ),
+        kind="perf",
+        target_tokens=180_000,
+        capacity=262_144,
+        max_new=64,
+        variants=("streamed",),
+        oracle="self",
+        require_full_generation=True,
+    ),
     "resident-8k": Case(
         name="resident-8k",
         purpose="Card-speed reference: the same shape without streaming, to price the streamed path.",

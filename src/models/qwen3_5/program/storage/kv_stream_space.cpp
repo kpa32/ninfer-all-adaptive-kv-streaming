@@ -510,6 +510,9 @@ void StreamedKVSpace::verify_streamed_page(std::uint32_t layer, std::uint32_t st
     }
     for (const std::uint32_t page : {0U, streamed - 1U}) {
         const std::uint32_t slot = slot_of_page(layer, page);
+        // Wait for every copy this layer issued - `ready_` is recorded after the last one - so the probe
+        // compares the bytes the copies left, not the bytes the previous owner left.
+        CUDA_CHECK(cudaEventSynchronize(ready_[layer]));
         cache_->page_pool().copy_to_host_pages(slot, 1, verify_arena_->writable_view(*verify_host_),
                                                RankStreams());
         CUDA_CHECK(cudaDeviceSynchronize());

@@ -1555,6 +1555,12 @@ void TextContext::plan_stream_round(std::int32_t width) {
     const auto plan = ops::causal_attention_frame_plan(
         geometry, width, 1, window_tokens, 0, view.storage, envelope,
         static_cast<std::int32_t>(StreamedKVSpace::kFrameSlots));
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        std::fprintf(stderr,
+                     "[stream] plan width=%d window=%d storage=%d frames=%d pages=%d spf=%d\n",
+                     width, window_tokens, static_cast<int>(view.storage), plan.frames, plan.pages,
+                     plan.splits_per_frame);
+    }
     if (plan.frames <= 1 || plan.splits_per_frame <= 0 || plan.pages <= 0) { return; }
     stream_framed_round_     = true;
     stream_window_tokens_    = window_tokens;
@@ -2187,6 +2193,19 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
     // before its attention and records it consumed after. The two are exclusive per round: a layer
     // that feeds frames must not also be copied whole (design 5.13.2).
     const bool layer_copy = kv_stream_space_ != nullptr && (prefill || !stream_framed_round_);
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        static int printed = 0;
+        if (printed < 8) {
+            ++printed;
+            std::fprintf(stderr,
+                         "[stream] stage=%zu phase=%d framed=%d layer_copy=%d feeds=%zu "
+                         "window_start=%u active=%u\n",
+                         stage, static_cast<int>(ph), stream_framed_round_ ? 1 : 0,
+                         layer_copy ? 1 : 0, stream_feeds_.size(),
+                         kv_stream_space_ == nullptr ? 0U : kv_stream_space_->window_start(),
+                         kv_stream_space_ == nullptr ? 0U : kv_stream_space_->active_pages());
+        }
+    }
     // The adapters' measures start from the residual the stage receives.
     steer(ops::SteerResidualStep::Measure, 0, -1, x);
     for (std::uint32_t layer = parameters_.text.stage_begin[stage]; layer < end; ++layer) {

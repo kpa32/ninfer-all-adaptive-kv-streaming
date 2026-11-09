@@ -438,3 +438,56 @@ ready_run_ 的 run 下标, 该事件最后一次记录时的轮次)`，与写入
 找出第一个"读的轮次 ≥ 写侧尚未记录的轮次"的层。修法大概率同 M-14 结尾写的：给 run 记**本轮**是否
 被消费者释放的代际，而不是只依赖事件对象（事件对象只保存最后一次记录，而最后一次可能来自上一轮，
 等待随即放行）。
+
+### M-16 根因：`attn_mix` 把层号映射了两次（M-13/M-14/M-15 结案）
+
+M-15 把范围收到"消费者的等待链"，但真正的错因是**静态的层号错误**，不是时序。前面所有"加同步"
+的实验都不可能修好它，因为等待被记录到了**别人的 run** 上。
+
+**根因**（`src/models/qwen3_5/execution/text.cpp`，`attn_mix`）：
+
+```cpp
+// 调用方传进来的 fidx 已经是 compact 序数（循环里先做过 compact_layer_indices[layer]），
+// 这里又映射了一次：
+const auto stream_layer = static_cast<std::uint32_t>(dimension(config_.compact_layer_indices[fidx]));
+```
+
+`compact_layer_indices[i]`（`src/models/qwen3_5/config.cpp:133`）是"第 i 层在**它自己那一类**里的
+序号"：full-attention 层给出 full 序数，linear-attention 层给出 linear 序数。合法调用只有一次。
+
+**后果**：16 个 full 层的 `stream_layer` 实际取值是
+
+```
+0,1,2,0,3,4,5,1,6,7,8,2,9,10,11,3
+```
+
+即 **0/1/2/3 各被消费两次，12/13/14/15 一次也没有**。于是 `consume(错层)` 把别人的 run 标成已释放、
+`wait_ready(错层)` 等的是别人的事件；被遮住的 4 层从不释放 run，写者便以为可以覆盖——拷贝在活着的
+读者底下刷新环槽。这正好解释"ids 全对、logprobs 差 0.1 nat"：读的是同一页的**上一轮字节**。
+
+**决定性证据**（`NINFER_STREAM_TRACE=1`，`equv-183k`，`--max-new 2` 时的前 64 个事件）：消费顺序
+`L0,L1,L2,L0,L3,L4,L5,L1,L6,L7,L8,L2,L9,L10,L11,L3` 与上式**逐位相同**；同时
+`NINFER_STREAM_VERIFY` 的事后探针显示每个环槽里装的是"本该轮到它下一轮的那一层"的页
+（`layer=0` 的槽 `holds=host(layer=7,page=0)`）。
+
+**修复**：直接用 `fidx`（`stream_layer = static_cast<std::uint32_t>(fidx)`）。
+
+**修复前后（`check --case equiv-183k`，同一 argv，同一模型）**：
+
+| | 移植前 | 移植后（有 bug） | 修 `wait_ready` 顺序 | **修层号映射** |
+|---|---:|---:|---:|---:|
+| logprob 最大差 | — | 0.118 | 0.079 | **0.000000** |
+| 有差的 token | — | 508/512 | 510/512 | **0/512** |
+| greedy ids | 512/512 | 512/512 | 512/512 | **512/512** |
+| campaign | PASS（无 logprob 判据） | FAIL | FAIL | **PASS** |
+| streamed tok/s | 89.9 | 94.2 | 94.2 | **85.7** |
+| 暴露 ms/轮 | 15.6 | 0.9 | 0.9 | **7.2** |
+
+**注意速度的变化**：修好后 decode 从 94.2 掉到 85.7、暴露从 0.9 升到 7.2 ms。这是**正确的代价**，
+不是新的回归：以前没有任何等待真正生效（等的都是错的 run），拷贝可以任意抢跑。环在 183K 是
+1.10 × 工作集（≈780 页 → 7 runs = 896 槽），而一轮要搬 16 层 × ≈708 页 = 775 MiB 穿过这个 62 MiB
+的环，即环被回卷 12 次，每次都必须等前一个读者——**这正是上游要用 bounded span 流水（拷贝跑在
+launch 循环里、与计算重叠）的原因**。本实现的 bounded 派发默认关闭（span 与 run 未对齐），所以现在
+只拿到了"环变小"的收益，还没拿到"重叠回来"的收益。
+
+运行记录：`bench/results/kv-stream/runs/20261109T091551Z-equiv-s6-equiv10-48746c74`（PASS）。

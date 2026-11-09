@@ -246,6 +246,56 @@ plan_kv_stream_uniform(std::uint32_t budget_pages, std::uint32_t active_pages,
     return std::nullopt;
 }
 
+// The smallest ring that lets one layer's copy run under the previous layer's attention: two extents of
+// the widest streamed layer, rounded up to a whole number of runs.
+//
+// Why this is a planning input and not a constant: a ring that holds exactly one extent cannot start a
+// copy before its reader finishes, so the round costs copies *plus* attention instead of the larger of
+// the two. At 251K on this card those two numbers are 46.1 ms of copies and ~8.3 ms of attention per
+// round - 54.4 ms measured, i.e. no overlap at all - so a deep ring is worth up to 15% of a round. What
+// it costs is the window it displaces: at a fixed pool a deeper ring means less residency, and at 251K
+// `rk4v4` that is 44 pages per layer, about +4% of a round's bytes. Whether that trade pays is a
+// measurement, not a property of the design, so the space proposes it as a trial and keeps it only if
+// the round actually gets faster (kv_stream_space.cpp, evaluate_partition).
+//
+// Returns nothing when the pool cannot afford two extents even with a zero window, or when the model has
+// too few streaming layers for the window term to dominate the ring's run rounding: then the depth-one
+// regime is the only plan and the caller keeps the byte-minimal one.
+[[nodiscard]] inline std::optional<KVStreamSplit>
+plan_kv_stream_lookahead(std::uint32_t budget_pages, std::uint32_t active_pages,
+                         std::uint32_t layers, std::uint32_t run_pages = kKVStreamRunPages) noexcept {
+    if (layers < 4 || active_pages == 0 || run_pages == 0) { return std::nullopt; }
+    if (std::uint64_t(layers) * active_pages <= budget_pages) { return std::nullopt; }
+    const auto ring_for = [&](std::uint32_t resident) {
+        if (resident >= active_pages) { return std::uint32_t(0); }
+        const std::uint64_t streamed = active_pages - resident;
+        return static_cast<std::uint32_t>(
+            detail::kv_stream_ceil_to_run(detail::kv_stream_ceil_to_run(streamed, run_pages) * 2, run_pages));
+    };
+    const auto fits = [&](std::uint32_t resident) {
+        return std::uint64_t(layers) * resident + ring_for(resident) <= budget_pages;
+    };
+    if (!fits(0)) { return std::nullopt; }
+    std::uint32_t low  = 0;
+    std::uint32_t high = active_pages - 1;
+    while (low < high) {
+        const std::uint32_t mid = low + (high - low + 1) / 2;
+        if (fits(mid)) {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    KVStreamSplit split;
+    split.layer_resident.assign(layers, low);
+    split.ring_pages = ring_for(low);
+    split.run_pages  = run_pages;
+    if (kv_stream_ring_runs(split) < 2 * kv_stream_runs_per_layer(active_pages, split)) {
+        return std::nullopt;
+    }
+    return split;
+}
+
 // The decode split the reference builds (`kv_stream_resident_cache_layout`): the same pool, but only
 // `split_layers` layers stream and every other layer keeps its whole context resident. A layer that
 // streams then reads a wider extent, so the ring must hold more per call and the window loses what the

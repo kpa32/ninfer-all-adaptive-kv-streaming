@@ -237,28 +237,6 @@ def test_pinned_dtype_is_replaced_not_appended() -> None:
     assert overridden.count("--kv-dtype") == 1
     assert overridden[overridden.index("--kv-dtype") + 1] == "rk8v4"
 
-def main() -> int:
-    """Run every test function without pytest, so the record can be checked where it was made."""
-    failures = 0
-    tests = [
-        (name, value)
-        for name, value in sorted(globals().items())
-        if name.startswith("test_") and callable(value)
-    ]
-    for name, function in tests:
-        try:
-            function()
-        except Exception:  # noqa: BLE001 - the point is to report every failure
-            failures += 1
-            print(f"FAIL {name}")
-            traceback.print_exc()
-        else:
-            print(f"ok   {name}")
-    print(f"{len(tests) - failures}/{len(tests)} passed")
-    return 1 if failures else 0
-
-
-if __name__ == "__main__":
     sys.exit(main())
 
 
@@ -281,3 +259,27 @@ def test_the_delivery_format_has_its_own_equivalence_case() -> None:
 def test_a_case_without_a_dtype_follows_the_global_override() -> None:
     """没有自己的格式时，全局 --kv-dtype 仍然生效（rk4v4 走默认，交付格式靠用例钉住）。"""
     assert run_kv_stream.CASES["equiv-183k"].kv_dtype == ""
+
+
+def main() -> int:
+    """Run every test function without pytest, so the record can be checked where it was made."""
+    failures = 0
+    tests = [
+        (name, value)
+        for name, value in sorted(globals().items())
+        if name.startswith("test_") and callable(value)
+    ]
+    for name, function in tests:
+        try:
+            function()
+        except Exception:  # noqa: BLE001 - the point is to report every failure
+            failures += 1
+            print(f"FAIL {name}")
+            traceback.print_exc()
+        else:
+            print(f"ok   {name}")
+    print(f"{len(tests) - failures}/{len(tests)} passed")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":

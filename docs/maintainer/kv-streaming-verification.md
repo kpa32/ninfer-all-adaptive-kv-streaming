@@ -71,9 +71,9 @@ L6 是合并门槛。
 
 | ID | 检查 | 判据 | 状态 |
 |---|---|---|---|
-| K1 | `kv_stream_signal` 的 oracle | 设备侧 deadline 计数与主机侧事件计数一致（独立 oracle） | 未做 |
-| K2 | `compute-sanitizer --tool racecheck` | 0 error（`tests/README.md:96-110` 的跑法） | 未做 |
-| K3 | `compute-sanitizer --tool synccheck` | 0 error | 未做 |
+| K1 | `kv_stream_signal` 的 oracle | 测试自己的记账即规格：ready=样本、未 ready=miss、四 run 互不串、重新 ready 仍是样本、未采样窗口报"无" | **PASS**（`tests/test_kv_stream_signal.cu`，M-24） |
+| K2 | `compute-sanitizer --tool racecheck` | 0 error（`tests/README.md:96-110` 的跑法） | **PASS**：0 hazards（M-24） |
+| K3 | `compute-sanitizer --tool synccheck` | 0 error | **PASS**：0 errors；另跑 initcheck 也是 0（M-24） |
 | K4 | 跨架构可编 | `sm_70/75/80/86/89/120a` 全部构建通过 | 未做（本地仅 `sm_89`） |
 | T1 | bench 工具单测 | `tests/test_kv_stream_tool.py`（12 个用例）纳入 CI | **PASS**（`ci.yml` 新增一步 + `change-scopes.py` 把该文件计入 python 范围；2026-11-10，提交 `9e7d7797`） |
 | T2 | span tuner + guards 注册 | `CoreTests.cmake` 有 `ninfer_kv_stream_span_tuner_test` 与 `ninfer_kv_stream_guards_test` | **PASS**（`9e7d7797`） |
@@ -85,7 +85,7 @@ L6 是合并门槛。
 | G1 | `docs/cli.md` 写 `--kv-stream` | **PASS**：新增 "Streaming KV past the pool" 一节 + Common options 两行（`9e7d7797`） |
 | G2 | README What's New 一行 | **PASS**：`2026-11-10` 一行（`9e7d7797`） |
 | G3 | `docs/serving.md` 写明边界 | **PASS**：新增 "Streaming KV is not a server mode"（`9e7d7797`） |
-| G4 | 新 kernel 的 racecheck/synccheck 记录 | 无 ⇒ FAIL（= K2/K3） |
+| G4 | 新 kernel 的 racecheck/synccheck 记录 | **PASS**（= K2/K3，M-24） |
 | G5 | 测试注册进 CTest | 缺 span_tuner ⇒ FAIL（= T2） |
 | G6 | 测量交错运行 | 顺序跑 ⇒ FAIL（= P8，P1 之后修） |
 | G7 | 文档只写当前状态（无日期日志/尝试过程） | worklog/measurements 违反 ⇒ FAIL |
@@ -115,10 +115,10 @@ L6 是合并门槛。
 |---|---|---:|---|
 | 正确性 | 6/12（C1、C11 全过；C6、C9 半） | **20/40** | C1 等价套件 + C11 守卫表与新 CLI 实跑 |
 | 性能回归 | 7/8（P1–P7 ✅、P8 ✗） | **17.5/20** | 4 条实测基线 |
-| 内核与工具 | 2/6（T1、T2 全过；K1–K4 未做） | **5/15** | CI 已接上工具测试与两个新测试 |
-| 门禁与文档 | 4/8（G1、G2、G3、G8 过；G4、G5、G6、G7 未过） | **7.5/15** | 三条文档已补；G5 等 CTest 树 |
+| 内核与工具 | 5/6（T1、T2、K1–K3 全过；K4 跨架构未做） | **12.5/15** | oracle + racecheck + synccheck 落地 |
+| 门禁与文档 | 5/8（G1、G2、G3、G4、G8 过；G5、G6、G7 未过） | **9.4/15** | 只剩注册（等 CTest 树）、交错、文档结构 |
 | 机制覆盖 | ~10/40 工作包 | **2.5/10** | §11 |
-| **总分** | | **≈52/100 ⇒ D** | 正确性 6/12、门禁 4/8，两条线都没过 |
+| **总分** | | **≈60/100 ⇒ D** | 正确性 6/12、门禁 4/8 仍挡着 C 线 |
 
 **这就是为什么不能说"方向对了"**：方向对不对要由 M 表与 P 表证明（P1–P7 过、机制 25%），
 而"结果对、可交付"要由 C 表与 G 表证明（C 只过 1 项、G 只过 1 项）。当前结论只能是

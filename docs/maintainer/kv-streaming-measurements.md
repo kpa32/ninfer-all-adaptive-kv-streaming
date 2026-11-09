@@ -753,3 +753,29 @@ rk8v4 的环是 20 runs、驻留窗口 1813 页、流式 2117 页（集中形状
 - 实跑 `--kv-capacity 8192 --kv-stream` → `error: --kv-stream sizes its KV pool from free memory: pass --kv-capacity auto`
 - **发现**：单请求 CLI **不暴露** `--max-concurrency`，序列守卫只经 Engine 生效（由单测覆盖）；
   `--devices 0,1` 在本机先被 CUDA 拒（只有 1 张卡），多设备守卫同样由单测覆盖。
+
+## M-24 设备侧反馈内核的 oracle 与 sanitizer（2026-11-10，`kv-stream-27b-16g`）
+
+**做了什么**：新增 `tests/test_kv_stream_signal.cu`（GPU 用例，无卡退 77）并注册为
+`ninfer_kv_stream_signal_test`。oracle 是**测试自己的记账**：由它决定哪几个 run 被标记 ready，
+所以它预测的 samples/misses 就是规格；内核数与记账不一致就是反馈信号错了，而分区控制器正是跑在这两个数上。
+
+覆盖 8 组：ready=样本非 miss、未 ready=miss、四个 run 的标记互不串（共享环写错的形状）、
+miss 之后重新 ready 仍是样本（清标志的语义）、窗口时间、未采样的窗口报"无"而不是 0、
+未结束的窗口不报时间、被重启的窗口计为丢失。
+
+**结果**（主机 `kpa@192.168.2.13`，CUDA 13.4，sm_89）：
+
+```
+nvcc -std=c++20 -O2 -Isrc -Iinclude -arch=sm_89 tests/test_kv_stream_signal.cu \
+     build-sm89/src/core/libninfer_core.a -lcudart -o /tmp/t_signal
+/tmp/t_signal                                   → kv stream signal: all checks passed
+compute-sanitizer --tool racecheck  /tmp/t_signal → 0 hazards displayed (0 errors, 0 warnings)
+compute-sanitizer --tool synccheck  /tmp/t_signal → ERROR SUMMARY: 0 errors
+compute-sanitizer --tool initcheck  /tmp/t_signal → ERROR SUMMARY: 0 errors
+```
+
+**过程中的一次自我纠错**：第一版测试把 `copy_time()` 期望成"只要窗口里有拷贝就有数"，
+实测报 3 条失败。查实现（`kv_stream_signal.cu:98-118`）确认契约是"只有被 `begin_copy_sample`
+采样的那个 run 才有数，`uploads` 表示该窗口发出几个 run"，于是改成按真实契约断言（并补一条
+"未采样的窗口必须报无、不能报 0"）。**这是测试写错，不是内核错**——但正是它把契约记了下来。

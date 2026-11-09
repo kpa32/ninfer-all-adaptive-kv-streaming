@@ -1543,6 +1543,9 @@ void TextContext::plan_stream_round(std::int32_t width) {
         active_causal_attention_envelope_ == nullptr || width <= 0) {
         return;
     }
+    // A measurement knob, not a product option: it makes one build copy a layer at a time so a
+    // campaign can price framing against that on the same binary (design 5.13.2).
+    if (std::getenv("NINFER_STREAM_NO_FRAMES") != nullptr) { return; }
     // Every streaming layer reads the same cache, so the first full-attention layer names the
     // storage the round's launches will take.
     std::uint32_t full = 0;

@@ -237,7 +237,6 @@ def test_pinned_dtype_is_replaced_not_appended() -> None:
     assert overridden.count("--kv-dtype") == 1
     assert overridden[overridden.index("--kv-dtype") + 1] == "rk8v4"
 
-    sys.exit(main())
 
 
 
@@ -259,7 +258,6 @@ def test_the_delivery_format_has_its_own_equivalence_case() -> None:
 def test_a_case_without_a_dtype_follows_the_global_override() -> None:
     """没有自己的格式时，全局 --kv-dtype 仍然生效（rk4v4 走默认，交付格式靠用例钉住）。"""
     assert run_kv_stream.CASES["equiv-183k"].kv_dtype == ""
-
 
 def main() -> int:
     """Run every test function without pytest, so the record can be checked where it was made."""

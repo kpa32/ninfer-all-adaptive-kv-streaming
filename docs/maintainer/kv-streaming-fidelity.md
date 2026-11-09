@@ -287,3 +287,87 @@ handoff）**不移植**：它们对应上游特有的生命周期，我们的对
 
 每一阶段的上卡验收口径都写在第 7 节；数值参数（1.10、0.80/0.50、3/8、64）先按上游原值落地，
 再用实测的扫档确认（第 9 节的第 1 条风险）。
+
+---
+
+## 11. 全表面复核（2026-11-10）：这张表的框错了，一条结论也错了
+
+### 11.1 错在哪
+
+**（1）一条结论是假的。** §3 那张对照表里写着「块表间接寻址 + 图内换页 | 是 | 是（图内捕获）| ✅ 同」。
+事实是 `src/models/qwen3_5/program/planning/startup.cpp:1510`：
+
+```cpp
+impl->use_cuda_graph = inputs.use_cuda_graph && !inputs.features.kv_stream;
+```
+
+**流式一开，CUDA Graph 全部关掉。** 上游把整轮换页放在图内（`fattn.cu:1564-1720`，跨流等待是图内
+event 节点），我们则是"关掉图、主机逐层发拷贝"。这一条被写成"✅ 同"，是本轮最大的失实。
+
+**（2）对照表的组织轴是"decode 一轮怎么跑"。** 于是四类机制从头到尾没有成为表里的一行：
+
+1. 归一化布局：prompt 用 uniform、decode 用 concentrated、下一个 prompt chunk 回退
+   （`llama-kv-cache.cpp:1400-1412` 的 `decode_layout_pages = 0` 注释写着 "A zero target restores prefill"）；
+2. 每 ubatch 适配：`llama-context.cpp:1381-1387` 在 `process_ubatch` 里调 `kv_stream_adapt`，**不分阶段**；
+3. 写路径脏行与镜像：`llama-kv-cache.cpp:1758-1764` 的 `mark_dirty_rows_fn`，每个 ubatch 都报；
+4. 图内调度：`kv_stream_graph_schedule_batch` 认领槽位、跨层预取、`ready_flags_device` 设备侧放行。
+
+这四类不在表里 ⇒ 移植时自然也没被当成工作项 ⇒ "遗漏"不可能被自己发现。
+
+### 11.2 上游机制 × 我方现状（逐条，带位置）
+
+| # | 机制 | 上游位置 | 我方 | 判定 |
+|---|---|---|---|---|
+| 1 | 主机权威副本 + 块表换页 | `llama-kv-cache.cpp` | `kv_stream_space.cpp`（host arena + 每层表） | ✅ 有 |
+| 2 | 平铺槽池 + run 宽度 | `fattn.cu` transfer ring | `kv_stream_layout.h` 环/run | ✅ 有 |
+| 3 | 设备侧 ready 标志 + deadline 采样 | `fattn.cu:1285-1345`（`ready_flags_device`） | `core/kv_stream_signal.cu` | ✅ 有 |
+| 4 | 分区控制器（迟滞 3/8、冷却 64、1.10） | `llama-kv-stream-plan.cpp:355` | `core/kv_stream_partition.*` | ✅ 有 |
+| 5 | 跨度调优器（16 样本 / 0.5%） | `ggml-cuda/kv-stream-span-tuner.h` | `core/kv_stream_span_tuner.h` | ✅ 有 |
+| 6 | **prompt/decode 双布局 + 回退** | `llama-kv-cache.cpp:1400-1412` | **无**：`kv_stream_space.cpp:407` 把 `entering_decode_layout` 硬编码成 `false`；也没有"回到 uniform"的路径 | ❌ 缺 |
+| 7 | **每 ubatch 适配（含 prompt）** | `llama-context.cpp:1381-1387` | **无**：`begin_round` 只在 decode 调（`text.cpp:2168` 带 `!prefill`） | ❌ 缺 |
+| 8 | **写路径脏行 / 镜像标记** | `llama-kv-cache.cpp:1758` | **无**：`advance()` 无条件回写跌出窗口的页（`kv_stream_space.cpp:790`） | ❌ 缺 |
+| 9 | **图内换页 + 图内跨流事件** | `fattn.cu:1564-1720` | **无**：`startup.cpp:1510` 关图 | ❌ 缺（最贵） |
+| 10 | **槽位认领 + 跨层/跨轮预取调度** | `kv_stream_graph_schedule_batch`（工作守恒、可跨轮） | **无**：跨轮预取被我删掉（`0c6927c7`），只发 `current + ahead` | ❌ 缺 |
+| 11 | prompt 时跨度=整层、decode 才用调优跨度 | `fattn.cu:1761`（`Q->ne[1] == 1 ? … : UINT32_MAX`） | 行为近似（prefill 被排除在分帧之外），但**没有"分档"这个机制** | ⚠️ 近似 |
+| 12 | MTP/DFlash KV 作为独立驻留角色 | `llama-kv-stream-plan.h:11-13` `role::mtp` | 无 | ⏸ 上游也没接线 |
+| 13 | region 规划器（驻留优先级、`pin_tail`） | `llama-kv-stream-plan.h:13-95` | 无（我们用几何公式） | ⏸ 上游也没接线 |
+| 14 | 主机侧与图并行的拷贝编排 | `kv_stream_graph_upload` | `upload()` 每层顺次发 run | ⚠️ 部分 |
+
+第 12、13 条的判定依据：`llama_kv_stream_plan_make` / `regions_make` / `extent_make` /
+`prefetch_dispatch` 在上游**除单测外没有任何调用者**（`grep` 于 `src/` 与 `ggml/` 为 0），
+运行时真正用的是 `resident_cache_layout`（`fattn.cu`）+ `partition_adapt`/`feedback_delta`
+（`llama-kv-cache.cpp`）。所以它们不构成"我们欠的移植"，但**它们的机制思想（producer 依赖、
+工作守恒的槽位填充）在 CUDA 侧是活的**，见第 10 条。
+
+### 11.3 后果（可量化）
+
+| 症状 | 直接原因 | 已有实测 |
+|---|---|---|
+| 251K decode 每轮 54.4 ms（rk4v4）、147.9 ms（rk8v4） | 无图（第 9 条）+ 无跨轮预取（第 10 条） | M-19/M-20 |
+| 251K prefill 1281 tok/s、搬 ~94 GiB | 不换布局（第 6 条）+ 不适配（第 7 条）+ 每 chunk 重传尾部 | M-21 附记 |
+| prefill 形状对 prefill 不利 | decode 的集中布局被用于 prompt | 第 6 条 |
+| 控制器 `entering_decode_layout` 分支是死代码 | `kv_stream_space.cpp:407` 硬编码 false | 第 6 条 |
+| 集中布局可能从未真正被选中 | 同上 + 无测量记录形状 | 第 6 条 |
+| MTP KV 仍整层驻留（占容量） | 第 12 条（上游也未接线） | — |
+
+### 11.4 计划：把"病猫"做成"老虎"（T1–T7，各自独立验收）
+
+按"收益 ÷ 风险"排序。每期都要求：改前先有测量、改后逐位不破、报告里能看见它的数字。
+
+| 期 | 内容 | 验收判据 |
+|---|---|---|
+| **T1** | **恢复 CUDA Graph**：块表/control 更新做成图内合法形状（固定形状 H2D + 设备侧放行），布局代数进图缓存键 | 251K rk4v4 ≥ 72.8 tok/s；同构建 eager vs graph 的 logprobs 512/512 逐位相同 |
+| **T2** | **双布局**：prompt 用 uniform、decode 用 concentrated、下一个 prompt chunk 回退 uniform | 251K prefill 字节与 tok/s 优于 1281/94 GiB；decode 不退；日志与报告能读出当前布局 |
+| **T3** | **每 chunk 适配 + 脏页回写** | prefill 期出现 `[partition]` 决策；prefill 回写字节 ≤ 实际写过页数 |
+| **T4** | **跨轮预取 + 槽位认领**（照上游 `producer_attention_index` 的依赖思想，而不是删掉预取） | `--kv-stream-ring-ratio 2.0` 下 251K `check --case equiv-183k` PASS，且每轮不慢于 1.10 |
+| **T5** | **跨度分档**：prompt 整层 / decode 阶梯，一套代码两个档 | prefill 与 decode 各自用对档；`[stream] ladder` 只在 decode 出现 |
+| **T6** | **草稿 KV（MTP）流式**（本机 rk8v4 251K 的容量/字节收益） | 同一容量下池更大或每轮字节更少，且逐位不破 |
+| **T7** | **全矩阵验证**：262 144 的 prefill+decode × {rk4v4, rk8v4, int8} × resident(≤110K)/streamed；作者口径曲线 | 每格有 ids 与 logprobs 判据；曲线上能看见流式生效点 |
+
+### 11.5 流程错误（必须记下来，防止再犯）
+
+1. 我把"只做 decode 的按层流式"写进 SPEC 的"不在本次范围"，**没有把它作为一次交付范围缩减提交批准**，
+   后来又把 prefill 归到"所有者另行安排"，等于把缩掉的东西改写成别人的任务。
+2. 对照表以 decode 流水为轴，**没有按"上游机制的完整清单"来写**，所以 11.2 里第 6–11 条从一开始就
+   不在比较对象里。
+3. 第 92 行那条"✅ 同"是在没有核对 `startup.cpp:1510` 的情况下写的**推断**，却被写成事实。

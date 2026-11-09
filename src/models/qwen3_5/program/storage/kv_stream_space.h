@@ -233,6 +233,13 @@ public:
     // measurement before the round's first layer.
     void begin_round(cudaStream_t compute);
 
+    // Puts the split into the shape the phase streams best in, migrating the pages that change sides
+    // when the phase changed. A prompt chunk reads the same extent in every layer, and the traffic its
+    // chunks move grows with the square of that extent (kv-streaming-strategy.md M4), so it wants the
+    // uniform shape; a decode round copies layer by layer, so it wants the concentrated one where the
+    // pool allows it (kv_stream_layout.h). One repartition per phase change, never per chunk.
+    bool enter_layout(bool decode_phase, RankStreams streams);
+
     // The controller's decision for this round, applied when it moves the boundary (port of the
     // reference implementation's `kv_stream_adapt` + `reconfigure`/`repartition`). Returns true when
     // the pool moved.
@@ -354,6 +361,11 @@ private:
     // The controller's state: the ring may never shrink below the size the cache was planned with
     // (the reference sets its minimum from the initial ring), and a repartition costs a table rebuild,
     // so it runs at most once per cooldown.
+    // The phase the space is shaped for: -1 until the first caller names one, so the first phase of a
+    // request is a change and the default probe of a phase is never assumed to be its shape.
+    int phase_                   = -1;
+    // The layout the split is shaped for: the planner's answer in kv_stream_layout.h.
+    bool decode_phase_           = false;
     std::uint32_t minimum_ring_pages_            = 0;
     std::uint32_t evaluations_since_repartition_ = UINT32_MAX;
     std::uint32_t starved_evaluations_           = 0;

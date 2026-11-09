@@ -286,6 +286,31 @@ void StreamedKVSpace::begin_round(cudaStream_t compute) {
     (void)evaluate_partition(RankStreams(compute));
 }
 
+bool StreamedKVSpace::enter_layout(bool decode_phase, RankStreams streams) {
+    // A prompt chunk reads the same extent in every layer, and the traffic a chunk moves grows with the
+    // square of that extent (kv-streaming-strategy.md M4), so the uniform shape is the prompt's. A
+    // decode round copies layer by layer, so it concentrates the streams into fewer layers and keeps
+    // the rest resident where the pool allows it (plan_kv_stream_split). The migration a change costs
+    // is per changed layer, so it is taken when the phase changes and never per chunk; a phase whose
+    // planner answer equals the current split costs nothing.
+    decode_phase_ = decode_phase;
+    const int phase = decode_phase ? 1 : 0;
+    if (phase_ == phase) { return false; }
+    phase_ = phase;
+    const std::optional<KVStreamSplit> target =
+        decode_phase ? plan_kv_stream_split(slot_count_, active_, layers_, split_.run_pages,
+                                            kKVStreamRingRatio)
+                     : plan_kv_stream_uniform(slot_count_, active_, layers_, split_.run_pages,
+                                              kKVStreamRingRatio);
+    if (!target) { return false; }
+    if (target->layer_resident == split_.layer_resident &&
+        target->ring_pages == split_.ring_pages) {
+        return false;
+    }
+    repartition(*target, streams);
+    return true;
+}
+
 bool StreamedKVSpace::close_signal_window() noexcept {
     if (!signal_window_open_) { return true; }
     const KVStreamSignal::WindowTime window = signal_->window_time();
@@ -443,7 +468,7 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     params.starved_evaluations           = starved_evaluations_;
     params.overprovisioned_evaluations   = overprovisioned_evaluations_;
     params.evaluations_since_repartition = evaluations_since_repartition_;
-    params.entering_decode_layout        = false;
+    params.entering_decode_layout        = decode_phase_;
     const KVStreamPartition decision = kv_stream_partition_adapt(params);
     window_measured_ = false;
     if (!decision.valid) { return false; }

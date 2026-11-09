@@ -186,8 +186,7 @@ void causal_attention_small_t_k8v4_launch(
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
     Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream,
-    float* partial_out = nullptr, CausalSplitRange splits = {},
-    const CausalAttentionFrameHook* frames = nullptr);
+    float* partial_out = nullptr);
 
 void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& positions,
                                                  float scale, const PagedKVLayerView& cache,

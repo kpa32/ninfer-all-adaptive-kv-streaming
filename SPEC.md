@@ -58,6 +58,11 @@ RTX 4080 SUPER 有 16 376 MiB。Qwen3.8-27B 的 IQ3_S 文本权重上卡占 11.6
 ## 关键依据
 
 - 机制、预算与真实上界：[kv-streaming-design](../docs/maintainer/kv-streaming-design.md)
+- 参考实现的逐条对照与移植图纸：[kv-streaming-fidelity](../docs/maintainer/kv-streaming-fidelity.md)
+- 复核与接手（来源、改动、不变量、已结与未结缺陷、PR 范围）：
+  [kv-streaming-worklog](../docs/maintainer/kv-streaming-worklog.md)
+- 实测记录（每条的日期、提交、命令与结果）：
+  [kv-streaming-measurements](../docs/maintainer/kv-streaming-measurements.md)
 - 外部资料（参考文章全文 + CUDA Graph 说明）：
   [adaptive-kv-streaming-inputs](../docs/maintainer/adaptive-kv-streaming-inputs.md)
 - 现有物理基础：[paged-kv-cache](../docs/maintainer/paged-kv-cache.md)、
@@ -75,7 +80,14 @@ RTX 4080 SUPER 有 16 376 MiB。Qwen3.8-27B 的 IQ3_S 文本权重上卡占 11.6
 6. 251 K 的每轮拷贝占用与轮时间之比不再退化（帧级环落地前 47.5/56.7 ms），并按 M-11 的
    footprint 口径同时报告窗口长度；**同时证明 decode 真的搬了页**（`rounds_series` 的
    `upload_bytes` 非零，避免“少搬所以变快”的假加速）。
-   **已验（2026-11-09，M-12）**：默认路径 251 K = 69.2 tok/s / 56.7 ms / 1 193.6 MiB/轮 /
-   暴露 15.7 ms，与基线逐项相同（`20261109T045828Z-bench-m12-default-251k-e25152e0`）；
-   等价性 4/4 PASS 且 decode 真搬页（`20261109T045055Z-equiv-m12-equiv-default-e25152e0`）。
-   帧路径已在同一构建内验证逐位相同，但**更慢**，所以不作为交付路径（见交付项 6）。
+   **已验（2026-11-09，M-19/M-20/M-21，交付提交 `af2a86b0`）**：
+   - 251 K `rk4v4` 稳态（512 token）= **54.4 ms/轮、72.8 tok/s、1 116.2 MiB/轮**
+     （移植前同 argv 为 56.6 ms / 69.3 tok/s / 1 193.6 MiB），暴露 13.5 ms；
+   - 251 K `rk8v4` 稳态 = **147.9 ms、26.8 tok/s、3 366.9 MiB/轮**
+     （移植前 151.0 ms / 26.1 tok/s / 3 603.0 MiB）；
+   - 池装得下时（150 K / 180 K）每轮 **0 字节**、107.1 / 106.0 tok/s，即 `--kv-stream` 零代价；
+   - 等价性 `check --suite equiv` **4/4 PASS**，`equiv-183k` 的 resident 与 streamed 各 512 token
+     **ids 与 logprobs 均逐位相同**（`20261109T113826Z-equiv-s17-suite-c4b02ae2`）；
+   - decode 真搬页（1 116.2 MiB/轮 × 129 轮与 `upload_bytes` 相符）。
+   流水形状现在由**实测阶梯**选择（整层/半层/2 runs/1 run），本机选“整层”；分帧路径在同一构建内
+   验证过逐位相同但本机更慢（102.6 ms/轮），所以不会被选中，也不再是“开/关”二选一。

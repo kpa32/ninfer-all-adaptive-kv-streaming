@@ -80,6 +80,8 @@ other references own narrower contracts:
 | [Hybrid prefix cache](maintainer/hybrid-prefix-cache-spec.md) | the default prefix cache of `ninfer-serve`: block tree, sparse state snapshots, tap placement, Host slab tier, eviction and automatic configuration |
 | [Paged KV context store](maintainer/paged-kv-cache.md) | typed pools, pages, replicas, address spaces, reservations and consumer views |
 | [KV streaming](maintainer/kv-streaming-design.md) | the 262 144 context on a 16 GB card: capacity and bandwidth budget, mechanism, decisions, milestones and acceptance |
+| [KV streaming fidelity](maintainer/kv-streaming-fidelity.md) | the reference implementation point by point: upstream structure, our state, the gap matrix, R1-R13 and the port's build plan |
+| [KV streaming worklog](maintainer/kv-streaming-worklog.md) | review and takeover: sources, files changed against upstream commits, invariants, closed and open defects, PR scope and the commands |
 | [KV streaming measurements](maintainer/kv-streaming-measurements.md) | the run records behind those numbers: date, commit, command and result of every measurement |
 | [KV streaming inputs](maintainer/adaptive-kv-streaming-inputs.md) | the reference article and the CUDA Graph notes behind that design; input, not a description of this repository |
 | [ReplaySSM GDN](maintainer/replayssm-gdn.md) | raw transition records and faithful commitment of the verified state prefix |

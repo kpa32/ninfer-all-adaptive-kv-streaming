@@ -1074,28 +1074,92 @@ RTX 5070 Ti 16 GB、`Qwen3.8-27B` `UD-Q3_XL`、262 144 上下文、Q8_0 K / Q4_0
 2. **速度**：`bench --case stream-251k`，比 56.7 ms 的基线。
 3. 若逐 id 变了，说明三件不变量之一被破坏，先修不变量，不要调参。
 
-### 5.13.1 更正（同日，核发射代码与占用）：环必须按"发射帧"，不是按"一段"
+### 5.13.1 更正（2026-11-09，核发射代码与路由）：kernel 归属错了两次
 
-上表的 span 按"一段 46 页"算，漏了一个硬约束：**一次发射要占满一个 wave 才有意义**。
+原始提案（本文件 2026-11-08 的第一版）按"一段 46 页"算 span，随后补了"一次发射要占满一个
+wave"。两次都建立在一个**未核实的等价关系**上：当时把 `small_t_k8v4` 当成 `rk4v4` 的
+decode 路径。**这一步是错的，并且是整轮返工的根因。**
 
-`small_t_k8v4` 的 grid 是 `(kv_heads, splits, batch)` = `(4, K, 1)`，每 CTA 8 warps。
-本卡 76 个 SM，一层 85 段的 attention 是 `4 × 85 = 340` CTA = 4.5 个 wave。若一次只发 `K`
-段，CTA 数 = `4K`，要 ≥ 76 才是一整 wave：
+#### 路由事实（逐条可核）
 
-| 每帧段数 K | CTA | 波数 | 该层 attention 时间 |
-|---:|---:|---:|---:|
-| 85（现状，1 次发射） | 340 | 4.5 | 1.56 ms |
-| 17 | 68 | 1.0 | 1.75 ms |
-| 8 | 32 | 1.0（半空） | 3.85 ms |
-| 1 | 4 | 1.0（1/19 占用） | 30 ms |
+| `--kv-dtype` | `KvCacheStorage` | decode 小 T 的实际 kernel |
+|---|---|---|
+| `k8v4` | `Fp8KeyNvfp4Value`（`kv_cache_storage.h`） | `small_t_k8v4.cu`（唯一走它的 storage：`small_t.cu:451`） |
+| `rk8v4` | `RotatedInt8KeyInt4ValueGroup64` | INT8 家族 `small_t_i8_launch.cuh`（`launch_tc_partial_i8`） |
+| `rk4v4` / `rk4v4-e8` / `rk2v4-e8` / `int8` | `Rotated*` / `Int8Group64` | 同上（`small_t_i8_route.cpp` 的 coding 只影响档位键） |
 
-⇒ **一帧至少 17 段 = 782 页**。环因此缩不到 138 槽，只能缩到 `depth × 782`。
-
-改用的映射（每个 (层, 页) 的槽仍是纯函数，表项仍然只写一次）：
+本文件的交付目标是 `rk8v4`（质量下限）与 `int8`，测试基线是 `rk4v4` —— **三者都在 INT8
+家族，都不走 `small_t_k8v4`**。实测打印（`--kv-dtype rk4v4`，容量 262 144）：
 
 ```
-frame_pages = K × split_pages                 // 启动常量（K = 17，split_pages = 46）
-F           = ceil(P / frame_pages)           // 每层帧数（4096/782 → 6）
+[stream] dispatch storage=6 route=prompt q_heads=24 width=384 batch=1 frames=no span=384 keys=384 segment=3136
+```
+
+`storage=6` = `RotatedLloyd4KeyInt4Value`；运行报告的 `kv cache dtype rotated-lloyd4g64-v4g32`
+同一结论。
+
+#### 上游来源（这条优化的出处，不是本项目的发明）
+
+`D:\GithubRepo\llama.cpp-adaptive-kv-streaming`：
+
+- `ggml/src/ggml-cuda/kv-stream-span-tuner.h:7-9`：*“Chooses between the ordinary coalesced
+  streamed-attention kernel and a **bounded-span pipeline** using end-to-end decode graph
+  timings.”*
+- `ggml/src/ggml-cuda/fattn.cu:145-146`：`KV_STREAM_COPY_BATCH_PAGES = 32`，
+  `KV_STREAM_DECODE_SPAN_PAGES = KV_STREAM_COPY_BATCH_PAGES` —— **span 是拷贝批次的量级（32 页）**。
+- `fattn.cu:1983-2058`：逐 chunk 等 `ready` 事件，把连续 ready 的页**合并成一次发射**
+  （`desc.token_count = streamed_span_pages * block_tokens`，上限 32 页）。
+- `fattn.cu:378-391`：用端到端 decode 图计时在 bounded/unbounded 之间选（16 次采样、0.5%
+  阈值），选中才用。
+
+⇒ 帧的**量级与是否启用都应该是实测参数**，不是从占用推出来的常量。上游 32 页的 grid 远小于
+一个 wave，实测仍然赢。
+
+#### 占用：本卡 80 个 SM，不是一个 wave 就够
+
+运行报告写 `compute capability 8.9, 80 SMs`（此前本文件写 76，错了）。INT8 家族的 grid 也是
+`(q_heads / GroupSize, splits, batch)` = `(4, splits, 1)`，`split = blockIdx.y`。251 K 窗口、
+`--invariant-attention` 下 `segment_keys = 3 136` ⇒ `splits = ceil(window / segment_keys) ≈ 81`，
+整层一次发射是 `4 × 81 = 324` CTA ≈ 4 个 wave。
+
+一帧 `K` 段时 CTA 数 = `4K`：
+
+| 每帧段数 K | 页/帧（49 页/段） | CTA | 波数（80 SM） |
+|---:|---:|---:|---:|
+| 81（整层） | 3 969 | 324 | 4.05 |
+| 20 | 980 | 80 | 1.00 |
+| 4 | 196 | 16 | 0.20 |
+| 1 | 49 | 4 | 0.05 |
+
+上行是**占用算术**，不是实测：INT8 家族每个 CTA 的 key block 与 k8v4 不同，一帧小到什么程度
+开始亏要上卡量。这正是上游那个 tuner 存在的理由。
+
+#### 现在这条结论的形态
+
+- 帧大小 = **可调参数**，起点取上游量级（几十页），按 251 K 实测的 `exposed_ms/round` 与
+  `round_ms` 选；**不使用**此前硬编码的 782–931 页。
+- 逐位相同仍由三个不变量保证（window/visible_capacity/positions 传原值、partial 槽按总段数
+  步进、每层只归约一次）。INT8 家族的归约是 `causal_attention_small_t_reduce_output_kernel`
+  → `causal_merge_split_statistics`（按 split 序号累加），与 k8v4 的 reduce 同构，所以同一套
+  不变量成立。
+- 落点必须是 INT8 家族；`k8v4` 那份实现（提交 `98973519`…`224d057b`）保留为管道，不算交付。
+
+#### 掉进过的坑（保留在案）
+
+1. 把 `k8v4` 当作 `rk4v4`（错误等价）⇒ 帧流水写进了没人用的 kernel，`.251 K` 实测 decode
+   一次都没搬（记录 `runs/20261109T003445Z-bench-frames-224d057b` 的 `rounds_series` 全零），
+   由此得出的 102.6 tok/s **作废**。
+2. 同一次提交（`20830005`）把 decode 的按层拷贝改成 `prefill` 专属，而帧 hook 对 INT8
+   家族只会 `throw` ⇒ 该格式 decode 完全不搬、读环里的 prefill 残值（静默错误）。
+   **拿不到帧 hook 时必须退回按层拷贝。**
+3. 把 76 SM 写成硬编码推算 ⇒ 帧大小被高估一个量级。
+
+改用的映射（每个 (层, 页) 的槽仍是纯函数，表项仍然只写一次；`frame_pages` 的量级待实测，
+下面的 782 只是旧的 k8v4 取值的占位）：
+
+```
+frame_pages = K × split_pages                 // 启动参数（上游取 32 页量级）
+F           = ceil(P / frame_pages)           // 每层帧数
 region(L,p) = (L × F + p / frame_pages) % depth
 slot(L,p)   = ring_base + region × frame_pages + (p % frame_pages)
 ```
@@ -1108,14 +1172,15 @@ slot(L,p)   = ring_base + region × frame_pages + (p % frame_pages)
 | | depth | 环槽 | 窗口 token | 尾部页/层 | 每轮拷贝 | 每轮 | decode |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | **现状** | 2 | 2 106 | 183 616 | 1 053 | 1 208 MB / 47.5 ms | 56.7 ms | 69.2 |
-| 帧 K=17 | 2 | 1 564 | 187 136 | 998 | 1 145 MB / 45.1 ms | ≈45.7 | **≈86（+24%）** |
-| 帧 K=17 | 3 | 2 346 | 184 000 | 1 047 | 1 201 MB / 47.3 ms | ≈47.9 | ≈82（+20%） |
+| 帧 K=17（旧算，k8v4 几何） | 2 | 1 564 | 187 136 | 998 | 1 145 MB / 45.1 ms | ≈45.7 | ≈86 |
+| 帧 K=17（旧算，k8v4 几何） | 3 | 2 346 | 184 000 | 1 047 | 1 201 MB / 47.3 ms | ≈47.9 | ≈82 |
 
-**结论修正：+18~24%（69 → 82–86 tok/s），不是 +25~35%。** 收益的大头是"拷贝流不再空转"
-（现状 9.2 ms/轮），窗口只多 2%（环 2 106 → 1 564 槽）。depth 取 2 还是 3 要实测：
-depth 2 窗口更大但两帧容易在层边界起泡，depth 3 稳但吃掉 1.3% 窗口。
+**预期（未实测，待上卡）**：修正时的区间是 +18~24%（69 → 82–86 tok/s），它建在"k8v4 的帧
+开销"上；搬到 INT8 家族后帧大小与发射税都要重新量，上述数字只当量级参考，**不得当作实测结果
+引用**。确定的是：收益的大头是"拷贝流不再空转"（现状 9.2–15.8 ms/轮），窗口只多 2%。
 
-发射次数从 16/轮涨到 48/轮（每层：1 次常驻区间 + 2 个流式帧），≈0.2 ms 的税，可以不管。
+depth 取 2 还是 3 要实测：depth 2 窗口更大但两帧容易在层边界起泡，depth 3 稳但吃掉 1.3% 窗口。
+发射次数从 16/轮涨到 16 × 帧数/轮（每层：1 次常驻区间 + 流式帧），需计入发射税。
 
 被否掉的加法：想再拆细就得给一次发射更多 CTA，只有两条路——按 q-head 拆（K/V 反量化重复 6 次，
 attention 时间 ×1.4 左右）或按 D 拆（QK^T 的收缩维，需要跨 CTA 求和，改变归约顺序）。

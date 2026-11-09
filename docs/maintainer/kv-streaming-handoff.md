@@ -14,6 +14,37 @@
 262 144 原生上下文在 16 GB 卡上跑通，流式 decode 从 M1 的 **36.4** 提到 **48–53 tok/s**
 （`rk4v4` + MTP3 + 251 K 提示，提交 `47f14a7c`）。
 
+### 0.1 当前实际状态（2026-11-09，必须读）
+
+**帧/span 流水（设计 §5.13）目前不在任何交付路径上。** 已落的 8 个提交
+（`98973519`…`224d057b`）只改了 `small_t_k8v4.cu`，而那是 `--kv-dtype k8v4`
+（`Fp8KeyNvfp4Value`）的 kernel；交付目标 `rk8v4`、`int8` 与测试基线 `rk4v4` 都走 **INT8 家族
+`small_t_i8`**，那里只加了"传区间就 throw"。
+
+由此产生一个**必须修的缺陷**：同批提交把 decode 的按层拷贝改成了 `prefill` 专属
+（`text.cpp` 两处 `&& prefill`），而 INT8 家族拿不到帧 hook ⇒ 该格式 decode **一次都不搬**，
+读环里的 prefill 残值。实测记录 `runs/20261109T003445Z-bench-frames-224d057b` 的
+`rounds_series` 逐轮 `upload_bytes=0`，而它的 102.6 tok/s 就来自少搬的那 ~1.1 GB/轮，
+**该数字作废**。
+
+正确口径与路由事实写在设计 §5.13.1（含上游出处 `llama.cpp-adaptive-kv-streaming` 的
+`kv-stream-span-tuner.h` / `fattn.cu:145-146,1983-2058,378-391`：span = 32 页量级、
+按端到端计时自适应选择）。
+
+### 0.2 需求与批准留根（原始对话，2026-11-08）
+
+| 时间（UTC） | 所有者原话（节选） |
+|---|---|
+| 22:19:38 | “`llama.cpp-adaptive-kv-streaming` 的文档和优化策略再看看，目前我们的 256k 解码还是太慢了……先找资料找方向，找到和我讨论，不要任何动工” |
+| 22:29:35 | “我不接受质量降低……如果你有计划就跟我说明，然后可以动工，但是要说清楚，必须让我知晓” |
+| 22:35:45 | “`--embedding-residency host` 我能不知道吗，你测试了又如何，都是现有的东西，跟你无关”（⇒ 该方案不作为本特性的下一步） |
+| 22:45:28 | “先写文档，待会我压缩后你再动工；主机侧注意力也说明下” |
+| 22:47:48 | “`small_t_k8v4` 这个是不是只暂时优化 k8v4 的？其他的 kv 还没优化是吗？简单快速回答问题”（⇒ 当时回答错成“k8v4 = 我们用的 rk4v4”，是后续返工的根因） |
+| 22:50:43 / 23:00:31 / 23:13:45 | “读取你刚才写的文档，然后开始吧。最好 SPEC TODO 都更新下” / “你继续，直到工作完成” / “一次写完……这轮一次性把功能迭代完毕” |
+
+需求本体：就是 `llama.cpp` 那个 fork 的 **bounded-span pipeline**（一层内边拷边算），
+落点是交付格式（INT8 家族），不是 `k8v4`。
+
 **等价性已验（2026-11-08）**：183 K 上流式与**原版二进制**逐 id 相同（512 个 token，跨 8 页/层），
 且同一构建里全驻留与流式的 logprob 数组逐位相同。记录：
 `bench/results/kv-stream/runs/20261108T195936Z-equiv-73c3ae14`（8k / 100k / 183k 四行全 PASS）。
@@ -158,15 +189,21 @@
 9. **`--embedding-residency host`：白拿的显存，已写进推荐配方，但加速数字是外推。**
    产物 `text/token_embedding` 是 `gguf_iq2_s` 388.4 MiB，`tie_word_embeddings: false` ⇒ 可搬。
    要证实只差一个 footprint 变体（`--embedding-residency host`），需用户批准再跑。
-10. **正在做的工作 = 帧级环（设计 §5.13 + 更正 §5.13.1）**：
-   环从“一层的流式区间”改成“一两帧”轮转（一帧 = 一次发射能读的量 = 一个 wave 的段数），
-   所以表项仍只改两次、页仍只搬一次，但拷贝流不再空转。**预测修正为 +18~24%（69 → 82–86 tok/s）**，
-   大头是取回现状 9.2 ms/轮的空转，不是窗口（只 +1.5%）。
-   已落地（可构建、未上卡）：`CausalSplitRange` 贯到 k8v4 发射（`98973519`）、
-   `KVStreamSplit::frame_pages/frames_per_layer` + `kv_stream_region()` + 规划器与单测（`c47e6780`，
-   `tests/test_kv_stream_layout.cpp` 全部通过）。
-   还剩：`StreamedKVSpace` 改成按帧上载/事件 → `text.cpp` 按帧发射（需把 small-T 的
-   “partial 发射 + 一次 reduce”拆成两个入口）→ 上卡验 `check --suite equiv`（必须 4/4）+ `bench --case stream-251k`。
+10. **正在做的工作 = span（帧）流水（设计 §5.13，更正 §5.13.1，状态见 §0.1）**：
+    一层内边拷边算（上游 `llama.cpp-adaptive-kv-streaming` 的
+    bounded-span pipeline：`kv-stream-span-tuner.h`、`fattn.cu:145-146,1983-2058`），
+    环从“一层的流式区间”改成“几帧”轮转；表项仍只改两次、页仍只搬一次，
+    但拷贝流不再空转。判据（SPEC 交付项 6）：`exposed_ms/round` 不再随上下文增长。
+    已落地但**落错了 kernel**：`98973519`…`224d057b` 只改 `small_t_k8v4.cu`（`--kv-dtype k8v4`），
+    交付格式 rk8v4/rk4v4/int8 走 INT8 家族，那里只加了 `throw`。
+    开工顺序（先文档后代码，未得批准不动代码）：
+    a) 恢复 `text.cpp` 的按层拷贝兜底（`20830005` 引入的 `&& prefill` 缺陷，必须修）；
+    b) `small_t_i8` 的 `launch_tc_partial_i8` + 两个 tier kernel 支持 split 区间
+       （区间放 `CausalSmallTInvocation`，避开 24 个显式实例化 TU）；
+    c) 归约仍只做一次（`causal_attention_small_t_reduce_output_kernel`，按 split 序号累加）；
+    d) 帧大小先取上游量级（几十页），上卡量 `exposed/round` 再定；
+    e) 上卡：`check --suite equiv`（4/4、逐 id 相同）+ `bench --case stream-251k`（rk4v4 与 rk8v4 各一次）。
+    **预测（未实测）：+18~24%（69 → 82–86 tok/s）的量级，但建在 k8v4 几何上，搬到 INT8 家族后需重算。**
 11. **主机侧注意力分担：已按算术排除，不要做**（§5.14）。尾巴注意力一轮约 90 GFLOP，
     16 核 CPU 只到 0.1 TFLOP/s ⇒ 只能接 ~3%。它不降质量，纯粹是算力对不上带宽。
 

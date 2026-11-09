@@ -333,6 +333,11 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     // the decision to shrink was a straight 5.8 ms/round loss. The rule here needs no model of the
     // card: it keeps what is faster.
     const double round_ms = window_seconds_ * 1000.0;
+    // A window is priced once: `window_seconds_` keeps the last closed window until the next one
+    // lands, so a trial that priced it on every evaluation counted the same round several times. Two
+    // `-54%` verdicts came from that, not from the layout.
+    const bool fresh_window = window_measured_;
+    window_measured_        = false;
     if (partition_trial_cooldown_ != 0) { --partition_trial_cooldown_; }
     if (partition_trial_active_) {
         // The round that opened the trial carried the migration itself, so its time says nothing about
@@ -342,7 +347,7 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         // +1.9 ms layout read as +54%, which reverted a layout that was nearly equal.
         if (partition_trial_skip_ != 0) {
             --partition_trial_skip_;
-        } else if (round_ms > 0.0) {
+        } else if (fresh_window && round_ms > 0.0) {
             partition_trial_windows_[partition_trial_window_cursor_] = round_ms;
             partition_trial_window_cursor_ =
                 (partition_trial_window_cursor_ + 1) % kPartitionTrialWindows;
@@ -392,7 +397,7 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         layout_round_ms_ += round_ms;
         ++layout_rounds_;
     }
-    if (!window_measured_) {
+    if (!fresh_window) {
         if (evaluations_since_repartition_ != UINT32_MAX) { ++evaluations_since_repartition_; }
         return false;
     }

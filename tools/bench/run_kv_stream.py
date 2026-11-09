@@ -1205,6 +1205,7 @@ def run_case(
     reps: int,
     program: str,
     binary: Path,
+    extra: Sequence[str] = (),
 ) -> bool:
     prompt_path = write_prompt(campaign.directory / case.name, sentences)
     golden = read_golden(args.results, case)
@@ -1222,6 +1223,9 @@ def run_case(
     for variant in case.variants:
         entry = case_entry(case, variant, program)
         entry["sentences"] = sentences
+        # The arm's extra flags travel with the record: two campaigns of the same case differ only
+        # by these, so a reader has to see which one produced the numbers.
+        entry["extra"] = list(extra)
         entry["prompt_sha256"] = sha256_text(prompt_text(sentences))
         if golden_meta and not record:
             # A golden recorded for a different prompt is not evidence about this one: the recipe
@@ -1251,6 +1255,7 @@ def run_case(
                 args.timeout,
                 with_report=program == "ours",
                 with_logprobs=program == "ours" and args.logprobs,
+                extra=extra,
                 dtype=(case.kv_dtype or args.kv_dtype),
             )
             record_rep(entry, result, variant, case)
@@ -1451,7 +1456,9 @@ def command_bench(args: argparse.Namespace) -> int:
     try:
         for case in cases:
             sentences = sentences_for(case, calibration)
-            ok = run_case(args, campaign, case, sentences, args.reps, "ours", args.binary) and ok
+            ok = run_case(
+                args, campaign, case, sentences, args.reps, "ours", args.binary, extra=args.extra
+            ) and ok
     finally:
         campaign.data["gpu_after"] = gpu_state()
         campaign.close("PASS" if ok else "FAIL")
@@ -1869,6 +1876,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     bench.add_argument("--case", nargs="*", default=None)
     bench.add_argument("--reps", type=int, default=1)
     bench.add_argument("--tag", default="")
+    # An arm of a comparison is one flag apart from its baseline (--no-cuda-graph is the one this
+    # campaign uses), so the flags are passed through instead of being spelled out per case.
+    bench.add_argument("--extra", nargs="+", default=[], help="flags appended to every request")
     bench.set_defaults(func=command_bench, record_golden=False, force=False)
 
     report = sub.add_parser("report", help="regenerate INDEX.md from the records")

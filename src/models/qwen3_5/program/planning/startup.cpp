@@ -147,8 +147,7 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     // cache keeps whatever the resolution granted and leaves fewer than `layers` slots idle.
     const std::optional<KVStreamSplit> text_stream =
         plan.features.kv_stream
-            ? plan_kv_stream_split(physical_pages, logical_pages, config.full_attention_layers,
-                                   kKVStreamRunPages, kv_stream_ring_ratio())
+            ? plan_kv_stream_split(physical_pages, logical_pages, config.full_attention_layers)
             : std::nullopt;
     if (plan.features.kv_stream && !text_stream) {
         throw std::invalid_argument(

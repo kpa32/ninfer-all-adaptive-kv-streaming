@@ -50,9 +50,9 @@ L6 是合并门槛。
 | C7 | 一进程两请求（`reset()` 路径） | `7dc5fccd5` 的串行提示场景，逐位 | 未跑 | — |
 | C8 | graph vs eager 逐位 | `--no-cuda-graph` 对照 | 未跑（依赖 P4） | — |
 | C9 | 环→表→attention 字节一致 | `NINFER_STREAM_VERIFY=1` 逐字节 oracle | 手动可用，**未入 CTest** | `bench/results/kv-stream/ledger.md` |
-| C10 | span 区间发射逐位 | `small_t_i8` 的 run 区间与整层结果比对 | 未跑 | — |
+| C10 | span 区间发射逐位 | `small_t_i8` 的 run 区间与整层结果比对 | **PASS**：`NINFER_STREAM_BOUNDED=0`（整层，`20261109T184935Z`）与 `=1`（1 run/帧，`20261109T185335Z`）两次 `check --case stream-251k` 都 PASS，ids 与 logprobs 哈希相同；分帧把暴露从 15.9 降到 1.7 ms，但每轮 54.7 → 166.7 ms | 分帧在本机不作为默认（见 SPEC 交付项 6） |
 | C11 | 无守卫组合被拒 | 纯函数 `kv_stream_rejection`（`src/core/kv_stream_guards.h`）的单测覆盖 9 组组合与报错顺序；CLI 可达路径 `--kv-capacity 8192 --kv-stream` 实跑 | **PASS** | `test_kv_stream_guards` 全过；实跑报 `error: --kv-stream sizes its KV pool from free memory: pass --kv-capacity auto`。注：单请求 CLI **不暴露** `--max-concurrency`，序列守卫只经 Engine 生效，由单测覆盖 |
-| C12 | MTP/DFlash2 KV 不受影响 | 流式下 MTP 接受率与 resident 相同 | 未跑 | — |
+| C12 | MTP/DFlash2 KV 不受影响 | 流式下 MTP 接受率与 resident 相同 | **PASS**：`equiv-183k` 两臂（`20261109T183714Z-equiv-4c511b31`）均开 MTP3，接受长度同为 4.0，ids 与 logprobs 逐位相同；150 K 紧池（`20261109T184516Z`）同为 4.0 | 接受率相同由“两臂 ids 逐位”隐含，记录里两个数都在 |
 
 ### 2.2 性能（P）（判据都是"不可回归"，不是"更快"）
 

@@ -51,7 +51,7 @@ L6 是合并门槛。
 | C8 | graph vs eager 逐位 | `--no-cuda-graph` 对照 | 未跑（依赖 P4） | — |
 | C9 | 环→表→attention 字节一致 | `NINFER_STREAM_VERIFY=1` 逐字节 oracle | 手动可用，**未入 CTest** | worklog §5.4 |
 | C10 | span 区间发射逐位 | `small_t_i8` 的 run 区间与整层结果比对 | 未跑 | — |
-| C11 | 无守卫组合被拒 | `--kv-stream` + 并发/多卡/前缀缓存/非 auto 容量各一次，必须报错 | 代码在，**无测试** | `startup.cpp:1357-1372` |
+| C11 | 无守卫组合被拒 | 纯函数 `kv_stream_rejection`（`src/core/kv_stream_guards.h`）的单测覆盖 9 组组合与报错顺序；CLI 可达路径 `--kv-capacity 8192 --kv-stream` 实跑 | **PASS** | `test_kv_stream_guards` 全过；实跑报 `error: --kv-stream sizes its KV pool from free memory: pass --kv-capacity auto`。注：单请求 CLI **不暴露** `--max-concurrency`，序列守卫只经 Engine 生效，由单测覆盖 |
 | C12 | MTP/DFlash2 KV 不受影响 | 流式下 MTP 接受率与 resident 相同 | 未跑 | — |
 
 ### 2.2 性能（P）（判据都是"不可回归"，不是"更快"）
@@ -75,19 +75,19 @@ L6 是合并门槛。
 | K2 | `compute-sanitizer --tool racecheck` | 0 error（`tests/README.md:96-110` 的跑法） | 未做 |
 | K3 | `compute-sanitizer --tool synccheck` | 0 error | 未做 |
 | K4 | 跨架构可编 | `sm_70/75/80/86/89/120a` 全部构建通过 | 未做（本地仅 `sm_89`） |
-| T1 | bench 工具单测 | `tests/test_kv_stream_tool.py`（12 个用例）纳入 CI | **未纳入**（CI 只跑 artifact/convert/reference/pods） |
-| T2 | span tuner 注册 | `CoreTests.cmake` 有 `ninfer_kv_stream_span_tuner_test` | **未注册** |
+| T1 | bench 工具单测 | `tests/test_kv_stream_tool.py`（12 个用例）纳入 CI | **PASS**（`ci.yml` 新增一步 + `change-scopes.py` 把该文件计入 python 范围；2026-11-10，提交 `9e7d7797`） |
+| T2 | span tuner + guards 注册 | `CoreTests.cmake` 有 `ninfer_kv_stream_span_tuner_test` 与 `ninfer_kv_stream_guards_test` | **PASS**（`9e7d7797`） |
 
 ### 2.4 门禁与文档（G，来自 `CONTRIBUTING.md`）
 
 | ID | 要求 | 现状 |
 |---|---|---|
-| G1 | `docs/cli.md` 写 `--kv-stream` | **0 处** ⇒ FAIL |
-| G2 | README What's New 一行 | 无 ⇒ FAIL |
-| G3 | `docs/serving.md` 写明边界（不支持并发/前缀缓存） | 0 处 ⇒ FAIL |
+| G1 | `docs/cli.md` 写 `--kv-stream` | **PASS**：新增 "Streaming KV past the pool" 一节 + Common options 两行（`9e7d7797`） |
+| G2 | README What's New 一行 | **PASS**：`2026-11-10` 一行（`9e7d7797`） |
+| G3 | `docs/serving.md` 写明边界 | **PASS**：新增 "Streaming KV is not a server mode"（`9e7d7797`） |
 | G4 | 新 kernel 的 racecheck/synccheck 记录 | 无 ⇒ FAIL（= K2/K3） |
 | G5 | 测试注册进 CTest | 缺 span_tuner ⇒ FAIL（= T2） |
-| G6 | 测量交错运行 | 顺序跑 ⇒ FAIL（= P8） |
+| G6 | 测量交错运行 | 顺序跑 ⇒ FAIL（= P8，P1 之后修） |
 | G7 | 文档只写当前状态（无日期日志/尝试过程） | worklog/measurements 违反 ⇒ FAIL |
 | G8 | Conventional Commits | 遵守 ⇒ PASS |
 
@@ -113,12 +113,12 @@ L6 是合并门槛。
 
 | 维度 | 通过/总 | 得分 | 依据 |
 |---|---|---:|---|
-| 正确性 | 4.5/12（C1、C2✗、C3✗、C4✗、C5✗、C6 半、C7✗、C8✗、C9 半、C10✗、C11 0（代码在无测试）、C12✗） | **37.5/40 → 14.9/40** | 只有 C1 全过 |
+| 正确性 | 6/12（C1、C11 全过；C6、C9 半） | **20/40** | C1 等价套件 + C11 守卫表与新 CLI 实跑 |
 | 性能回归 | 7/8（P1–P7 ✅、P8 ✗） | **17.5/20** | 4 条实测基线 |
-| 内核与工具 | 0/6 | **0/15** | 全缺 |
-| 门禁与文档 | 1/8（仅 G8） | **1.9/15** | — |
+| 内核与工具 | 2/6（T1、T2 全过；K1–K4 未做） | **5/15** | CI 已接上工具测试与两个新测试 |
+| 门禁与文档 | 4/8（G1、G2、G3、G8 过；G4、G5、G6、G7 未过） | **7.5/15** | 三条文档已补；G5 等 CTest 树 |
 | 机制覆盖 | ~10/40 工作包 | **2.5/10** | §11 |
-| **总分** | | **≈37/100 ⇒ D** | 正确性与门禁都没过线 |
+| **总分** | | **≈52/100 ⇒ D** | 正确性 6/12、门禁 4/8，两条线都没过 |
 
 **这就是为什么不能说"方向对了"**：方向对不对要由 M 表与 P 表证明（P1–P7 过、机制 25%），
 而"结果对、可交付"要由 C 表与 G 表证明（C 只过 1 项、G 只过 1 项）。当前结论只能是

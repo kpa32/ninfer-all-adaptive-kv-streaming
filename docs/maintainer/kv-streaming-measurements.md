@@ -737,3 +737,19 @@ rk8v4 的环是 20 runs、驻留窗口 1813 页、流式 2117 页（集中形状
 `check --case equiv-183k`：campaign **PASS**，logprobs 与 resident 逐位相同
 （`20261109T124110Z-equiv-s23-rp49`；同口径 82.8 tok/s / 48.1 ms，比 128 的 85.2 / 46.4 略慢，与扫描
 表一致）。所以旋钮不破坏正确性，只是不划算。
+
+## M-23 流式守卫与门禁接线（2026-11-10，`kv-stream-27b-16g`）
+
+**做了什么**：把 `--kv-stream` 的四条排除（非 auto 容量、多序列、多设备、保留上下文）从
+`startup.cpp` 里的分支抽成纯函数 `kv_stream_rejection`（`src/core/kv_stream_guards.h`），
+由 `tests/test_kv_stream_guards.cpp` 覆盖 9 组组合与报错顺序；注册该测试与
+`test_kv_stream_span_tuner` 进 CTest；`tests/test_kv_stream_tool.py` 进 CI；补
+`docs/cli.md`、`docs/serving.md`、README What's New。
+
+**结果**：
+- `g++ -std=c++20 -O1 -Isrc -Iinclude tests/test_kv_stream_guards.cpp` → `kv stream guards: all checks passed`
+- 同上编 `test_kv_stream_span_tuner.cpp` → `kv stream span tuner: all checks passed`
+- 增量构建 `cmake --build build-sm89 -j 16` → 全绿（15 个目标）
+- 实跑 `--kv-capacity 8192 --kv-stream` → `error: --kv-stream sizes its KV pool from free memory: pass --kv-capacity auto`
+- **发现**：单请求 CLI **不暴露** `--max-concurrency`，序列守卫只经 Engine 生效（由单测覆盖）；
+  `--devices 0,1` 在本机先被 CUDA 拒（只有 1 张卡），多设备守卫同样由单测覆盖。

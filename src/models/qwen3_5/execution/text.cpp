@@ -1470,14 +1470,11 @@ void TextContext::mtp_propose_batch(const Tensor& hidden, Tensor& logits, Tensor
     proposal_argmax(hidden, logits, draft_tokens);
 }
 
-// Pages of one copy run: ~4 MiB of one layer's keys, small enough that any gap between two launches
-// can hold one and large enough to keep the link at speed.
-constexpr std::int32_t kStreamFeedChunkPages = 64;
-
-// Copies the frames of `feed` up to and including `frame`: a frame is copied in chunk-sized runs so
-// the link can be handed work in the gaps between launches, and its ready event is recorded once at
-// the end. Issuing a frame twice is avoided by `issued`, and a frame whose pages are all resident
-// moves nothing while still recording the event its launch waits on.
+// Copies the frames of `feed` up to and including `frame`: one frame is one run of copies, because
+// the frame is already the unit sized to the gap between two launches - splitting it further only
+// adds the stream waits that order it, and measured that cost more than it hid. Issuing a frame
+// twice is avoided by `issued`, and a frame whose pages are all resident moves nothing while still
+// recording the event its launch waits on.
 void feed_stream_frames(StreamFrameFeed& feed, std::int32_t frame) {
     if (feed.space == nullptr || feed.page_width <= 0) { return; }
     static const bool debug = std::getenv("NINFER_STREAM_DEBUG") != nullptr;
@@ -1487,13 +1484,9 @@ void feed_stream_frames(StreamFrameFeed& feed, std::int32_t frame) {
         // page. Copying a page twice costs a copy of it; leaving one out is a wrong result.
         const std::int32_t first = feed.issued * feed.page_width - 1;
         const std::int32_t last  = first + feed.page_width + 2;
-        std::uint32_t moved      = 0;
-        for (std::int32_t page = first; page < last; page += kStreamFeedChunkPages) {
-            const std::int32_t count = last - page < kStreamFeedChunkPages ? last - page
-                                                                         : kStreamFeedChunkPages;
-            moved += feed.space->upload_frame(feed.layer, static_cast<std::uint32_t>(feed.issued),
-                                              page, count, feed.copy, false);
-        }
+        const std::uint32_t moved = feed.space->upload_frame(
+            feed.layer, static_cast<std::uint32_t>(feed.issued), first, last - first, feed.copy,
+            false);
         feed.space->seal_frame(feed.layer, static_cast<std::uint32_t>(feed.issued), feed.copy);
         if (debug) {
             std::fprintf(stderr, "[stream] layer=%u frame=%d pages=[%d,%d) moved=%u window=%u\n",

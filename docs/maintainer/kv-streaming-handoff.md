@@ -1,24 +1,29 @@
 # KV 流式：工作交接
 
-> **读这一份就能接着干，不需要重跑任何东西。** 最后更新：2026-11-08T20:20Z，
-> HEAD `73c3ae14`（分支 `kv-streaming`，已推送）。
-> 设计权威：`kv-streaming-design.md`（§5.11、§5.12 是最新实测）；
-> 测量存根：`kv-streaming-measurements.md`（M-01…M-10，每条都有时间/提交/命令/输出）；
+> **读这一份就能接着干，不需要重跑任何东西。** 最后更新：2026-11-09T10:30Z，
+> HEAD `2ecfcb6e`（分支 `kv-streaming`，已推送）。
+> 设计权威：`kv-streaming-design.md`（§5.13 之前是历史，**§5.13.1 是最新事实**）；
+> 测量存根：`kv-streaming-measurements.md`（M-01…M-11，每条都有时间/提交/命令/输出）；
 > 运行记录：`bench/results/kv-stream/`（原版金标、逐次 argv、逐轮指标与判定）；
 > 外部资料：`adaptive-kv-streaming-inputs.md`；参考实现源码：`D:\GithubRepo\llama.cpp-adaptive-kv-streaming`（只读）。
 
 ---
 
-## 0 一句话状态
+## 0 目标与当前状态
 
-262 144 原生上下文在 16 GB 卡上跑通，流式 decode 从 M1 的 **36.4** 提到 **48–53 tok/s**
-（`rk4v4` + MTP3 + 251 K 提示，提交 `47f14a7c`）。
+### 0.0 目标格式（所有者 2026-11-09 再次明确）
+
+- **交付目标是 `rk8v4`**（质量下限，SPEC 交付项 1）；稳定后 `int8`。
+- **`rk4v4` 只是测试时的替身**（窗口 181 440 token、拷贝便宜 1.7 倍，便于快速对比）。
+  把在 `rk4v4` 上量到的数字**直接当交付结论**是错的，必须在 `rk8v4` 上补测。
+- 两者同属 **INT8 家族**（`small_t_i8_*`）⇒ 内核改动一次覆盖；**`k8v4`（`Fp8KeyNvfp4Value`）
+  是另一条 kernel，不是交付路径**，别再搞错（这就是上一轮返工的根因，见 §0.2）。
 
 ### 0.1 当前实际状态（2026-11-09，必须读）
 
 **帧/span 流水（设计 §5.13）目前不在任何交付路径上。** 已落的 8 个提交
 （`98973519`…`224d057b`）只改了 `small_t_k8v4.cu`，而那是 `--kv-dtype k8v4`
-（`Fp8KeyNvfp4Value`）的 kernel；交付目标 `rk8v4`、`int8` 与测试基线 `rk4v4` 都走 **INT8 家族
+（`Fp8KeyNvfp4Value`）的 kernel；交付目标 `rk8v4`、`int8` 与测试替身 `rk4v4` 都走 **INT8 家族
 `small_t_i8`**，那里只加了"传区间就 throw"。
 
 由此产生一个**必须修的缺陷**：同批提交把 decode 的按层拷贝改成了 `prefill` 专属
@@ -30,6 +35,39 @@
 正确口径与路由事实写在设计 §5.13.1（含上游出处 `llama.cpp-adaptive-kv-streaming` 的
 `kv-stream-span-tuner.h` / `fattn.cu:145-146,1983-2058,378-391`：span = 32 页量级、
 按端到端计时自适应选择）。
+
+### 0.1.1 开工清单（压缩后从这里接，一步不要跳）
+
+| # | 步骤 | 文件 | 完成判定 |
+|---|---|---|---|
+| 1 | 恢复 decode 按层拷贝兜底（**correctness，先做**） | `src/models/qwen3_5/execution/text.cpp`，`run_stage_layers` 里两处 `kv_stream_space_ != nullptr && prefill` | 帧 hook 拿不到时仍按层 `upload`/`wait_ready`/`consumed_event`；`rk4v4` 的 `rounds_series.upload_bytes > 0` |
+| 2 | `small_t_i8` 能接受 split 区间 | `CausalSmallTInvocation`（`launch.h`）放 `CausalSplitRange` + `frames`；`small_t_i8_launch.cuh::launch_tc_partial_i8` 与两个 tier kernel（`small_t_i8.cuh`、`small_t_i8_pipelined.cuh`）用 `split = split_begin + blockIdx.y`、`split_count` 仍传总容量 | 主机单 TU 能编；默认区间逐字节不变 |
+| 3 | 帧发射循环 + **层末一次归约** | 同上，仿 `small_t_k8v4.cu` 的 `dispatch(begin,end)` 结构 | 归约仍是 `causal_attention_small_t_reduce_output_kernel`（按 split 序号累加） |
+| 4 | 帧大小改成可调参数 | `causal_attention_frame_plan`（`small_t.cu`）按 INT8 几何算；`frame_pages` 从启动参数来 | 删掉硬编码 782–931 页；起点取上游量级（32 页） |
+| 5 | 增量构建 + CPU 单测 | 主机 `CCACHE_DISABLE=1 cmake --build build-sm89 -j 16`；`g++ -std=c++20 -O1 -Isrc -Iinclude tests/test_kv_stream_layout.cpp` | 链接通过；`kv stream layout: all checks passed` |
+| 6 | 上卡（**需批准**） | `python3 tools/bench/run_kv_stream.py bench --case stream-251k --reps 1` | `check --suite equiv` 4/4 逐 id 相同；`rounds_series.upload_bytes` 非零；**`rk8v4` 必测一次** |
+
+### 0.1.2 关键数字（引用前先核口径）
+
+| 项 | 值 | 出典 |
+|---|---:|---|
+| 251 K 基线（`rk4v4`+MTP3） | 69.2 tok/s，每轮 56.7 ms = 47.5 拷贝 + 9.2 空转 | `runs/20261108T201204Z-bench-baseline-73c3ae14`，3 次 |
+| 暴露（新基准口径） | 15.8 ms/轮（工具 per-round 口径 9.2 ms） | 同上 |
+| 每轮上载 | 1 193.6 MiB；接受长度 3.94 | 同上 |
+| `rk4v4` 流式窗口（容量 262 144 + `--kv-headroom-mib 16`） | 2 835 页 = **181 440 token**（⇒ 该配置下流式仅在 181 K 之后触发，100 K 永远不流式） | M-10 / handoff §5 |
+| `equiv-183k` 用例的窗口 | **135 104 token**（容量 184 064 + headroom 1008）⇒ 183 K 提示尾部 ≈ 748 页，基线时每轮真实搬 823 MiB | M-10 |
+| `rk8v4` 流式窗口 | 约 1 789 页 = **114 496 token**（每页 104 448 B） | 设计 §5.5 表 |
+| 本卡 SM | **80**（运行报告 `compute capability 8.9, 80 SMs`） | `runs/…T003445Z` 日志 |
+| `--invariant-attention` 的段 | `segment = 3 136` key（容量 262 144）；251 K 窗口 ⇒ `splits ≈ 81` | 实测打印 `[stream] dispatch … segment=3136` |
+| 页 | 64 token；`rk4v4` 71 680 B/页/层，`rk8v4` 104 448 B/页/层，全注意力层 16 | 设计 §5.3 |
+
+### 0.1.3 已作废的东西（不要重新引入）
+
+- **102.6 tok/s / 38.4 ms 每轮**（`runs/…T003445Z`）——解码零 I/O 的假加速。
+- **+25~35%** 旧预测；“一帧 = 一个 wave = 782–931 页”的硬编码；**76 SM**。
+- `--embedding-residency host` 的 +38%（所有者 22:35 已否决作为本特性下一步，也非我方工作）。
+- `equiv-183k` 在 183 K 下本来就有真实尾部（窗口 135 104），所以它的 `stream_upload_mib_per_round`
+  应大于 0；若出现 0，说明 decode 根本没搬页（就是 §0.1 那个缺陷），不是“没触发流式”。
 
 ### 0.2 需求与批准留根（原始对话，2026-11-08）
 
@@ -57,15 +95,17 @@
 | 环深 3（已否决） | 61.0–62.9 ms | 46.9 | 51.9 ms | 11.7 ms |
 | 环深 2 + 跨轮预取 | 54.1 ms（单次） | 41.4（接受长度偏低那次） | — | — |
 
-**关键判断**：拷贝流已经占每轮 84%，所以下一个两位数收益只能来自**更小的流式页**（最多 +40%，
-需要用户批准改变“窗口内外同一格式”的质量合同），不是继续找重叠。
+**关键判断（2026-11-09 修正）**：拷贝流占每轮 84%，但每轮还有 9.2–15.8 ms 是计算流空等拷贝，
+而这部分能靠“一层内边拷边算”取回（上游同一手段，见设计 §5.13.1）；**这是本阶段的主攻**。
+另一个方向是“更小的流式页”（最多 +40%），它改的是“窗口内外同一格式”的质量合同，
+需要所有者签字，不在本次范围。
 
 **投机后端（M-11）**：DFlash2 每轮比 MTP-7 便宜 9.3–11.2 ms，但它多占 1.80 GiB ⇒ 窗口从
 182 912 降到 77 888 token。**窗口固定时那份搬运惩罚对所有后端一样，所以 DFlash2 全程领先约 29%，
 换后端不赚钱**；收益只在“把权重还给窗口”。自适应后端切换已延后为独立特性 PR（§4.7）。
-日常使用：`--spec mtp --draft-tokens 3`，再加 **`--embedding-residency host` + `--kv-capacity auto`**
-（嵌入表 388.4 MiB 换 355 页 = 22 720 token 窗口，预测 251 K 每轮 −15.4 ms、+38%；未实测，
-见 M-11 补充）。
+日常使用：`--spec mtp --draft-tokens 3`；再加 `--embedding-residency host`（嵌入表 388.4 MiB
+换 355 页 = 22 720 token 窗口，预测 251 K 每轮 −15.4 ms；未实测）—— 那只是**使用配方**，
+不是本特性的工作项（所有者 22:35 已明确）。
 
 上表用的是**重复提示词**（M-02…M-06）。新基准改用"长文本 + 续写数字列表到 800"的提示
 （251 K、接受长度 3.94、`--no-thinking`），不可与上表逐项相减：
@@ -120,7 +160,10 @@
 
 ---
 
-## 2 已落地（代码地图，截至 `a525f693`）
+## 2 已落地（代码地图）
+
+> 流式主体（扁平池/表/环/逐层调度/观测）已落地且已验（M-10）；帧（span）流水的状态见 §0.1——
+> 它目前只在 `small_t_k8v4.cu`（`--kv-dtype k8v4`）里，不在交付路径上。
 
 | 组件 | 文件 | 说明 |
 |---|---|---|
@@ -153,7 +196,7 @@
 | M-09 | 全驻留 190K + MTP3 装不下 | 差 71 MB；两种布局的重叠区间只有 ~183–186 K |
 | M-10 | 原版金标与等价性（8k/100k/183k）+ 251K 基线 | 512 token 逐 id 与逐位 logprob 全部相同；251 K 每轮 56.7 ms、69.2 tok/s、1 194 MiB/轮、暴露 15.8 ms |
 | M-11 | 投机后端占用与草稿成本 | DFlash2 权重 +1.80 GiB ⇒ 窗口 −105 024 token（77 888）；但每轮比 MTP-7 便宜 9.3–11.2 ms ⇒ **窗口固定时它全程赢 29%，换后端无收益**；收益在“把权重还给窗口” |
-| 设计 | span 级流水（§5.13） | 环从一层（1 227 页）改一段（46 页）⇒ 窗口 +9 216 token；注意力本来已 split-KV、段界 = 页界 ⇒ 逐位相同；**预测 +25~35%（69 → 87–94 tok/s）**。另有 §5.14：主机侧注意力按算术排除（CPU 只能接 ~3%） |
+| 设计 | span（帧）流水（§5.13，事实以 §5.13.1 为准） | 环从“整层尾部”改成“几帧”轮转，一层内边拷边算 ⇒ 取回每轮 9.2–15.8 ms 空转。**落点：INT8 家族；`k8v4` 不算交付**。量级预测 +18~24%，**未实测、待重算** |
 
 **确定性事实**：同一二进制、同一命令行、`--seed 42 --greedy` 连跑两次，token ids 完全相同（已验）。
 
@@ -220,10 +263,15 @@
 - 禁止：sudo、装/升级包、改 `start.sh` 核心参数、`git clean -fdx`、`reset --hard`、force-push、
   重写历史、杀非本次启动的进程、下载模型。
 - **先提交、再改 TODO 状态**；结论必须来自真实命令输出，失败即停并报告，禁止编造。
-- **所有测试一律 `--kv-dtype rk4v4`**（除非正在对比格式本身）。
-- **不要为常量改动跑验证测试**（`--kv-headroom-mib` 外部已可控）。
+- **禁止全量编译**（≈30 分钟）：只允许增量 `cmake --build build-sm89`；ccache 会悬挂 ⇒ `CCACHE_DISABLE=1`。
+- **动工/测 GPU 先说明计划并获批准**；能手算就手算；“停”即停。
+- **主机不能 push**：Windows 端 push，主机只 `git fetch && git reset --hard origin/kv-streaming`；
+  **构建期间不得动源码**（曾经因此报废一轮 70 分钟构建）。
+- 不要为常量改动跑验证测试（`--kv-headroom-mib` 外部已可控）。
 - 测试**必须有留痕**：结果进 `kv-streaming-measurements.md`（时间/提交/命令/输出），不要只留在会话里。
-- KV 质量下限 `rk8v4`；`rk4v4` 只作测试基线。
+- **测试一律 `--kv-dtype rk4v4`**（便宜、窗口 181 440），但**交付结论必须在 `rk8v4` 上复核一次**
+  （所有者 2026-11-09 明确：“我的目标是 rk8v4，目前先用 rk4v4 测试”）。
+- **KV 质量下限 `rk8v4`**（SPEC 交付项 1）；`rk4v4` 只作测试基线。
 
 ---
 
@@ -238,3 +286,45 @@
 - `plan_kv_stream_split`：`R = (pool − depth·P) / (layers − depth)`；`depth ≥ 2` 只在
   `pool ≥ 6·P` 时采用（否则窗口的比重叠值钱）。
 - 轮时间 = `acceptance_length / decode_speed`；接受长度随采样文本浮动，**tok/s 不能跨配置直接比**。
+
+---
+
+## 7 命令速查（压缩后的新会话直接照抄）
+
+```bash
+# 0) 同步代码（Windows 端已 push 之后；构建期间不得再改源码）
+ssh kpa@192.168.2.13 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && \
+  git fetch origin && git reset --hard origin/kv-streaming'
+
+# 1) 增量构建（只允许增量；ccache 会挂）
+ssh kpa@192.168.2.13 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && \
+  CCACHE_DISABLE=1 cmake --build build-sm89 -j 16 2>&1 | tail -20'
+
+# 2) 主机单 TU 单测（不需 GPU）
+ssh kpa@192.168.2.13 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && \
+  g++ -std=c++20 -O1 -Isrc -Iinclude tests/test_kv_stream_layout.cpp -o /tmp/kvl && /tmp/kvl'
+
+# 3) 等价性（必须 4/4、逐 id 相同；约 12 分钟）
+ssh kpa@192.168.2.13 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && \
+  python3 tools/bench/run_kv_stream.py check --suite equiv'
+
+# 4) 251K 基准（PASS 后再看数字；注意看 stream_upload_mib_per_round 必须 > 0）
+ssh kpa@192.168.2.13 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && \
+  python3 tools/bench/run_kv_stream.py bench --case stream-251k --reps 1 --tag <标签>'
+
+# 5) 单次运行的结构化报告（查 decode 是否真的搬了页）
+python3 - <<'EOF'
+import json,glob
+f=sorted(glob.glob("bench/results/kv-stream/runs/*/stream-251k/streamed/rep-01/report.json"))[-1]
+d=json.load(open(f)); s=d["stream"]
+print(f); print({k:s[k] for k in ("upload_bytes","download_bytes","resident_pages","streamed_pages","rounds")})
+print(s["rounds_series"][:3])
+EOF
+```
+
+**性能读法**：`round_ms_median` 与 `stream_exposed_ms_per_round` 一起看；
+`stream_upload_mib_per_round == 0` 意味着 decode 没搬页，数字全部作废（§0.1 的教训）。
+
+**`rk8v4` 复测**（交付目标，必须做一次）：同一条 `bench` 命令，把 case 的 dtype 覆盖成 `rk8v4`
+（工具默认 `rk4v4`）。窗口会从 181 440 降到约 114 496 token，尾部更大、拷贝更多，
+所以 `rk8v4` 的收益应该比 `rk4v4` 更明显 —— 但必须实测，不得外推。

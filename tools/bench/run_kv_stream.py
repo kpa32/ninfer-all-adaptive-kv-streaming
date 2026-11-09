@@ -604,9 +604,12 @@ def request_argv(
     variant: str,
     device: int,
     extra: Sequence[str] = (),
+    dtype: str = "",
 ) -> list[str]:
     argv = [str(binary), str(model), "--messages", str(prompt_path)]
     argv += ["--max-context", str(case.capacity), *FIXED_FLAGS, "--max-new", str(case.max_new)]
+    if dtype:
+        argv = with_pinned(argv, "--kv-dtype", dtype)
     argv += list(case.streamed_flags if variant == "streamed" else case.resident_flags)
     argv = apply_spec_override(argv, extra)
     # A later flag wins in the CLI's parser, so a config override goes after the pinned flags and
@@ -629,9 +632,10 @@ def run_once(
     with_report: bool,
     with_logprobs: bool = False,
     extra: Sequence[str] = (),
+    dtype: str = "",
 ) -> RepResult:
     directory.mkdir(parents=True, exist_ok=False)
-    argv = request_argv(binary, model, prompt_path, case, variant, device, extra)
+    argv = request_argv(binary, model, prompt_path, case, variant, device, extra, dtype)
     argv.append("--print-token-ids")
     if with_logprobs:
         argv.append("--logprobs")
@@ -1117,6 +1121,7 @@ def run_case(
                 args.timeout,
                 with_report=program == "ours",
                 with_logprobs=program == "ours" and args.logprobs,
+                dtype=args.kv_dtype,
             )
             record_rep(entry, result, variant, case)
             if result.returncode != 0:

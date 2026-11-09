@@ -19,26 +19,30 @@
 - 两者同属 **INT8 家族**（`small_t_i8_*`）⇒ 内核改动一次覆盖；**`k8v4`（`Fp8KeyNvfp4Value`）
   是另一条 kernel，不是交付路径**，别再搞错（这就是上一轮返工的根因，见 §0.2）。
 
-### 0.1 当前实际状态（2026-11-09，必须读）
+### 0.1 当前实际状态（2026-11-09 完，M-12）
 
-**帧（span）流水已改落在 INT8 家族（`rk8v4`/`rk4v4`/`rk2v4`/`int8`），k8v4 那份已回滚。**
+**帧（span）流水：实现完成、逐位相同、但实测更慢，故不作为默认。默认仍是整层拷贝。**
 
-- 子区间：`CausalSmallTInvocation::split_begin/split_end` → `launch_tc_partial_i8` →
-  `small_t_i8.cuh`（tiled）与 `small_t_i8_pipelined.cuh`，`split = split_begin + blockIdx.y`、
-  `split_count = split_capacity`（整调用容量，partial 槽位就按它步进）。Volta 仍只接整段。
-- 发射循环：`causal_attention_small_t_launch_for` 逐帧 `wait → dispatch(区间) → consumed`，末尾一次
-  reduce（`causal_attention_small_t_reduce_output_kernel`，按 split 序号累加）。
-- 帧宽 = `splits_per_frame × split_keys / 64`，`split_keys` 与内核同规则（segmented ⇒ `segment_keys`，
-  否则 `ceil(ceil(window/64)/active)·64`）；`active` 由 host/device 共用的
-  `causal_small_t_active_splits` 给出。**不再有线性近似**。
-- 兜底：`text.cpp` 每轮开头 `plan_stream_round()` 定下本轮是否分帧，
-  `layer_copy = space && (prefill || !framed)` 同时管拷与 consumed；非 INT8 家族（含 `k8v4`）
-  一律退回按层拷贝。`20830005` 的 `&& prefill` 缺陷已修。
-- 工具：`run_kv_stream.py` 新增全局 `--kv-dtype`（替换钉死的 `rk4v4`），bench/check/golden/window/
-  footprint 全部生效。
+| 251 K（`rk4v4`+MTP3，同一构建） | tok/s | 每轮 ms | 暴露 ms/轮 | 上载 MiB/轮 |
+|---|---:|---:|---:|---:|
+| **默认（整层拷贝，交付）** | **69.2** | **56.7** | 15.7 | 1 193.6 |
+| 帧路径（`NINFER_STREAM_FRAMES=1`）| 64.0–67.7 | 57.9–61.5 | 8.7–11.3 | 1 191.2 |
 
-**待上卡（需所有者批准）**：`check --suite equiv` 4/4、`bench --case stream-251k`（`rk4v4` 与
-`--kv-dtype rk8v4` 各一次），判据含 `rounds_series[].upload_bytes > 0`。
+- 为何不赚钱：链路每轮要 1 191 MiB ÷ 25.4 GB/s ≈ 47 ms，占每轮 56.7 ms 的 83%；层内切细
+  只能重排等待（暴露 15.7 → 8.7 ms），额外的发射与流事件把每轮抬回去（M-12 完整表）。
+- 机制在 INT8 家族里是通的：`CausalSmallTInvocation::split_begin/split_end` → `launch_tc_partial_i8`
+  → 两个 kernel（`split = split_begin + blockIdx.y`、`split_count = split_capacity`）；
+  帧宽 = `splits_per_frame × split_keys ÷ 64`，`split_keys` 与内核 `causal_small_t_partition_range`
+  同规则；开头 `plan_stream_round()` 定本轮是否分帧，`layer_copy = space && (prefill || !framed)`
+  管拷贝与 consumed 两者，拿不到帧就退回整层拷贝。
+- 已验证：默认路径 `check --suite equiv` **4/4 PASS**（`20261109T045055Z-…-e25152e0`）；
+  分帧开启时 183 K 流式行也 PASS（ids + logprobs 逐位、`upload=824.7 MiB/轮`，
+  `20261109T035348Z-equiv-dbg8-cb327a1a`）；251 K 默认 = 69.2 tok/s / 56.7 ms，与基线逐项相同。
+- 工具：`run_kv_stream.py` 加了全局 `--kv-dtype`（**要放在子命令之前**），可测 `rk8v4`。
+- 下一步（未做）：要收益就得减字节——帧级环（环只装几帧，窗口 +≈6%）或更小的流式页；
+  继续在层内切细已被 M-12 证伪。
+
+### 0.1.0 上一轮的诊断（保留，解释为何返工）
 
 ### 0.1.0 上轮结论（保留，解释为什举振了）
 
@@ -249,21 +253,20 @@
 9. **`--embedding-residency host`：白拿的显存，已写进推荐配方，但加速数字是外推。**
    产物 `text/token_embedding` 是 `gguf_iq2_s` 388.4 MiB，`tie_word_embeddings: false` ⇒ 可搬。
    要证实只差一个 footprint 变体（`--embedding-residency host`），需用户批准再跑。
-10. **正在做的工作 = span（帧）流水（设计 §5.13，更正 §5.13.1，状态见 §0.1）**：
-    一层内边拷边算（上游 `llama.cpp-adaptive-kv-streaming` 的
-    bounded-span pipeline：`kv-stream-span-tuner.h`、`fattn.cu:145-146,1983-2058`），
-    环从“一层的流式区间”改成“几帧”轮转；表项仍只改两次、页仍只搬一次，
-    但拷贝流不再空转。判据（SPEC 交付项 6）：`exposed_ms/round` 不再随上下文增长。
-    已落地但**落错了 kernel**：`98973519`…`224d057b` 只改 `small_t_k8v4.cu`（`--kv-dtype k8v4`），
-    交付格式 rk8v4/rk4v4/int8 走 INT8 家族，那里只加了 `throw`。
-    开工顺序（先文档后代码，未得批准不动代码）：
-    a) 恢复 `text.cpp` 的按层拷贝兜底（`20830005` 引入的 `&& prefill` 缺陷，必须修）；
-    b) `small_t_i8` 的 `launch_tc_partial_i8` + 两个 tier kernel 支持 split 区间
-       （区间放 `CausalSmallTInvocation`，避开 24 个显式实例化 TU）；
-    c) 归约仍只做一次（`causal_attention_small_t_reduce_output_kernel`，按 split 序号累加）；
-    d) 帧大小先取上游量级（几十页），上卡量 `exposed/round` 再定；
-    e) 上卡：`check --suite equiv`（4/4、逐 id 相同）+ `bench --case stream-251k`（rk4v4 与 rk8v4 各一次）。
-    **预测（未实测）：+18~24%（69 → 82–86 tok/s）的量级，但建在 k8v4 几何上，搬到 INT8 家族后需重算。**
+10. **帧（span）流水：已做完一环，实测更慢，已退出默认路径（M-12）**。
+    上游同名字段：`kv-stream-span-tuner.h`、`fattn.cu:145-146,1983-2058`（span = 32 页量级、
+    按端到端计时自适应）。我们这一轮的形态：INT8 家族一次调用内分帧发射、层末一次 reduce、
+    帧宽与内核同规则、默认仍整层拷贝（`NINFER_STREAM_FRAMES=1` 开帧）。
+    251 K 同一构建 A/B：整层 69.2 tok/s / 56.7 ms / 暴露 15.6 ms；帧 64.0–67.7 / 57.9–61.5 /
+    8.7–11.3。**结论：链路已占每轮 83%（1 191 MiB ÷ 25.4 GB/s ≈ 47 ms），层内切细只是重排
+    等待，额外的发射与流事件反而收费。**
+    下一步要动每轮字节数，不是切得更细：
+    a) 帧级环（`kv_stream_layout.h` 的 `frame_pages`/`kv_stream_region` 已就绪且单测通过；
+       待接进 `StreamedKVSpace` 的拷贝寻址——现在还是 `ring_region + page` 的整层寻址），
+       估算窗口 +≈6%、每轮 −3 ms；
+    b) 更小的流式页（改质量合同，需所有者签字）；
+    c) `rk8v4` 上的帧路径至今未测（窗口 114 496 token，尾部更大，量级应当更不利，不得外推）。
+    已验：等效 4/4（默认路径）+ 分帧开启时 183 K 行也逐位相同；251 K 默认与基线逐项相同。
 11. **主机侧注意力分担：已按算术排除，不要做**（§5.14）。尾巴注意力一轮约 90 GFLOP，
     16 核 CPU 只到 0.1 TFLOP/s ⇒ 只能接 ~3%。它不降质量，纯粹是算力对不上带宽。
 

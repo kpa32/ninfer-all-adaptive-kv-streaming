@@ -207,6 +207,36 @@ def test_golden_files_are_keyed_by_case() -> None:
         assert run_kv_stream.read_golden(results, case) == [1, 2, 3]
 
 
+
+def test_pinned_dtype_is_replaced_not_appended() -> None:
+    """The delivery format is rk8v4 while every other case pins rk4v4: the override replaces the
+    pinned value where the parser reads it last, so the recorded argv and the run agree."""
+    argv = ["ninfer", "model", "--kv-dtype", "rk4v4", "--max-new", "64"]
+    pinned = run_kv_stream.with_pinned(argv, "--kv-dtype", "rk8v4")
+    assert pinned.count("--kv-dtype") == 1
+    assert pinned[pinned.index("--kv-dtype") + 1] == "rk8v4"
+    assert pinned[-2:] == ["--max-new", "64"]
+
+    absent = run_kv_stream.with_pinned(["ninfer", "model"], "--kv-dtype", "rk8v4")
+    assert absent == ["ninfer", "model", "--kv-dtype", "rk8v4"]
+
+    case = Case(
+        name="c",
+        purpose="p",
+        kind="perf",
+        target_tokens=8,
+        capacity=8192,
+        max_new=8,
+        variants=("streamed",),
+    )
+    default = run_kv_stream.request_argv(Path("b"), Path("m"), Path("p"), case, "streamed", 0)
+    assert default[default.index("--kv-dtype") + 1] == "rk4v4"
+    overridden = run_kv_stream.request_argv(
+        Path("b"), Path("m"), Path("p"), case, "streamed", 0, (), "rk8v4"
+    )
+    assert overridden.count("--kv-dtype") == 1
+    assert overridden[overridden.index("--kv-dtype") + 1] == "rk8v4"
+
 def main() -> int:
     """Run every test function without pytest, so the record can be checked where it was made."""
     failures = 0
@@ -230,3 +260,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

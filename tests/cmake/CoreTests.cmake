@@ -137,6 +137,10 @@ ninfer_add_test(ninfer_kv_stream_span_tuner_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_kv_stream_span_tuner.cpp"
   LIBRARIES ninfer_core)
 
+ninfer_add_test(ninfer_kv_stream_signal_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_kv_stream_signal.cu"
+  LIBRARIES ninfer_core)
+
 ninfer_add_test(ninfer_kv_stream_guards_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/../test_kv_stream_guards.cpp"
   LIBRARIES ninfer_core)

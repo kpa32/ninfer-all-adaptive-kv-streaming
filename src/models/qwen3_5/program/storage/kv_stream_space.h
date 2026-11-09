@@ -1,7 +1,9 @@
 #pragma once
 
 #include "core/host_kv_arena.h"
+#include "core/kv_stream_feedback.h"
 #include "core/kv_stream_layout.h"
+#include "core/kv_stream_signal.h"
 #include "core/paged_kv_cache.h"
 #include "models/qwen3_5/state/decoder_state.h"
 #include "ninfer/observability/resources.h"
@@ -177,12 +179,21 @@ public:
         double prefill_exposed_seconds       = 0.0;
         std::uint64_t timing_samples         = 0;
         std::uint64_t timing_lost            = 0;
+        // The two signals the partition controller reads (kv_stream_feedback.h): how many copy runs
+        // were still not ready when their attention launched, and how much of the round the copy
+        // engine was busy. `copy_busy_ratio` is the last completed window's estimate, not an
+        // average: the controller decides per window.
+        std::uint64_t deadline_samples    = 0;
+        std::uint64_t deadline_misses     = 0;
+        std::uint64_t copy_busy_windows   = 0;
+        double copy_busy_ratio            = 0.0;
         std::vector<RoundSample> round_samples;
     };
 
-    // Starts a decode round: the previous round's copies are complete by now, so their measured
-    // times are collected and the previous round is closed.
-    void begin_round();
+    // Starts a decode round: the previous round's window is closed against `compute`, so its
+    // deadline counters and copy-busy estimate are read from the device's own record, and the new
+    // round opens its window (kv_stream_feedback.h).
+    void begin_round(cudaStream_t compute);
 
     // Waits on `layer`'s ready event on the compute stream and measures how much of that wait was
     // real, which is the copy time this round could not hide.
@@ -212,6 +223,9 @@ private:
     void close_round();
     void add_upload(std::uint32_t layer, std::uint64_t bytes);
     void add_download(std::uint32_t layer, std::uint64_t bytes);
+    // Closes the round's feedback window if the device finished it, and opens nothing: the caller
+    // opens the next one at its first round boundary.
+    [[nodiscard]] bool close_signal_window() noexcept;
 
     PagedKVCache* cache_               = nullptr;
     // The host authority's pages, allocated for this cache alone: the retention arena belongs to a
@@ -279,6 +293,16 @@ private:
         std::numeric_limits<std::uint32_t>::max();
     std::vector<std::uint32_t> region_layer_;
     std::vector<std::uint32_t> region_pages_;
+    // The deadline flags, the counters and the two window events the controller's inputs come from.
+    std::unique_ptr<KVStreamSignal> signal_;
+    KVStreamDeadlineCounters signal_base_{};
+    std::uint64_t signal_uploads_     = 0;
+    bool signal_window_open_          = false;
+    bool signal_end_recorded_         = false;
+    std::uint64_t deadline_samples_   = 0;
+    std::uint64_t deadline_misses_    = 0;
+    std::uint64_t copy_busy_windows_  = 0;
+    double copy_busy_ratio_           = 0.0;
 };
 
 } // namespace ninfer::models::qwen3_5

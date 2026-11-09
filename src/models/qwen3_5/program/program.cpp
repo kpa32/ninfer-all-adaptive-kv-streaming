@@ -778,6 +778,10 @@ StreamedKvStats Program::streamed_kv_stats() {
     out.download_bytes   = stats.download_bytes;
     out.copy_busy_seconds = stats.copy_busy_seconds;
     out.exposed_seconds   = stats.exposed_seconds;
+    out.deadline_samples  = stats.deadline_samples;
+    out.deadline_misses   = stats.deadline_misses;
+    out.copy_busy_windows = stats.copy_busy_windows;
+    out.copy_busy_ratio   = stats.copy_busy_ratio;
     out.prefill_upload_bytes   = stats.prefill_upload_bytes;
     out.prefill_download_bytes = stats.prefill_download_bytes;
     out.prefill_copy_seconds     = stats.prefill_copy_seconds;

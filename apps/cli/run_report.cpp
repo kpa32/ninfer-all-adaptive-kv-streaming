@@ -113,12 +113,21 @@ json stream_stats(const StreamedKvStats& stream) {
                                     {"exposed_seconds", stream.prefill_exposed_seconds}};
     out["timing"]            = json{{"samples", stream.timing_samples},
                                     {"lost", stream.timing_lost}};
+    // The partition controller's inputs (kv_stream_feedback.h): what fraction of copy runs were late
+    // at their attention's launch, and how busy the link was in the last completed round.
+    out["feedback"]          = json{{"deadline_samples", stream.deadline_samples},
+                                    {"deadline_misses", stream.deadline_misses},
+                                    {"busy_windows", stream.copy_busy_windows},
+                                    {"copy_busy_ratio", stream.copy_busy_ratio}};
     out["rounds_series"]     = json::array();
     for (const StreamedKvRoundSample& round : stream.round_samples) {
         json sample{{"upload_bytes", round.upload_bytes},
                     {"download_bytes", round.download_bytes},
                     {"copy_seconds", round.copy_seconds},
-                    {"exposed_seconds", round.exposed_seconds}};
+                    {"exposed_seconds", round.exposed_seconds},
+                    {"deadline_samples", round.deadline_samples},
+                    {"deadline_misses", round.deadline_misses},
+                    {"copy_busy_ratio", round.copy_busy_ratio}};
         sample["layers"] = json::array();
         for (const StreamedKvLayerSample& layer : round.layers) {
             sample["layers"].push_back(json{{"layer", layer.layer},

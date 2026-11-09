@@ -34,6 +34,7 @@ add_library(ninfer_core STATIC
   weight_view.cpp
   decode_graph.cpp
   cuda_host_handshake.cu
+  kv_stream_signal.cu
   expert_delivery.cu
   evictable_kv_pool.cu
   evictable_weight_pool.cu

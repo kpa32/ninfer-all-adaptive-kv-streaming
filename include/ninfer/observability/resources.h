@@ -190,6 +190,12 @@ struct StreamedKvRoundSample {
     std::uint64_t download_bytes = 0; // device to host: the pages the window dropped
     double copy_seconds          = 0.0;
     double exposed_seconds       = 0.0;
+    // The controller's two inputs for this round (kv_stream_feedback.h): copy runs still not ready
+    // when their attention launched, and the round's copy-engine occupancy. A round whose window had
+    // not finished when it was closed reports zero samples, never a guess.
+    std::uint64_t deadline_samples = 0;
+    std::uint64_t deadline_misses  = 0;
+    double copy_busy_ratio         = 0.0;
     // The layers whose pages moved this round, in layer order; empty when nothing moved.
     std::vector<StreamedKvLayerSample> layers;
 };
@@ -224,6 +230,13 @@ struct StreamedKvStats {
     // copies were cheaper.
     std::uint64_t timing_samples = 0;
     std::uint64_t timing_lost    = 0;
+    // The partition controller's inputs over the whole request: copy runs that were still not ready
+    // when their attention launched, and the last completed round's copy-engine occupancy
+    // (kv_stream_feedback.h).
+    std::uint64_t deadline_samples  = 0;
+    std::uint64_t deadline_misses   = 0;
+    std::uint64_t copy_busy_windows = 0;
+    double copy_busy_ratio          = 0.0;
     std::vector<StreamedKvRoundSample> round_samples;
 };
 

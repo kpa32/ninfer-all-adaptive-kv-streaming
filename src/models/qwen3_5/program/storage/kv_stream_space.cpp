@@ -78,6 +78,9 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     create_events(ready_, layers_);
     create_events(consumed_, layers_);
     create_events(dropped_, layers_);
+    // One deadline flag per layer: a layer's streamed pages are copied as one run, so a layer is the
+    // unit that can be late.
+    signal_ = std::make_unique<KVStreamSignal>(layers_);
     create_events(ready_frame_, layers_ * kFrameSlots);
     create_events(consumed_frame_, layers_ * kFrameSlots);
     region_layer_.assign(split_.ring_depth, kNoLayer);
@@ -212,6 +215,9 @@ void StreamedKVSpace::reset_round() {
     round_.download_bytes = 0;
     round_.copy_seconds   = 0.0;
     round_.exposed_seconds = 0.0;
+    round_.deadline_samples = 0;
+    round_.deadline_misses  = 0;
+    round_.copy_busy_ratio  = 0.0;
     for (StreamedKvLayerSample& sample : round_.layers) {
         sample.upload_bytes   = 0;
         sample.download_bytes = 0;
@@ -226,6 +232,9 @@ StreamedKVSpace::RoundSample StreamedKVSpace::snapshot_round() const {
     closed.download_bytes  = round_.download_bytes;
     closed.copy_seconds    = round_.copy_seconds;
     closed.exposed_seconds = round_.exposed_seconds;
+    closed.deadline_samples = round_.deadline_samples;
+    closed.deadline_misses  = round_.deadline_misses;
+    closed.copy_busy_ratio  = round_.copy_busy_ratio;
     for (const StreamedKvLayerSample& sample : round_.layers) {
         if (sample.upload_bytes != 0 || sample.download_bytes != 0 || sample.copy_seconds != 0.0 ||
             sample.exposed_seconds != 0.0) {
@@ -262,7 +271,29 @@ void StreamedKVSpace::add_download(std::uint32_t layer, std::uint64_t bytes) {
     round_.layers[layer].download_bytes += bytes;
 }
 
-void StreamedKVSpace::begin_round() {
+void StreamedKVSpace::begin_round(cudaStream_t compute) {
+    // The feedback window covers one round of the decode loop: it opens on the compute stream before
+    // the round's first layer and closes at the next round's boundary, when everything the round
+    // enqueued has run. A window the device has not finished stays open instead of being replaced -
+    // a replaced window is a measurement lost, not one guessed (kv_stream_signal.h).
+    if (compute == nullptr) {
+        throw std::invalid_argument("A streamed KV round needs a compute stream");
+    }
+    if (signal_window_open_ && !signal_end_recorded_) {
+        signal_->end_window(compute);
+        signal_end_recorded_ = true;
+    }
+    if (signal_window_open_ && close_signal_window()) {
+        signal_window_open_ = false;
+        signal_end_recorded_ = false;
+    }
+    if (!signal_window_open_) {
+        signal_->begin_window(compute);
+        signal_base_         = signal_->deadline_counters();
+        signal_uploads_      = 0;
+        signal_window_open_  = true;
+        signal_end_recorded_ = false;
+    }
     // The per-round series is only built when the run asked to be timed: a normal run pays nothing
     // for it beyond the counters above.
     if (report_) {
@@ -273,11 +304,41 @@ void StreamedKVSpace::begin_round() {
     round_streamed_pages_ = window_start();
 }
 
+bool StreamedKVSpace::close_signal_window() noexcept {
+    if (!signal_window_open_) { return true; }
+    const KVStreamSignal::WindowTime window = signal_->window_time();
+    if (!window.recorded) { return false; }
+    const KVStreamSignal::CopyTime copy = signal_->copy_time();
+    const KVStreamDeadlineCounters current = signal_->deadline_counters();
+    const KVStreamFeedbackDelta delta = kv_stream_feedback_delta(current, signal_base_);
+    if (delta.valid) {
+        deadline_samples_ += delta.samples;
+        deadline_misses_  += delta.misses;
+        round_.deadline_samples = delta.samples;
+        round_.deadline_misses  = delta.misses;
+    }
+    KVStreamBusySample sample;
+    sample.copy_seconds    = copy.seconds;
+    sample.sampled_uploads = copy.uploads == 0 ? 1 : copy.uploads;
+    sample.window_uploads  = signal_uploads_;
+    sample.window_seconds  = window.seconds;
+    sample.recorded        = copy.recorded;
+    round_.copy_busy_ratio = kv_stream_copy_busy_ratio(sample);
+    if (copy.recorded) {
+        copy_busy_ratio_ = round_.copy_busy_ratio;
+        ++copy_busy_windows_;
+    }
+    return true;
+}
+
 void StreamedKVSpace::wait_ready(std::uint32_t layer, cudaStream_t compute) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
     if (compute == nullptr) {
         throw std::invalid_argument("A streamed KV wait needs a compute stream");
     }
+    // One deadline sample, taken on the compute stream immediately before the wait: it observes
+    // exactly what the wait is about to observe, which is the only place the answer exists.
+    signal_->sample_deadline(layer, compute);
     if (!report_) {
         CUDA_CHECK(cudaStreamWaitEvent(compute, ready_[layer], 0));
         return;
@@ -311,6 +372,10 @@ StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
     out.prefill_download_bytes = prefill_download_bytes_;
     out.prefill_copy_seconds     = prefill_copy_seconds_;
     out.prefill_exposed_seconds  = prefill_exposed_seconds_;
+    out.deadline_samples  = deadline_samples_;
+    out.deadline_misses   = deadline_misses_;
+    out.copy_busy_windows = copy_busy_windows_;
+    out.copy_busy_ratio   = copy_busy_ratio_;
     out.timing_samples = timing_samples_;
     out.timing_lost    = timing_lost_;
     if (report_) {
@@ -411,11 +476,18 @@ void StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
         // The pages `[already, count)` of this layer, into the ring slots they map to; the pool
         // turns the run into one strided transfer per plane. The host copies a round's window
         // dropped are ordered on the compute stream, so the uploads that read them wait first.
+        // The copy stream clears this run's ready flag first and sets it after, which is what the
+        // deadline sample at the consumer's launch reads (kv_stream_signal.h).
+        signal_->begin_copy_sample(copy);
+        signal_->clear_run(layer, copy);
         CUDA_CHECK(cudaStreamWaitEvent(copy, dropped_[layer], 0));
         cache_->page_pool().copy_from_host_pages(
             host_pages(layer).subview(already, count - already).data(), host_layout_,
             static_cast<std::int32_t>(ring_region(layer) + already), count - already,
             RankStreams(copy));
+        ++signal_uploads_;
+        signal_->mark_run(layer, copy);
+        signal_->end_copy_sample(copy);
     }
     region_layer_[region] = layer;
     region_pages_[region] = count;
@@ -451,6 +523,11 @@ std::uint32_t StreamedKVSpace::upload_frame(std::uint32_t layer, std::uint32_t f
         frame_copy_pending_[index] = 1;
     }
     if (last > first) {
+        // The copy stream clears the run's ready flag before the copies and sets it after, so the
+        // deadline sample the consumer takes says whether this run was in time; the first run of a
+        // window is timed for the busy estimate (kv_stream_signal.h).
+        signal_->begin_copy_sample(copy);
+        signal_->clear_run(layer, copy);
         // The ring slots these pages take are the ones the layer `ring_depth` back wrote, so the
         // copy is ordered after that layer's consumption of the same frame - and after the host
         // bytes of this round's dropped pages arrived.
@@ -463,6 +540,9 @@ std::uint32_t StreamedKVSpace::upload_frame(std::uint32_t layer, std::uint32_t f
             static_cast<std::int32_t>(ring_region(layer) + static_cast<std::uint32_t>(first)),
             count, RankStreams(copy));
         add_upload(layer, static_cast<std::uint64_t>(count) * page_bytes_);
+        ++signal_uploads_;
+        signal_->mark_run(layer, copy);
+        signal_->end_copy_sample(copy);
         moved = count;
     }
     if (seal) { seal_frame(layer, frame, copy); }

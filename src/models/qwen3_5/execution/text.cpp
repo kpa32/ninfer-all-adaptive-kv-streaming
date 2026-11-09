@@ -2218,7 +2218,7 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
     // A stage-0 decode pass is one round of the streaming loop, and the round before it is done
     // with its copies by the time this one starts issuing them.
     if (kv_stream_space_ != nullptr && !prefill && stage == 0) {
-        kv_stream_space_->begin_round();
+        kv_stream_space_->begin_round(ctx_.stream);
         // A round's frames start over: the copies of round r-1 have been consumed by now, so the
         // first frame of each layer can be issued again (design 5.13.2).
         for (StreamFrameFeed& feed : stream_feeds_) {

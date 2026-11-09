@@ -1209,7 +1209,15 @@ def run_case(
             entry["checks"]["golden_prompt_matches"] = (
                 golden_meta.get("prompt_sha256") == entry["prompt_sha256"]
             )
-        for rep_index in range(1, reps + 1):
+        entries.append(entry)
+    # Interleaved: rep 1 of every variant, then rep 2, and so on. A report compares variants, so they
+    # have to be measured under the same conditions - a variant that runs after the other one's whole
+    # block measures a different thermal, clock and page-cache state, and the difference lands in the
+    # comparison (CONTRIBUTING.md, "Comparable measurements"). Each rep is a fresh process, so there is
+    # no prefix cache between reps to reuse; the prompt is identical by design, because both variants
+    # are compared against the same prompt ids and a per-rep nonce would invalidate the golden ids.
+    for rep_index in range(1, reps + 1):
+        for entry, variant in zip(entries, case.variants):
             print(f"{case.name}/{variant}: rep {rep_index}/{reps} ...", flush=True)
             result = run_once(
                 binary,
@@ -1227,8 +1235,8 @@ def run_case(
             record_rep(entry, result, variant, case)
             if result.returncode != 0:
                 print(f"  exit {result.returncode}: {result.stderr_tail}")
+    for entry in entries:
         finish_entry(entry, [] if record else golden)
-        entries.append(entry)
         campaign.data["cases"].append(entry)
         campaign.save()
         print_entry(entry)

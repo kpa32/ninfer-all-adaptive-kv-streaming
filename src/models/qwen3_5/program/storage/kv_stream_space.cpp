@@ -225,7 +225,8 @@ void StreamedKVSpace::add_upload(std::uint32_t layer, std::uint64_t bytes) {
         prefill_upload_bytes_ += bytes;
         return;
     }
-    if (!report_) { return; }
+    // Per-round bytes are measurement the campaigns read, and they cost an addition: only the timing
+    // events that price a copy are optional (the `report_` pairs in the copy path).
     round_.upload_bytes += bytes;
     round_.layers[layer].upload_bytes += bytes;
 }
@@ -236,7 +237,6 @@ void StreamedKVSpace::add_download(std::uint32_t layer, std::uint64_t bytes) {
         prefill_download_bytes_ += bytes;
         return;
     }
-    if (!report_) { return; }
     round_.download_bytes += bytes;
     round_.layers[layer].download_bytes += bytes;
 }
@@ -264,12 +264,10 @@ void StreamedKVSpace::begin_round(cudaStream_t compute) {
         signal_window_open_  = true;
         signal_end_recorded_ = false;
     }
-    // The per-round series is only built when the run asked to be timed: a normal run pays nothing
-    // for it beyond the counters above.
-    if (report_) {
-        collect_timings();
-        if (rounds_ != 0) { close_round(); }
-    }
+    // The per-round series is built on every run: it is what the benchmark campaigns read to prove a
+    // round really moved pages. Only the timing pairs that price a copy are optional (`report_`).
+    if (report_) { collect_timings(); }
+    if (rounds_ != 0) { close_round(); }
     ++rounds_;
     round_streamed_pages_ = max_streamed_pages();
     // The controller runs once per round, on the window that just closed: whether the boundary still

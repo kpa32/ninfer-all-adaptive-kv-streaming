@@ -1527,6 +1527,18 @@ void TextContext::plan_stream_round(std::int32_t width) {
     stream_splits_per_frame_ = 0;
     stream_frame_pages_    = 0;
     stream_frame_count_    = 0;
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        static int printed = 0;
+        if (printed < 12) {
+            ++printed;
+            std::fprintf(stderr,
+                         "[stream] plan.entry width=%d space=%d kv=%d envelope=%d layers=%zu\n",
+                         width, kv_stream_space_ != nullptr ? 1 : 0,
+                         batch_text_kv_ != nullptr ? 1 : 0,
+                         active_causal_attention_envelope_ != nullptr ? 1 : 0,
+                         config_.layer_types.size());
+        }
+    }
     if (kv_stream_space_ == nullptr || batch_text_kv_ == nullptr ||
         active_causal_attention_envelope_ == nullptr || width <= 0) {
         return;
@@ -2178,6 +2190,16 @@ template <class Tap>
 void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& tap) {
     const bool prefill      = ph == Phase::Prefill;
     const std::uint32_t end = parameters_.text.stage_end(stage);
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr && !prefill) {
+        static int printed = 0;
+        if (printed < 12) {
+            ++printed;
+            std::fprintf(stderr,
+                         "[stream] round.entry stage=%zu phase=%d width=%d space=%d\n", stage,
+                         static_cast<int>(ph), x.ne[1],
+                         kv_stream_space_ != nullptr ? 1 : 0);
+        }
+    }
     // A stage-0 decode pass is one round of the streaming loop, and the round before it is done
     // with its copies by the time this one starts issuing them.
     if (kv_stream_space_ != nullptr && !prefill && stage == 0) {

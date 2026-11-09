@@ -118,7 +118,11 @@ depends-on:
 
 **26.1 tok/s | 151.0 ms/轮 | 3603 MiB/轮 | 暴露 114.3 ms | 窗口 1670 页（106 880 token）**。
 
-### 5.3 交付数字（M-16…M-20，提交 `c4b02ae2`）
+### 5.3 交付数字（M-16…M-21，交付提交 `af2a86b0`）
+
+`check --suite equiv` 是在 `c4b02ae2` 上跑的（4/4 PASS）。之后只有文档与 bench 工具改动，
+引擎源码没动（`git diff --stat c4b02ae2..af2a86b0` 只列 docs 与 `tools/bench/run_kv_stream.py`），
+所以那次的结论对交付提交同样成立；要完全严格，重跑一次 `check --suite equiv` 即可。
 
 对照基准是**移植前同一条 argv 的运行**（`cf90eaaf` / `73c3ae14`，静态 2× 环）。稳态口径用
 `stream-251k-steady`（512 token），因为它才把一次性成本摊掉。
@@ -252,6 +256,25 @@ const auto stream_layer = static_cast<std::uint32_t>(dimension(config_.compact_l
 | 8 | 集中 decode 形状（S6）的实际收益 | 未测 | 池恒等式下它不改变每轮字节，只改拷贝层数与 run 长度 |
 | 9 | 诊断探针的清理 | 保留 | `NINFER_STREAM_VERIFY`（逐字节 oracle）、`NINFER_STREAM_DEBUG`（布局/门限打印）、`NINFER_STREAM_BOUNDED=0/1`（钉住流水形状）；全部默认关闭 |
 
+
+### prefill 的现状（为后续的 prefill 专项留证据）
+
+本轮**没有**为 prefill 做任何专门优化，只把现状核清：
+
+- **路径**：prefill 与 decode 共用同一套 `StreamedKVSpace`（按 run、按层、`wait_ready` 挡在注意力之前）。页的发布是**按 chunk**的：`prefill.cpp` 每个 chunk 前调 `advance(1 + (chunk_end-1)/64)`，只发布"这个 chunk 即将写入"的页；`prefill.cpp` 调 `ensure_sequence_kv_mapped(..., publish_stream_pages=false)`，整段 prompt **不提前发布**（否则前几页会在写之前就被窗口挤出去）。
+- **成本形态**：窗口随 chunk 滑动，每 chunk 要把流式前缀**整段重搬一遍**，所以 prefill 上载 ≈ 窗口字节 × chunk 数。
+- **实测**（报告里的 `stream.prefill`）：
+
+  | 运行 | prefill tok/s | prefill 上载 |
+  |---|---:|---:|
+  | 251K 移植前 | 1282.3 | 107 GiB |
+  | 251K 现在 | 1281.3 | 94 GiB |
+  | 180K（池装得下） | 1593.6 | 12.6 GiB |
+  | 150K（池装得下） | 1592.6 | 0 |
+
+- **prefill 期间自适应不工作**：`begin_round` 只在 `!prefill && stage==0` 调用，所以分区控制器、span 调优器、deadline 采样**只有 decode 样本**；prefill 用启动时那套 split，分帧流水也被 `ph != Phase::Prefill` 显式排除。
+- **缺口**：没有 chunk 级双缓冲；prefill 的暴露时间单独记在 `prefill_exposed_seconds_`，本轮没有归因它。
+
 ### 一条要记住的判据
 
 速度问题**必须看逐轮样本**，不能只看 `round_ms_median`：本轮四个 ~170 ms 的尖峰在 129 轮里只把
@@ -279,13 +302,17 @@ const auto stream_layer = static_cast<std::uint32_t>(dimension(config_.compact_l
 - 250K 以上的上下文、非 `rk*` 家族的 KV 格式
 
 **验收标准（建议写进 PR 描述）**
-1. `check --suite equiv` 4/4，ids 与 logprobs 均逐位相同 —— **在 `9c9121a8` 上已满足**；
-2. `bench --case stream-251k --kv-dtype rk4v4`：`stream_upload_mib_per_round > 0`，暴露 ≤ 2 ms/轮，
-   decode 不低于移植前（69.2 tok/s）—— **未满足**：实测 57.7 tok/s / 暴露 20.6 ms，原因是环降到
-   1.10× 后没有前视（M-17）；这是 §8 #3 的待决策项，不是未知故障。
-3. `bench --case stream-251k --kv-dtype rk8v4`：记录窗口/环/每轮字节与 tok/s（基线见 M-12b）
-   —— **已满足**：25.7 tok/s / 3348.6 MiB/轮（移植前 26.1 / 3603.0）；
-4. 四个纯逻辑单测全绿；增量构建无 error。
+
+1. `check --suite equiv` 4/4，ids 与 logprobs 均逐位相同 —— **已满足**（`c4b02ae2`，`s17-suite`）；
+2. `bench --case stream-251k-steady --kv-dtype rk4v4`（512 token）：不再比移植前慢 ——
+   **已满足**：54.4 ms/轮、72.8 tok/s（移植前 56.6 / 69.3），每轮字节 −6.5%；
+   暴露 ≤ 2 ms/轮这一条**未满足**（13.5 ms），它需要设备侧等待，见 §8 #2；
+3. `bench --case stream-251k-steady --kv-dtype rk8v4`：记录窗口/环/每轮字节与 tok/s ——
+   **已满足**：147.9 ms、26.8 tok/s、3366.9 MiB/轮（移植前 151.0 / 26.1 / 3603.0）；
+4. 池装得下时 `--kv-stream` 零代价 —— **已满足**：`stream-150k` / `stream-180k` 每轮 0 字节、
+   107.1 / 106.0 tok/s（M-21）；
+5. 四个纯逻辑单测全绿；增量构建无 error —— **已满足**。
+
 
 ---
 
@@ -295,10 +322,11 @@ const auto stream_layer = static_cast<std::uint32_t>(dimension(config_.compact_l
 |---|---|---|---|
 | 页大小 | 256 token（Q8_0/Q4_0） | 64 token（`rk*` 家族三平面） | 本引擎的 paged KV 页 |
 | 每轮 token | 1 | 3–4（MTP verify） | 所有"每轮"与"每 token"换算要乘接受长度 |
-| 流式的那一半 | 最新页在环里（旧前缀驻留） | 最新页驻留（旧前缀流式） | 追加只写设备；代价是环必须容下整个旧前缀（见 §8 #9） |
+| 流式的那一半 | 最新页在环里（旧前缀驻留） | 最新页驻留（旧前缀流式） | 追加只写设备；代价是环要容下整个旧前缀 |
 | UVM | 作者日常开 | 不使用 | 我们自己做驱逐 |
-| 卡 | 5070 Ti / PCIe 5.0 / 实测 50 GB/s | 4080 SUPER / PCIe 4.0 / 实测 25.4 GB/s | 数字不可直接搬 |
+| 卡 | 5070 Ti / PCIe 5.0 / 实测 50 GB/s | 4080 SUPER / PCIe 4.0 / 实测 25.4 GB/s | 数字不可直接搬；本轮所有默认值都由本机实测决定 |
 | 参数化 | 固定池 + 任意 ring_slots | 每层窗口 + 环（整数倍 run） | 布局能力不同；`1.10×` 现在可表达 |
+| 自适应 | 控制器按模型决策 | 控制器 + **迁移实验**（试 4 轮、比中位数、慢则回退、被否不重试） | 本机实测控制器的字节模型会提出灾难性缩环（M-21：-46%），必须有实测裁判 |
 
 ---
 
@@ -312,27 +340,40 @@ git fetch origin kv-stream-faithful && git reset --hard origin/kv-stream-faithfu
 CCACHE_DISABLE=1 cmake --build build-sm89 -j 16
 
 # 纯逻辑单测（不需要 GPU）
-g++ -std=c++20 -Isrc tests/test_kv_stream_layout.cpp     -o /tmp/a && /tmp/a
-g++ -std=c++20 -Isrc src/core/kv_stream_feedback.cpp  tests/test_kv_stream_feedback.cpp  -o /tmp/b && /tmp/b
-g++ -std=c++20 -Isrc src/core/kv_stream_partition.cpp tests/test_kv_stream_partition.cpp -o /tmp/c && /tmp/c
-g++ -std=c++20 -Isrc tests/test_kv_stream_span_tuner.cpp -o /tmp/d && /tmp/d
+g++ -std=c++20 -Isrc tests/test_kv_stream_layout.cpp -o /tmp/t1 && /tmp/t1
+g++ -std=c++20 -Isrc src/core/kv_stream_feedback.cpp  tests/test_kv_stream_feedback.cpp  -o /tmp/t2 && /tmp/t2
+g++ -std=c++20 -Isrc src/core/kv_stream_partition.cpp tests/test_kv_stream_partition.cpp -o /tmp/t3 && /tmp/t3
+g++ -std=c++20 -Isrc tests/test_kv_stream_span_tuner.cpp -o /tmp/t4 && /tmp/t4
 
 # 等价性（走 bench，不要手跑二进制）
 PYTHONPATH=. python3 tools/bench/run_kv_stream.py check --suite equiv
 PYTHONPATH=. python3 tools/bench/run_kv_stream.py check --case equiv-183k
 
-# 性能
-PYTHONPATH=. python3 tools/bench/run_kv_stream.py bench --case stream-251k
-PYTHONPATH=. python3 tools/bench/run_kv_stream.py --kv-dtype rk8v4 bench --case stream-251k
+# 性能（稳态口径用 512 token 的用例；64 token 的用例只看中位数，会放大一次性成本）
+PYTHONPATH=. python3 tools/bench/run_kv_stream.py --kv-dtype rk4v4 bench --case stream-251k-steady
+PYTHONPATH=. python3 tools/bench/run_kv_stream.py --kv-dtype rk8v4 bench --case stream-251k-steady
+PYTHONPATH=. python3 tools/bench/run_kv_stream.py --kv-dtype rk4v4 bench --case stream-150k stream-180k stream-150k-tight
 
-# 诊断探针（只用于 eager 运行；会同步，慢）
-NINFER_STREAM_VERIFY=1 build-sm89/apps/ninfer <argv>… --no-cuda-graph
-NINFER_STREAM_SAFE=1   build-sm89/apps/ninfer <argv>…
+# 逐轮归因（**速度问题必须看这个**，中位数会藏住尖峰）
+python3 - <<'PY'   # 在主机仓库根目录执行
+import json,glob,os,statistics
+d=glob.glob("bench/results/kv-stream/runs/*<tag>*")[0]
+c=glob.glob(os.path.join(d,"*","streamed","rep-01","report.json"))[0]
+s=[x["seconds"]*1000 for x in json.load(open(c))["decode_rounds"]["samples"]]
+print(len(s), statistics.median(s), statistics.mean(s), max(s))
+print([(i,round(v,1)) for i,v in enumerate(s) if v>80])
+PY
+
+# 诊断开关（全部默认关闭）
+NINFER_STREAM_DEBUG=1    # 布局/门限/试-run 的打印（bench 会继承环境变量，落在 stderr.log）
+NINFER_STREAM_VERIFY=1   # 每层拷完把环槽 D2H 回来与主机权威逐字节比（需 --no-cuda-graph）
+NINFER_STREAM_BOUNDED=0|1 # 钉住流水形状：0=整层一次发射，1=每 run 一次
 ```
 
-**先看哪些文件**：`src/core/kv_stream_layout.h`（不变量）→ `kv_stream_space.cpp` 的 `upload` /
-`wait_ready` / `consume` / `repartition` / `advance`（顺序与事件）→ `text.cpp` 的层循环（发射策略）→
-`kv_store.h:1693`（decode 侧前沿发布，§7 的嫌疑点）。
+**先看哪些文件**：`src/core/kv_stream_layout.h`（不变量与 `kv_stream_lookahead_ratio`）→
+`kv_stream_space.cpp` 的 `upload` / `wait_ready` / `consume` / `advance` / `repartition` /
+`evaluate_partition`（顺序、事件与实验）→ `text.cpp` 的层循环（发射策略与帧阶梯）→
+`kv_store.h` 的 `ensure_mapped_to_tokens`（前沿发布）。
 
 **记录纪律**：任何结论都落 `kv-streaming-measurements.md`，带上运行目录名
 （`bench/results/kv-stream/runs/<UTC>-<tag>-<commit>`）、argv、目的与判据；不要用临时探针，

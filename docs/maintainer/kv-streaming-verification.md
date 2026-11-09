@@ -45,7 +45,7 @@ L6 是合并门槛。
 | C2 | `rk8v4` 逐位（100 K，全驻留装得下） | `check --case equiv-100k-rk8v4` ⇒ ids 与 logprobs 逐位 | **PASS**（`20261109T163448Z-equiv-c2`，见 [measurements](kv-streaming-measurements.md) 表 3） |
 | C3 | `int8` 262 144 启动 + 512 token 稳态 | `bench --kv-dtype int8 --case stream-251k-steady` | **PASS**：236.1 ms/轮、16.8 tok/s、5483 MiB/轮、暴露 203 ms；prefill 1331 tok/s | 见 [measurements](kv-streaming-measurements.md) 表 1、表 2 |
 | C4 | 262 144 prefill 逐位 | 251 K 上 resident(不可行)/流式 vs 金标 ids + 尾 token logprob | **PASS**：`check --case stream-251k`（`20261109T183207Z-equiv-e524df8a`），ids 与 `golden/stream-251k.ids` 相同，logprobs 的 sha256 `8a06a1d4…` 与金标一致 | 金标为 `oracle: self`（原版在 262 K 起不来），因此这是同构建回归，不是与原版的等价 |
-| C5 | 活体重分区（迁移）逐位 | 训练期强制迁移一次，前后 512 token 逐位 | 未跑 | — |
+| C5 | 活体重分区（迁移）逐位 | 训练期强制迁移一次，前后 512 token 逐位 | **PASS**：`check --case stream-150k-tight`（`20261109T184516Z-equiv-4c511b31`）里流式臂跑了 4 次迁移（`layout_generation=4`，两次 `[partition] trial start` + 两次 `revert`），512 token 的 ids 与 logprobs 仍与金标逐位相同 | 金标为 `oracle: self`；迁移由现有控制器提案，未新增开关 |
 | C6 | 零窗口 / `ratio=1.0` 可规划且可跑 | 单测 ∈ L1；GPU 需一次 `--kv-stream-ring-ratio 1.0` 跑通 | 半（仅 L1） | `test_kv_stream_layout` |
 | C7 | 一进程两请求（`reset()` 路径） | `7dc5fccd5` 的串行提示场景，逐位 | 未跑 | — |
 | C8 | graph vs eager 逐位 | `--no-cuda-graph` 对照 | 未跑（依赖 P4） | — |

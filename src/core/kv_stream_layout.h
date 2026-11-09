@@ -171,7 +171,9 @@ plan_kv_stream_uniform(std::uint32_t budget_pages, std::uint32_t active_pages,
         if (rounded + run_pages > budget_pages) { return std::nullopt; }
         const std::uint32_t next = (budget_pages - rounded) / layers;
         if (next == resident) {
-            if (next == 0) { return std::nullopt; }
+            // A window of zero pages is a legitimate plan: it is what a pool that holds only one
+            // layer's streamed extent can serve. The capacity resolution evaluates such candidates
+            // before it can offer a larger pool, and refusing them here aborts the scan.
             KVStreamSplit split;
             split.layer_resident.assign(layers, resident);
             split.ring_pages = rounded;

@@ -30,11 +30,15 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     if (!cache.flat_slots()) {
         throw std::invalid_argument("A streamed KV space needs a cache planned with a flat pool");
     }
-    if (layers_ == 0 || split_.resident_pages() == 0 || split_.run_pages == 0 ||
+    // A layer may keep no window at all (every page of it streams, which is the degenerate plan a pool
+    // that holds one layer's extent can serve), but the space as a whole needs the ring, the run size and
+    // a context to describe.
+    if (layers_ == 0 || split_.layers() != layers_ || split_.run_pages == 0 ||
         cache.max_context() == 0) {
         throw std::invalid_argument(
-            "A streamed KV space needs layers, a window, runs and a context: layers=" +
-            std::to_string(layers_) + " resident=" + std::to_string(split_.resident_pages()) +
+            "A streamed KV space needs layers, runs and a context: layers=" +
+            std::to_string(layers_) + " planned=" + std::to_string(split_.layers()) +
+            " resident=" + std::to_string(split_.resident_pages()) +
             " ring=" + std::to_string(split_.ring_pages) + " run=" +
             std::to_string(split_.run_pages) + " slots=" +
             std::to_string(cache.page_pool().capacity_pages()) + " context=" +

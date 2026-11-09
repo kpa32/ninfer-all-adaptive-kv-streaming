@@ -43,9 +43,9 @@ void the_first_samples_are_unbounded_then_bounded() {
 void the_margin_decides_close_calls() {
     KVStreamSpanTuner tuner(4, 0.005, 0);
     for (int round = 0; round < 4; ++round) { tuner.observe(100.0, true, false); }
-    for (int round = 0; round < 4; ++round) { tuner.observe(99.8, true, true); }
+    for (int round = 0; round < 4; ++round) { tuner.observe(99.0, true, true); }
     check(tuner.selected(), "the tuner decided");
-    check(tuner.use_bounded(), "a two-tenths gain is past the half-percent margin");
+    check(tuner.use_bounded(), "a one-percent gain is past the half-percent margin");
 
     KVStreamSpanTuner narrow(4, 0.005, 0);
     for (int round = 0; round < 4; ++round) { narrow.observe(100.0, true, false); }

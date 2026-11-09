@@ -363,7 +363,7 @@ decode 69.2 → ≈95 tok/s（+38%）。
 | 接受长度 | 3.9 |
 
 记录：`20261109T051316Z-bench-m12b-rk8v4-real-b509e872`（argv 里 `--kv-dtype rk8v4`，
-`kv cache dtype rotated-int8g64-key-int4g*` 由运行报告确认）。
+运行摘要 `kv cache dtype rotated-k8g64-v4g32` 即 `rk8v4`，80 SMs）。
 
 **读法**：`rk8v4` 每页 104 448 B，且窗口比 `rk4v4` 小 610 页 ⇒ 尾部大 630 页/层 ⇒ 每轮字节是
 `rk4v4` 的 3.0 倍（3 603 vs 1 194 MiB）。链路耗 3 603 MiB ÷ 25.4 GB/s ≈ 142 ms，占每轮的 94%，

@@ -1537,6 +1537,11 @@ void TextContext::plan_stream_round(std::int32_t width) {
         active_causal_attention_envelope_ == nullptr || width <= 0) {
         return;
     }
+    // Framing is opt-in, because it measured slower than copying a layer at 251K on this card
+    // (M-12: 64.0-67.7 tok/s against 69.2): the link, not the exposed wait, is the binding
+    // constraint there, and the extra launches and stream events cost more than the overlap buys.
+    // The delivered round copies a layer at a time; NINFER_STREAM_FRAMES=1 runs the framed path.
+    if (std::getenv("NINFER_STREAM_FRAMES") == nullptr) { return; }
     // A measurement knob, not a product option: it makes one build copy a layer at a time so a
     // campaign can price framing against that on the same binary (design 5.13.2).
     if (std::getenv("NINFER_STREAM_NO_FRAMES") != nullptr) { return; }

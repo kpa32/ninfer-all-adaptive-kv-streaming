@@ -271,3 +271,121 @@ P4 由图决定；P5 是容量；P6 收官**。
 每个 S 完成时：本文件对应行改成"已完成 + 实测数字 + 运行记录名"，并在
 [measurements](kv-streaming-measurements.md) 追加一条；**预测被证伪时，把预测原样保留并标注
 "证伪 + 实测"**，不删改历史。
+
+---
+
+## 9 上游流式改动的全量清单（作者 73 个提交，按主题；`git log --no-merges origin/feature/adaptive-kv-stream`）
+
+起点 `7fa262b33 baseline: mirror production CUDA unified-memory build`，终点 `4ba0b9b25`。
+每一行都是作者自己的流式提交（**不含 llama 主项目的合并**）。"我方"列 = 本仓库现状。
+`git show <hash>` 可查每个提交的完整 diff；主题分组即为工作包。
+
+### 9.1 基础设施（规划器 / pinned runtime / stage buffer / 精确合并）
+
+| 提交 | 内容 | 我方 |
+|---|---|---|
+| `2646f0aa2` | block-granular residency planner | ⏸ 上游运行时未接线，机制由 `plan_kv_stream_*` 覆盖 |
+| `411af01db` | extent reserve + shrink hysteresis | ❌ 无（我们的窗口由 split 固定） |
+| `693040765` | block-level cache regions | ⏸ 同 `2646f0aa2` |
+| `6592abcb6` | 精确定义的 block attention merge（分段 softmax 合并） | ⏸ 不需要（块表间接寻址） |
+| `f467fa3a1` / `f04350785` / `7aa83a0f9` / `50ae50c0f` | 受控 CUDA 传输 harness、pinned host runtime、stream buffer 注册、有界 stage 传输 | ✅ 由 `HostKVArena` + `upload()` 覆盖 |
+| `1ab856f46` / `a4378d218` / `e2186b920` / `b98803333` | 单 block 注意力、精确合并、按 stride 打包、写回 pinned | ⏸ 不需要（同 `6592abcb6`） |
+
+### 9.2 自适应（反馈 / 预取 / 分区 / 迁移）
+
+| 提交 | 内容 | 我方 |
+|---|---|---|
+| `39704675e` | **deadline 驱动的预取调度器** | ⚠️ 有 deadline 采样（`kv_stream_signal.cu`），**没有调度器**（只有 `current+ahead`） |
+| `1ba8f4406` | staged attention pages 异步流水 | ⚠️ 有界分帧（span 阶梯），非异步流水 |
+| `82a9a538c` | **跨 attention 层预取** | ⚠️ 有层前视，无跨轮 |
+| `b29fe5859` / `93df8ac33` | 按运行时压力自适应驻留/环 | ✅ `kv_stream_partition` |
+| `c51644ec1` | 固定池内的驻留边界 | ✅ |
+| `92d72914f` | 重分区限速 | ✅ 试 4 轮 + 冷却 64 |
+| `6354bfdba` | 每层驻留页分区 | ✅ `layer_resident` |
+| `f0957c082` | **保留稳定缓存页在 CUDA** | ❌ 无（对应 R10 镜像/脏行） |
+| `ce7619a41` | 单页缓存保留普通注意力 | ⚠️ 我们窗口为 0 时可规划，GPU 未验 |
+
+### 9.3 注意力侧优化
+
+| 提交 | 内容 | 我方 |
+|---|---|---|
+| `6a536bfd6` | **融合驻留 attention span** | ❌ 无（每层一次 launch，不做 span 融合） |
+| `4f2cb3e91` | **合并相邻流式页**（一次 launch 覆盖多页） | ⚠️ 我们按 run（128 页）发，等价但粒度固定 |
+| `fdf83bf1b` | 有界 attention reduction workspace | ✅ 我们的 run 复用一个归约缓冲 |
+| `63459f5c3`+`1336c7cfd`、`540cbe990`+`d976c1824`、`1eb2faaa0`+`3b0feeff9`+`e03b76505`+`e4489bb10`、`65d814435`+`cfaa42c60` | 作者自己**提交后又回滚**的尝试：延后归约、合并页上传、精确脏页跟踪、有界 span 重叠 | ⚠️ 其中"有界 span 重叠"我们做了（`kv_stream_span_tuner`）但本机更慢；"脏页跟踪"我们也没做 |
+
+### 9.4 **prefill 专项（我之前完全漏掉的一组）**
+
+| 提交 | 内容 | 我方 |
+|---|---|---|
+| `b2ec300a2` | **加速自适应 KV 的 prefill staging**：`set-rows` 批量搬 KV 行（`set-rows.cu` +67 行、`ggml-cuda.cu` +90 行），减少每页一次小拷贝的开销 | ❌ 无（我们的 `upload()` 按 run 一次 memcpy，但 prefill 每 chunk 仍按层串行） |
+| `3552d1b7d` | **加速流式 KV 的 prefill attention**：给 `launch_fattn` 加 `partial_dst/partial_meta`，宽 batch 的流式注意力输出部分结果再合并；关闭 parallel-block 调优 | ⏸ 不需要（块表间接寻址，prefill 与 decode 同一注意力），但**它把流式注意力从 decode 扩到宽 prefill** 这件事我们没有对应机制 |
+| `46c1778f7` | **允许宽 prefill batch 走流式注意力**：删掉 `Q->ne[1] <= 256` 的限制 | ⚠️ 我们无此限制，但 prefill 被排除在分帧/适配外 |
+| `aee6bb66c` | 文档：自适应 KV 的 ubatch 支持（`256/256`、`512/512`、`768/512`、`1024/1024` 实测通过） | ⚠️ 我们只测 `--prefill-chunk 256` |
+| `cef30daab` / `15154a688` | 按注意力模式缩放 KV stream scratch / 有界查询工作区 | ✅ 我们的 run 宽度与工作区固定有界 |
+
+### 9.5 多提示 / 缓存恢复 / 服务端
+
+| 提交 | 内容 | 我方 |
+|---|---|---|
+| `7dc5fccd5` | **支持串行提示与缓存恢复**（`benchmarks/test_kv_stream_serial_server.py` 138 行、`fattn.cu` 重写 265 行） | ❌ 未验证：`KVStore::deactivate` 会 `reset()`（`kv_store.h:1091`），但一进程两请求从未跑过；`--kv-stream` 还禁止 context cache |
+| `c9484b2e6` | **服务端接上实验性 block KV 流式** | ❌ 我们只在 CLI/Engine 路径；`docs/serving.md` 无 `--kv-stream`（0 处） |
+
+### 9.6 内存布局 / UVM / 写合并 / 缓存类型
+
+| 提交 | 内容 | 我方 |
+|---|---|---|
+| `976f3f5c0` | host cache 用 write-combined | ⏸ 我们的 pinned arena 已是常规 pinned |
+| `05ba2068a` | Windows 上避免 write-combined KV | ⏸ 不适用（我们的 `HostKVArena` 不含该路径；Windows 构建走 pinned） |
+| `2269100a8` | UVM 下让自适应 KV 池保持在设备上 | ⏸ **所有者已否决 UVM 路线**（SPEC 不在范围） |
+| `50a7de723` | **泛化缓存类型 + 调优预取** | ⚠️ 我们只覆盖 `rk4v4`/`rk8v4`（`int8` 未跑），`k8v4` 明确不在交付 |
+| `a1a61d71a` | 用池剩余做预取槽 | ⚠️ 我们的环从池里划，未用"剩余" |
+
+### 9.7 基准与文档
+
+| 提交 | 内容 | 我方 |
+|---|---|---|
+| `67da18339` / `3079bd485` | 发布自适应 KV 基准工作流 / 自动上下文扫描 | ❌ 未移植（`run_kv_stream.py` 是 cases/bench 口径，无容量扫描曲线） |
+| `ee601a44d` | 链接作者文章 | ✅ 已收进 `inputs` 附录 A |
+| `4ba0b9b25` | 基准脚本 Windows 兼容 | ⏸ 我们跑 Linux 主机 |
+
+**结论**：9.4（prefill 三项 + ubatch 实测）、9.5（串行提示/缓存恢复/服务端）、9.3（span 融合/相邻页合并）、
+9.2（deadline 调度器、稳定页）、9.6（缓存类型泛化）都还在上游而我们没有对应物。这不是"作者没做"，
+是我上一轮只按 decode 流水建表，把它们整段漏掉了。
+
+---
+
+## 10 NInfer 的门禁与本轮合规检查（逐条，`CONTRIBUTING.md` 为权威）
+
+`CONTRIBUTING.md:100-215` 是工程规则；`tests/README.md` 是测试约定；CI 的 `ctest`
+（`.github/workflows/ci.yml:411`）是门禁执行点。下表是**这条流式交付**的合规状态。
+
+| 规则（行号） | 要求 | 我方现状 | 判定 |
+|---|---|---|---|
+| Lossless by default（`CONTRIBUTING.md:105`） | 优化不得改变输出 | 逐位验过（183 K 4/4、logprobs 0/512）；251 K 只有 64 token 的 ids 金标 | ⚠️ 部分 |
+| Lossless：长提示对比 master（`:118`） | 与 `master` 比长提示的 ids/logprobs | 与原版二进制比过 251 K 的 64 token ids；未做长提示 logprobs（原版无该输出） | ⚠️ 记录为不可比 |
+| Every family（`:124`） | 共享机制变更覆盖所有族 | 只覆盖 Qwen3.5-core dense；`--kv-stream` 自述为 Qwen3.5-core，其他族未冒烟 | ❌ 需声明+冒烟 |
+| Every platform（`:141`） | `sm_70/75/80/86/89/120a`、CUDA 12.x/13.x | 本地只编 `sm_89`；`kv_stream_signal.cu` 无算力门禁；未见跨架构证据 | ❌ 依赖 CI，需明确 |
+| Best default（`:160`） | 默认即最快无损配置 | 默认关、环 1.10、run 128 均为本机实测 | ✅ |
+| Best default / 产品模式（`:205-212`） | 产品模式走 CLI/服务选项或设备档案；env 只能用于诊断/A-B | `NINFER_STREAM_RUN_PAGES`、`_BOUNDED`、`_DEBUG`、`_VERIFY` 都是 env；`RUN_PAGES` 还被我当扫描接口用过 | ⚠️ 必须明确"诊断口"或改 CLI |
+| Comparable measurements（`:171`） | 同主机/同构建/同产物/同提示；提示加唯一 nonce；**交错运行**；无其他负载 | 同主机/构建/产物/提示 ✅；**未交错**（逐变体顺序跑）❌；未加 nonce（前缀缓存已被 `--kv-stream` 拒绝，影响为零，但要写明） | ⚠️ 需补交错 |
+| Docs describe current state（`:184`） | 文档只描述当前状态；**不含日期日志、运行/CI 历史、尝试过程、作者本机路径、上游页面副本**；测量是带条件的参考表 | `kv-streaming-worklog.md`（改动史、缺陷账本）、`kv-streaming-measurements.md`（M-01…M-22 日期日志、"作废数字"、"已被否掉的路"）**直接违反**；strategy 第 2 节引用了作者本机路径与上游行号（可接受为事实来源，但要收敛） | ❌ **违规** |
+| Docs：用户可见变更同 PR 更新（`:193`） | 族指南、`docs/cli.md`、`docs/serving.md`、`--help`、README Artifacts、What's New | `--help` ✅；`docs/cli.md` 里 `--kv-stream` **0 处** ❌；`docs/serving.md` 0 处（需说明流式不支持并发/前缀缓存）❌；README What's New 无条目 ❌ | ❌ 违规 |
+| 新 kernel 的测试（`:200`） | 独立 FP32/FP64 oracle + 覆盖每个 schedule + **一次 compute-sanitizer racecheck 与 synccheck** | `kv_stream_signal.cu`（`record_deadline<<<1,1>>>`）**没有** oracle 测试，也**没有** sanitizer 记录 | ❌ 违规 |
+| 测试注册（`tests/README.md`、`tests/cmake/CoreTests.cmake`） | 每个测试在 `CoreTests.cmake` 注册才进 CTest | layout/feedback/partition 已注册；**`test_kv_stream_span_tuner.cpp` 未注册** ⇒ 无门禁 | ❌ 违规 |
+| Commit 风格（`:213`） | Conventional Commits、小写类型 | `feat(kv-stream)`/`fix(kv-stream)`/`docs(kv-stream)`/`test(bench)` 已遵守 | ✅ |
+
+### 10.1 由合规检查直接产生的动作（并入计划）
+
+1. **文档结构整改**（`:184`）：把"日期日志/尝试过程/作废数字"从 `docs/maintainer/` 移出，
+   保留为 **`bench/results/kv-stream/README.md` 的机器记录索引 + git 历史**；`docs/` 只留
+   **当前状态**（设计、策略、差异、参考表）。这是硬规则，不是风格偏好。
+2. **`docs/cli.md` 增 `--kv-stream` 一节 + `docs/serving.md` 写明不支持并发/前缀缓存**。
+3. **README What's New 加一行**（流式 KV 交付）。
+4. **注册 `test_kv_stream_span_tuner.cpp`**，并给 `kv_stream_signal.cu` 补 oracle 测试 +
+   `compute-sanitizer --tool racecheck` 与 `synccheck` 各一次（`tests/README.md:96-110` 的跑法）。
+5. **跨架构**：在 CI 的四套构建上确认 `kv_stream_sign` 相关 kernel 可编（`sm_70/75/80/86/89/120a`），
+   并在 None 卡的情况下记录"未真机跑"。
+6. **测量口径**：campaign 增加 `--interleave`（两变体按 rep 交错），提示尾部加 nonce。
+7. **env 旋钮定性**：在 `docs/cli.md` 与 worklog 写明它们是诊断口；产品默认值由实测决定。
+

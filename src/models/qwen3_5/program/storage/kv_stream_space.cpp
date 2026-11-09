@@ -14,6 +14,14 @@ void create_events(std::vector<cudaEvent_t>& events, std::uint32_t count) {
     }
 }
 
+void grow_events(std::vector<cudaEvent_t>& events, std::uint32_t count) {
+    for (std::uint32_t index = static_cast<std::uint32_t>(events.size()); index < count; ++index) {
+        cudaEvent_t event = nullptr;
+        CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+        events.push_back(event);
+    }
+}
+
 void destroy_events(std::vector<cudaEvent_t>& events) noexcept {
     for (cudaEvent_t& event : events) {
         if (event != nullptr) { (void)cudaEventDestroy(event); }
@@ -567,6 +575,11 @@ void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams
     run_used_.assign(ring_runs_, 0);
     run_owner_.assign(ring_runs_, kNoLayer);
     run_layer_.assign(ring_runs_, kNoLayer);
+    // The per-run events were created for the ring this space started with. A deeper ring (a look-ahead
+    // trial) addresses runs past that size, and indexing the old vectors wrote outside them - a
+    // segfault, not a wrong answer, so growing them here is not optional.
+    grow_events(ready_run_, ring_runs_);
+    grow_events(consumed_run_, ring_runs_);
     run_cursor_ = 0;
     ++layout_generation_;
     // The host copies above ran on the compute stream; the uploads that read them run on the copy

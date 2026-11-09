@@ -284,6 +284,12 @@ plan_kv_stream_uniform(std::uint32_t budget_pages, std::uint32_t active_pages,
         }
         // A window of zero pages is a legitimate plan: it is what a pool that holds only one layer's
         // streamed extent can serve.
+        // A window of zero pages is arithmetic without a write path (kv_stream_space.cpp,
+        // repartition): the token being appended lands in the layer's resident page. A pool that
+        // cannot afford one page per streaming layer therefore has no streamed plan, and the caller
+        // names the flag that lowers the context - rounding down to a zero window would run and emit
+        // wrong data.
+        if (low == 0) { return std::nullopt; }
         KVStreamSplit split;
         split.layer_resident.assign(layers, low);
         split.ring_pages = ring_for(low);

@@ -103,6 +103,10 @@ class Case:
     # A case whose purpose names a full-length generation must not silently stop early: the record
     # then shows the model closed the answer instead of the window sliding.
     require_full_generation: bool = False
+    # Whether the case's argv must actually stream. Where the pool holds the whole context the correct
+    # answer is that nothing streams and the adapter costs nothing, so a case measuring that region
+    # asserts the opposite: the window covers the prompt and no page is copied during decode.
+    expect_streaming: bool = True
 
 
 # The contexts both layouts can serve: the original with MTP3 stops starting above ~186 K, and the
@@ -189,8 +193,8 @@ CASES: dict[str, Case] = {
     "stream-150k": Case(
         name="stream-150k",
         purpose=(
-            "The middle of the range: a window that holds most of the context, so the controller "
-            "should shrink the ring and a round should carry much less than at 251 K."
+            "A pool that holds the whole context: --kv-stream must cost nothing, moving no page and "
+            "decoding at the resident rate."
         ),
         kind="perf",
         target_tokens=150_000,
@@ -199,12 +203,30 @@ CASES: dict[str, Case] = {
         variants=("streamed",),
         oracle="self",
         require_full_generation=True,
+        expect_streaming=False,
+    ),
+    # The same context with a pool too small to hold it: here the boundary has to be found by the
+    # controller, which is the path 183 K and 251 K never exercise (their ring is already right).
+    "stream-150k-tight": Case(
+        name="stream-150k-tight",
+        purpose=(
+            "A 150 K context in a pool that cannot hold it: the controller must move the boundary and "
+            "a round must carry far less than at 251 K."
+        ),
+        kind="perf",
+        target_tokens=150_000,
+        capacity=262_144,
+        max_new=512,
+        variants=("streamed",),
+        oracle="self",
+        require_full_generation=True,
+        streamed_flags=("--kv-headroom-mib", "1008"),
     ),
     "stream-180k": Case(
         name="stream-180k",
         purpose=(
-            "Just past the point where a 16 GB pool stops holding the whole context at this cache "
-            "type: the first size where streaming is unavoidable."
+            "The largest context this pool still holds whole: streaming must stay idle and the "
+            "decode rate must match the resident one."
         ),
         kind="perf",
         target_tokens=180_000,
@@ -213,6 +235,7 @@ CASES: dict[str, Case] = {
         variants=("streamed",),
         oracle="self",
         require_full_generation=True,
+        expect_streaming=False,
     ),
     "resident-8k": Case(
         name="resident-8k",
@@ -988,10 +1011,21 @@ def record_rep(entry: dict[str, Any], result: RepResult, variant: str, case: Cas
             checks["stream_series_matches_total"] = abs(series - decoded) <= max(decoded * 0.01, 1)
         if variant == "streamed":
             window_tokens = (stream.get("resident_pages") or 0) * 64
+            prompt_tokens = result.report.get("prompt", {}).get("tokens", 0)
             checks["stream_window_tokens"] = window_tokens
-            checks["stream_engaged"] = bool(stream.get("enabled")) and (
-                result.report.get("prompt", {}).get("tokens", 0) > window_tokens
-            )
+            if case.expect_streaming:
+                checks["stream_engaged"] = bool(stream.get("enabled")) and (
+                    prompt_tokens > window_tokens
+                )
+            else:
+                # The pool holds the whole context: the correct answer is that no page stands in the
+                # ring and a decode round copies nothing at all.
+                decode_bytes = (stream.get("upload_bytes") or 0) - (
+                    (stream.get("prefill") or {}).get("upload_bytes") or 0
+                )
+                checks["stream_idle"] = bool(stream.get("enabled")) and (
+                    prompt_tokens <= window_tokens and decode_bytes == 0
+                )
         summary_decode = result.summary.get("decode speed")
         reported = result.report.get("timings", {}).get("decode_tokens_per_second")
         if summary_decode and reported:

@@ -62,17 +62,27 @@
   190 K prompt，`NINFER_TEST_ARTIFACT` 控制跳过），注册进 `tests/models/qwen3_5/tests.cmake`；
   语法检查通过，**未运行**。
 
-**提交（本地与测试机一致，HEAD `f408528b`）**
+**P0 graph 结案（已落地并提交）**
+- 诊断：`startup.cpp` 曾加 `NINFER_STREAM_CAPTURE=1` 允许流式捕获，跑一次 `stream-251k`
+  （`20261109T191653Z`）→ **380 µs 内失败**：`KV logical page is outside the address space`。
+- 根因：`graphs.cpp reserve_capture_rows` 为每个捕获行 `create_active(1,…)` 后取第 0 页，
+  而流式地址 `commit_activation` 把 `page_count = 0`（页由 `StreamedKVSpace` 发布）。
+- 收益实测（183 K 全驻留，`equiv-183k` resident）：graph on 37.1 ms vs off 37.7 / 37.8 ms
+  = **0.65 ms/轮（1.75%）**；251 K 稀释到约 1.3%；两次 off 的 512 ids 与 on 逐位相同（C8 PASS）。
+- 上限解释：CPU 提交 1.5–2 ms 被 37 ms 的 GPU 工作掩盖，graph 只消 kernel 间隙（≈500–700 × 1.3 µs）。
+- 结论：维持关图，开关已删（`eae816e9`）；measurements 表 5、verification C8/P9。
+
+**提交（本地与测试机一致，HEAD `eae816e9`）**
 `ef00948d` 报告字段 · `e524df8a` 表格修复 · `4c511b31` C4 · `24be7202` C5 ·
-`f3561664` C7 测试 · `211183d1` C10/C12 · `28c758d5` C6 · `f408528b` 交接文档。
+`f3561664` C7 测试 · `211183d1` C10/C12 · `28c758d5` C6 · `f408528b` 交接文档 ·
+`7a49bde1` 格式 · `823c361a` 捕获诊断 · `25173bf0` bench `--extra` · `eae816e9` graph 结案。
 
 ### In Progress
 
-- 无。P0 的 graph 基线**尚未开始**（等待压缩后按 Next Steps 执行）。
+- 无。下一步是 `--embedding-residency host` 在 251 K 流式下的 A/B（见 Next Steps），尚未开始。
 
 ### Blocked
 
-- **P0 graph**：`startup.cpp:1507` 流式强制关图，必须先允许流式捕获才能测“graph on”。
 - **C7/C9/G5**：需要一次 `BUILD_TESTING=ON` 的测试树构建（约 30 分钟），须单独获批并后台跑。
 - **K4 跨架构**：本地只有 `sm_89`，未做。
 
@@ -90,22 +100,24 @@
   uniform 读成 all-resident；字段为 0 时不输出。
 - **C4/C5 用 `oracle: self` 金标**：原版无 `--kv-stream`、在 262 K 起不来；文档已注明是回归口径，
   不是与原版的等价。
+- **不做图内换页**：graph 在这条路径上只值 0.65 ms/轮（1.75%@183 K，1.3%@251 K），上限就是
+  kernel 间隙；要让它覆盖流式，图内必须含每层 copy issue + `consumed` record + 每次 replay
+  更新 memcpy 源（251 K 的环 11 run < 一层 46 run ⇒ `ahead=0`，图外 issue 全部层会死锁）。
 - **用户可感知价值排序**（据实）：减字节（embedding-residency 388 MiB → 每轮约 −407 MB，未量）
   > P5 MTP 池（−5% 字节）> P0 graph（251 K 上界 0.7%/轮）> P1 双布局/P2 脏页（今天被计算掩盖）。
 - **不租 pod**：`kpa@192.168.2.13` 一直可用，租机是错误建议（已撤回）。
 
 ## Next Steps
 
-1. **P0 的 graph 基线（用户指定）**
-   - 在 `src/models/qwen3_5/program/planning/startup.cpp:1507` 加一个**诊断开关**允许流式捕获图，
-     不先改默认；确认每层 `wait_ready/consume` 在捕获区内的语义（`structured_round.cpp:136` 已有图内等外部事件的先例）。
-   - 给 `tools/bench/run_kv_stream.py` 的 case 加 graph on/off 两臂（CLI 已有 `--no-cuda-graph`）。
-   - 跑 8 组：183 K/251 K × `rk4v4`/`rk8v4`，各 on/off，落记录。
-   - 判据：P4 的“251 K 不慢于 72.8 tok/s”；C8 的“graph vs eager 512/512 逐位”；Y2 的“不超过 +1%”。
-   - 若更慢/不稳：P4 结案为“维持关图”，写清代价，不再重开。
-2. **C 表收尾（发布前，非产品能力）**：C9（VERIFY 逐页计数进 `StreamedKvStats` + 测试）、
-   以及 G5/C7 的测试树批次。
-3. **用户可感知的下一步（graph 之后）**：先量 `--embedding-residency host` 在 251 K 流式下的 A/B。
+1. **`--embedding-residency host` 在 251 K 流式下的 A/B（可感知收益最大项）**
+   - 现状：embedding 常驻占 388.4 MiB；流式池每轮 1116.2 MiB、46.1 ms 拷贝地板、暴露 13.5 ms。
+   - 预期：释放 388.4 MiB → +355 页/层 → 每轮约 −407 MB（1116 → 709 MiB），拷贝 46 → 28 ms。
+   - 做法：先确认该选项在流式下的守卫与交互（`kv_stream_guards.h`、CLI 帮助、`serve_options`），
+     再用 bench 两臂 A/B（默认 vs `--embedding-residency host`），`--extra` 透传；
+     判据：ids 逐位（C4 口径）+ 每轮字节/时间/暴露 + 池容量变化。
+2. **C 表收尾**（发布前，非产品能力）：C9（VERIFY 逐页计数进 `StreamedKvStats`）、G5/C7 的
+   测试树批次（`BUILD_TESTING=ON`，约 30 分钟，需单独获批）。
+3. 之后按可感知收益：P5 MTP KV 进池（约 −5% 字节）→ P1 双布局 / ubatch 适配。
 
 ## Critical Context
 
@@ -113,8 +125,7 @@
 - 测试机 `kpa@192.168.2.13`（debian，16 核/62 GB），RTX 4080 SUPER 16 376 MiB，驱动 615.71.09。
 - CUDA 13.4.92（`nvcc` 不在非登录 PATH，用 `/usr/local/cuda/bin/nvcc`），cmake 3.31.6，`python3` 3.13.5。
 - 仓库 `~/ninfer-fork/ninfer-all-adaptive-kv-streaming`，分支 `kv-stream-27b-16g`。
-- 构建 `build-sm89`（Release、sm_89、`BUILD_TESTING=OFF`）；二进制 `untagged+e524df8a`
-  （之后只有文档/测试提交，运行时源码未变）。
+- 构建 `build-sm89`（Release、sm_89、`BUILD_TESTING=OFF`）；二进制 `untagged+eae816e9`（与源码一致）。
 - 模型 `~/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer`；
   oracle `~/ninfer/ninfer-all/build-sm89/apps/ninfer`（原版 master `f6928e00`，只执行）。
 
@@ -125,6 +136,7 @@
 - 150 K 紧池 96.5 tok/s / 38.8 ms；150 K 全装下 107.0、0 字节/轮；100 K 全驻留 118.9。
 - 带宽标定 25.4 GB/s；1116.2 MiB → 46.1 ms 拷贝地板；54.4 − 46.1 = 8.3 ms 未藏住。
 - 池启动后剩 53.5 MiB；流式默认 headroom 64 MiB。
+- graph（183 K 全驻留）：on 37.1 ms / off 37.75 ms = 0.65 ms/轮（1.75%）；251 K 推算 1.3%。
 
 **命令**
 ```bash
@@ -149,8 +161,10 @@ g++ -std=c++20 -fsyntax-only -Iinclude -Isrc -Itests -I/usr/local/cuda/include <
 - 中断 SSH 客户端不会终止远端进程；用 pgrep 确认。bench 工具忙卡会拒绝。
 - 全量测试包 30 分钟；不要为单个测试触发。
 
-**C 表现状**：C1/C2/C3/C4/C5/C10/C11/C12 PASS；C6/C9 半；C7 待跑；C8 未跑（依赖 P4）。
-按 verification 公式：正确性 9/12（含两个半）≈ 30/40，总分约 78 → 仍 C 线（B 需 ≥80 且正确性 ≥90%）。
+**C 表现状**：C1/C2/C3/C4/C5/C8/C10/C11/C12 PASS；C6/C9 半；C7 待跑。
+P 表 P1–P9 全 PASS。按 verification 公式：正确性 10/12 ≈ 33.3/40，总分约 81；但正确性 83%
+未达 B 的 90%、G5 未过，所以仍是 **C 线**。跑完 C7 + G5（同一次测试树批次）即 11/12（92%）
+且门禁 100%，那时才是 B。
 
 <read-files>
 SPEC.md

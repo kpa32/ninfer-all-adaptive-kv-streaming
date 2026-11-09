@@ -310,12 +310,53 @@ bool StreamedKVSpace::close_signal_window() noexcept {
 }
 
 bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
-    // Measurement, not prediction, decides where the pool boundary sits: a round with no feedback yet
-    // only records the baseline it will be compared against. The reference evaluates at the first
-    // decode round too, but its pool is a reservation it can rebuild cheaply - ours moves every page
-    // that changes side, which measured as a 126 ms first-round spike (189.8 ms against a 60.4 ms
-    // steady round) because the migration landed inside the measured round.
+    // Measurement, not prediction, decides where the pool boundary sits.
+    //
+    // A round with no feedback yet only records the baseline it will be compared against. The
+    // reference evaluates at the first decode round too, but its pool is a reservation it rebuilds
+    // cheaply - ours moves every page that changes side, which measured as a 126 ms first-round spike
+    // (189.8 ms against a 60.4 ms steady round) when the migration landed inside the measured round.
+    //
+    // And a repartition is itself an experiment: the layout it leaves has a measured round time, the
+    // layout it enters has its own, and if the new one is not faster the old one comes back. Without
+    // that, the controller can only be as right as its model of the card - and it is not: at 251K on
+    // this host the model's 1.10 ring measured 60.2 ms/round against 54.4 ms at the ring it left, so
+    // the decision to shrink was a straight 5.8 ms/round loss. The rule here needs no model of the
+    // card: it keeps what is faster.
+    const double round_ms = window_seconds_ * 1000.0;
+    if (partition_trial_cooldown_ != 0) { --partition_trial_cooldown_; }
+    if (partition_trial_active_) {
+        if (round_ms > 0.0) {
+            partition_trial_sum_ms_ += round_ms;
+            ++partition_trial_rounds_;
+        }
+        if (partition_trial_rounds_ < kPartitionTrialRounds) { return false; }
+        const double mean = partition_trial_sum_ms_ / static_cast<double>(partition_trial_rounds_);
+        const bool slower = mean > partition_trial_baseline_ms_ * (1.0 + kPartitionRevertMargin);
+        partition_trial_active_ = false;
+        partition_trial_sum_ms_ = 0.0;
+        partition_trial_rounds_ = 0;
+        layout_round_ms_        = 0.0;
+        layout_rounds_          = 0;
+        if (slower) {
+            // Back to the layout that measured faster, and do not try again for a while: an unstable
+            // boundary would pay the migration cost over and over.
+            repartition(partition_trial_before_, streams);
+            partition_trial_cooldown_ = kPartitionCooldownRounds;
+            return true;
+        }
+        return false;
+    }
+    if (round_ms > 0.0) {
+        layout_round_ms_ += round_ms;
+        ++layout_rounds_;
+    }
     if (!window_measured_) {
+        if (evaluations_since_repartition_ != UINT32_MAX) { ++evaluations_since_repartition_; }
+        return false;
+    }
+    if (partition_trial_cooldown_ != 0) {
+        window_measured_ = false;
         if (evaluations_since_repartition_ != UINT32_MAX) { ++evaluations_since_repartition_; }
         return false;
     }
@@ -360,7 +401,17 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     if (next->layer_resident == split_.layer_resident && next->ring_pages == split_.ring_pages) {
         return false;
     }
+    // Start the experiment: remember the layout being left and the round time it measured, so the
+    // next rounds can say whether this one is an improvement.
+    partition_trial_before_   = split_;
+    partition_trial_baseline_ms =
+        layout_rounds_ != 0 ? layout_round_ms_ / static_cast<double>(layout_rounds_) : round_ms;
     repartition(*next, streams);
+    partition_trial_active_   = true;
+    partition_trial_sum_ms_   = 0.0;
+    partition_trial_rounds_   = 0;
+    layout_round_ms_          = 0.0;
+    layout_rounds_            = 0;
     evaluations_since_repartition_ = 0;
     return true;
 }

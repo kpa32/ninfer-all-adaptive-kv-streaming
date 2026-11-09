@@ -354,6 +354,22 @@ private:
     int verify_after_budget_ = 64;
     std::unique_ptr<HostKVArena> verify_arena_;
     std::optional<HostKVAllocation> verify_host_;
+    // Every repartition is an experiment with a measured outcome: `trial_before_` is the layout it left,
+    // `trial_baseline_ms_` the mean round time that layout measured, and a trial that turns out slower
+    // reverts and waits out a cooldown before the boundary is tried again. The numbers are mechanism
+    // parameters, not properties of a card: any layout that is actually faster stays.
+    KVStreamSplit partition_trial_before_{};
+    double partition_trial_baseline_ms_ = 0.0;
+    double partition_trial_sum_ms_      = 0.0;
+    std::uint32_t partition_trial_rounds_   = 0;
+    std::uint32_t partition_trial_cooldown_ = 0;
+    bool partition_trial_active_            = false;
+    // The running round-time mean of the layout in force, which is the baseline a new one must beat.
+    double layout_round_ms_        = 0.0;
+    std::uint32_t layout_rounds_   = 0;
+    static constexpr std::uint32_t kPartitionTrialRounds  = 4;
+    static constexpr double kPartitionRevertMargin        = 0.005;
+    static constexpr std::uint32_t kPartitionCooldownRounds = 64;
     static constexpr std::uint32_t kNoLayer = std::numeric_limits<std::uint32_t>::max();
 };
 

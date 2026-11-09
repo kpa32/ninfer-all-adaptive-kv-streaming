@@ -1510,7 +1510,12 @@ void TextContext::plan_stream_round(std::int32_t width) {
     //
     // The callbacks are driven by the page range each launch names, not by a span index, so a run may
     // be any whole number of pages (kv_stream_space.h).
-    if (!stream_span_tuner_.use_bounded()) { return; }
+    // `NINFER_STREAM_BOUNDED=0` and `=1` pin the pipeline for a verification run; unset follows the
+    // tuner, which is what the delivered path does.
+    const char* bounded_env = std::getenv("NINFER_STREAM_BOUNDED");
+    const bool pinned_off   = bounded_env != nullptr && bounded_env[0] == '0';
+    const bool pinned_on    = bounded_env != nullptr && bounded_env[0] == '1';
+    if (pinned_off || (!pinned_on && !stream_span_tuner_.use_bounded())) { return; }
     if (kv_stream_space_->runs_per_layer() <= 1) { return; }
     const std::uint32_t segment_keys = batch_text_kv_->attention_segment_keys();
     if (segment_keys == 0) { return; }

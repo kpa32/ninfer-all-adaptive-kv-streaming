@@ -5,6 +5,7 @@ title: KV 流式：总体战略、指导思想、理论来源与验算（唯一�
 status: active
 parent: kv-streaming-design
 references:
+  - kv-streaming-verification
   - kv-streaming-fidelity
   - kv-streaming-worklog
   - kv-streaming-measurements
@@ -93,10 +94,8 @@ HEAD `4ba0b9b25`），与本仓库无构建依赖，只作为**事实来源**引
 **结论**：不是"完全无效的工作"（它把一个有隐性正确性 bug 的 decode 路径变成可证、比原来快 2–5% 的实现），
 也**不是"可交付的老虎"**（prefill/图/调度器/多请求/门禁四块缺）。准确定位是：
 **可用的 opt-in 能力 + 正确的测量基准 + 未完成的移植**。在补齐 §8 的 P0/P1/P2 与 §10 的门禁前，
-不能对外宣称"262 144 流式已交付"。
-
-
----
+不能对外宣称"262 144 流式已交付"。验证机制与评分规则见
+[kv-streaming-verification](kv-streaming-verification.md)：只有具名检查可以得分。
 
 ## 1 核心指导思想（五条，后续所有决定都回到这里）
 

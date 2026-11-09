@@ -766,6 +766,7 @@ StreamedKvStats Program::streamed_kv_stats() {
     out.streamed_pages = stats.streamed_pages;
     out.layers         = stats.layers;
     out.ring_runs      = stats.ring_runs;
+    out.run_pages      = stats.run_pages;
     out.pages_per_layer = stats.pages_per_layer;
     out.page_bytes      = stats.page_bytes;
     out.host_bytes      = stats.host_bytes;

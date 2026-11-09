@@ -361,17 +361,18 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
             if (value > 0.0) { windows[priced++] = value; }
         }
         std::sort(windows, windows + priced);
-        const double mean = priced != 0 ? windows[priced / 2] : partition_trial_baseline_ms_;
+        const double mean    = priced != 0 ? windows[priced / 2] : partition_trial_baseline_ms_;
+        const bool   slower  = mean > partition_trial_baseline_ms_ * (1.0 + kPartitionRevertMargin);
         if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-            std::fprintf(stderr, "[partition] trial done mean=%.2f baseline=%.2f %s\n", mean,
+            std::fprintf(stderr, "[partition] trial done median=%.2f baseline=%.2f %s\n", mean,
                          partition_trial_baseline_ms_, slower ? "revert" : "keep");
         }
-        partition_trial_active_   = false;
-                partition_trial_rounds_   = 0;
-        partition_trial_skip_     = 0;
-        partition_trial_measured_     = 0;
+        partition_trial_active_        = false;
+        partition_trial_rounds_        = 0;
+        partition_trial_skip_          = 0;
+        partition_trial_measured_      = 0;
         partition_trial_window_cursor_ = 0;
-            for (double& value : partition_trial_windows_) { value = 0.0; }
+        partition_trial_windows_.fill(0.0);
         layout_round_ms_          = 0.0;
         layout_rounds_            = 0;
         if (slower) {

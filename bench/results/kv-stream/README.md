@@ -181,3 +181,16 @@ FAIL 的行是历史：换了配方或修了工具之后，旧记录不会被改
 | `speculative` | 草稿/接受、接受率与接受长度、逐位接受 |
 | `generation` | ids 与（`--logprobs` 时）每个 token 的 logprob 及 top-k |
 | `kv_transfer` | 主/后端 KV 与状态的 D2H/H2D/D2D 页数与字节 |
+
+## 这些目录是否入库
+
+**不整目录入库。** 一次 251 K 的 campaign 是 2–4 MiB，本轮累计 126 MiB 躺在主机的
+`bench/results/kv-stream/runs/` 下；仓库只保留被结论直接引用的一小部分，其余留在产生它们的主机上
+供复查。所以：
+
+- 想在另一台机器复现某条结论，**重跑文档里写明的用例**（`run_kv_stream.py` 的 `--case` 名 + `--tag`），
+  而不是 checkout 它的目录；
+- 每条结论在
+  [`docs/maintainer/kv-streaming-measurements.md`](../../../docs/maintainer/kv-streaming-measurements.md)
+  的**决策索引**里都有：结论 → 决定 → 用例/tag，照表重跑即可；
+- 同一张表里还有"**已被实测否掉的路**"，那是防止重复工作最有效的一栏——先看它再动手。

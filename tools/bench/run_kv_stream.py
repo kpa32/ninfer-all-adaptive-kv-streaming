@@ -103,6 +103,9 @@ class Case:
     # A case whose purpose names a full-length generation must not silently stop early: the record
     # then shows the model closed the answer instead of the window sliding.
     require_full_generation: bool = False
+    # A case that pins its own cache format: the delivery format `rk8v4` needs a context the all-resident
+    # layout can still hold, which is a different case from the `rk4v4` range the suite uses by default.
+    kv_dtype: str = ""
     # Whether the case's argv must actually stream. Where the pool holds the whole context the correct
     # answer is that nothing streams and the adapter costs nothing, so a case measuring that region
     # asserts the opposite: the window covers the prompt and no page is copied during decode.
@@ -134,6 +137,24 @@ CASES: dict[str, Case] = {
         max_new=16,
         variants=("resident",),
         require_full_generation=True,
+    ),
+    "equiv-100k-rk8v4": Case(
+        name="equiv-100k-rk8v4",
+        purpose=(
+            "The delivery format at the largest context both layouts serve: rk8v4's all-resident "
+            "layout holds ~110K on a 16 GB card (2.67 GiB of KV beside 11.6 GiB of weights), so this "
+            "is where a streamed rk8v4 run can be compared bit for bit against a resident one. Above "
+            "it only the streamed layout starts, which is why the suite's other range is rk4v4."
+        ),
+        kind="equivalence",
+        target_tokens=100_000,
+        capacity=101_376,
+        max_new=512,
+        variants=("resident", "streamed"),
+        resident_flags=("--kv-headroom-mib", "16"),
+        streamed_flags=("--kv-headroom-mib", "1008"),
+        require_full_generation=True,
+        kv_dtype="rk8v4",
     ),
     "equiv-183k": Case(
         name="equiv-183k",
@@ -1230,7 +1251,7 @@ def run_case(
                 args.timeout,
                 with_report=program == "ours",
                 with_logprobs=program == "ours" and args.logprobs,
-                dtype=args.kv_dtype,
+                dtype=(case.kv_dtype or args.kv_dtype),
             )
             record_rep(entry, result, variant, case)
             if result.returncode != 0:

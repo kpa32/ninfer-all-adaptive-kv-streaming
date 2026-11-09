@@ -261,3 +261,23 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 
+
+
+def test_the_delivery_format_has_its_own_equivalence_case() -> None:
+    """rk8v4 只在"全驻留装得下"的上下文上能与流式逐位比对，这个用例就是那个区间。"""
+    case = run_kv_stream.CASES["equiv-100k-rk8v4"]
+    assert case.kv_dtype == "rk8v4"
+    assert case.variants == ("resident", "streamed")
+    assert case.oracle == "original"
+    assert case.max_new == 512
+    # The resident arm needs a context the card can hold beside 11.6 GiB of weights: 16 layers of
+    # 64-token pages of 104 448 B at 100K is 2.67 GiB, which is why this case stops at 100K.
+    pages = -(-case.target_tokens // 64)
+    kib = pages * 16 * 104_448
+    assert kib < 3 * 1024**3
+    assert case.target_tokens + case.max_new <= case.capacity
+
+
+def test_a_case_without_a_dtype_follows_the_global_override() -> None:
+    """没有自己的格式时，全局 --kv-dtype 仍然生效（rk4v4 走默认，交付格式靠用例钉住）。"""
+    assert run_kv_stream.CASES["equiv-183k"].kv_dtype == ""

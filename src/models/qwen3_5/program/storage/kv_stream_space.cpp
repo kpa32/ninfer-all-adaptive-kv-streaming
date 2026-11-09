@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <stdexcept>
 
 namespace ninfer::models::qwen3_5 {
@@ -342,24 +343,35 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         if (partition_trial_skip_ != 0) {
             --partition_trial_skip_;
         } else if (round_ms > 0.0) {
-            partition_trial_sum_ms_ += round_ms;
-            partition_trial_measured_ += 1;
+            partition_trial_windows_[partition_trial_window_cursor_] = round_ms;
+            partition_trial_window_cursor_ =
+                (partition_trial_window_cursor_ + 1) % kPartitionTrialWindows;
+            ++partition_trial_measured_;
         }
         ++partition_trial_rounds_;
         if (partition_trial_rounds_ <= kPartitionTrialRounds) { return false; }
-        const double mean = partition_trial_measured_ != 0
-                                ? partition_trial_sum_ms_ / static_cast<double>(partition_trial_measured_)
-                                : partition_trial_baseline_ms_;
-        const bool slower = mean > partition_trial_baseline_ms_ * (1.0 + kPartitionRevertMargin);
+        // The trial is judged by the median of the windows it priced, not their mean: a window that
+        // carried a migration is rare and huge, and a mean of four windows lets one of them decide the
+        // answer. Measured: a layout that was 1.9 ms/round slower read as +54% and was reverted because
+        // the migration window reached the mean - the same statistic the benchmark tool uses for steady
+        // state, applied here for the same reason.
+        double windows[kPartitionTrialWindows];
+        std::uint32_t priced = 0;
+        for (const double value : partition_trial_windows_) {
+            if (value > 0.0) { windows[priced++] = value; }
+        }
+        std::sort(windows, windows + priced);
+        const double mean = priced != 0 ? windows[priced / 2] : partition_trial_baseline_ms_;
         if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
             std::fprintf(stderr, "[partition] trial done mean=%.2f baseline=%.2f %s\n", mean,
                          partition_trial_baseline_ms_, slower ? "revert" : "keep");
         }
         partition_trial_active_   = false;
-        partition_trial_sum_ms_   = 0.0;
-        partition_trial_rounds_   = 0;
+                partition_trial_rounds_   = 0;
         partition_trial_skip_     = 0;
-        partition_trial_measured_ = 0;
+        partition_trial_measured_     = 0;
+        partition_trial_window_cursor_ = 0;
+            for (double& value : partition_trial_windows_) { value = 0.0; }
         layout_round_ms_          = 0.0;
         layout_rounds_            = 0;
         if (slower) {
@@ -421,10 +433,11 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
                 layout_rounds_ != 0 ? layout_round_ms_ / static_cast<double>(layout_rounds_) : round_ms;
             repartition(*deeper, streams);
             partition_trial_active_       = true;
-            partition_trial_sum_ms_       = 0.0;
-            partition_trial_skip_         = 1;
+                        partition_trial_skip_         = 1;
             partition_trial_rounds_       = 0;
             partition_trial_measured_     = 0;
+            partition_trial_window_cursor_ = 0;
+            for (double& value : partition_trial_windows_) { value = 0.0; }
             partition_trial_target_ring_  = deeper->ring_pages;
             layout_round_ms_              = 0.0;
             layout_rounds_                = 0;

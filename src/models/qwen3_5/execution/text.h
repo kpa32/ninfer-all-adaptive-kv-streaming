@@ -123,6 +123,11 @@ struct StreamFrameFeed {
     StreamedKVSpace* space  = nullptr;
     std::uint32_t layer     = 0;
     std::uint32_t runs      = 0;
+    // The page range a launch names is the only thing the hook and the copies can agree on: the hook
+    // reports pages, the copies move runs. Converting through these two avoids assuming a run is a
+    // whole number of attention spans (kv_stream_space.h, kv_stream_span_tuner.h).
+    std::uint32_t run_pages       = 0;
+    std::uint32_t streamed_pages  = 0;
     cudaStream_t copy       = nullptr;
     cudaStream_t compute    = nullptr;
 };

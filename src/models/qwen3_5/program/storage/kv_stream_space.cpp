@@ -93,7 +93,6 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     // layer is the unit that can be late.
     signal_ = std::make_unique<KVStreamSignal>(layers_);
     minimum_ring_pages_ = split_.ring_pages;
-    trace_consumes_.assign(layers_, 0);
     round_.layers.resize(layers_);
     for (std::uint32_t layer = 0; layer < layers_; ++layer) { round_.layers[layer].layer = layer; }
     if (report_) {
@@ -460,21 +459,8 @@ std::uint32_t StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
         // only one extent therefore serialises the layers - the copy waits for the reader - while a
         // ring that holds one extent plus a margin lets the next layer start as this one reads, which
         // is what the split's ratio buys (kv_stream_layout.h).
-        if (std::getenv("NINFER_STREAM_TRACE") != nullptr) {
-            std::fprintf(stderr, "[trace] %llu upload layer=%u run=%u used=%u owner=%d\n",
-                         static_cast<unsigned long long>(trace_seq_++), layer, ring_run,
-                         run_used_[ring_run], static_cast<int>(run_owner_[ring_run]));
-        }
         if (run_used_[ring_run]) {
             CUDA_CHECK(cudaStreamWaitEvent(copy, consumed_run_[ring_run], 0));
-            // `NINFER_STREAM_SAFE` is a diagnostic that removes the ordering question entirely: the host
-            // waits for the run's previous reader before the copy is enqueued, so a copy can never
-            // overlap the attention that reads the same slots. Slow by construction (one synchronisation
-            // per run per layer); it exists to prove or disprove that the reuse gate is what corrupts a
-            // streamed round.
-            if (std::getenv("NINFER_STREAM_SAFE") != nullptr) {
-                CUDA_CHECK(cudaEventSynchronize(consumed_run_[ring_run]));
-            }
         }
         const std::uint32_t first = run*split_.run_pages;
         const std::uint32_t count =
@@ -602,6 +588,11 @@ void StreamedKVSpace::wait_run(std::uint32_t layer, std::uint32_t run, cudaStrea
     CUDA_CHECK(cudaStreamWaitEvent(compute, ready_[layer], 0));
 }
 
+void StreamedKVSpace::wait_run_range(std::uint32_t layer, std::uint32_t first_run,
+                                     std::uint32_t last_run, cudaStream_t compute) {
+    for (std::uint32_t run = first_run; run <= last_run; ++run) { wait_run(layer, run, compute); }
+}
+
 void StreamedKVSpace::consume(std::uint32_t layer, cudaStream_t compute) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
     // The post-attention half of the verify probe: the same slots the upload wrote, read again after the
@@ -649,10 +640,9 @@ void StreamedKVSpace::verify_after_attention(std::uint32_t layer) {
         }
         std::fprintf(stderr, "[verify-after] MISMATCH layer=%u page=%u slot=%u active=%u streamed=%u "
                      "first_byte=%zu last_byte=%zu differs=%zu/%zu first_run=%u runs=%u ring=%u "
-                     "seq=%llu holds=%s%u\n",
+                     "holds=%s%u\n",
                      layer, page, slot, active_, streamed, first_diff, last_diff, differs, page_bytes_,
                      layer_first_run_[layer], layer_runs_[layer], ring_runs_,
-                     static_cast<unsigned long long>(trace_seq_),
                      found_layer < 0 ? "nothing" : "host(layer,page)=",
                      found_layer < 0 ? 0U : (static_cast<unsigned>(found_layer) << 16) | found_page);
     } else {
@@ -670,11 +660,11 @@ void StreamedKVSpace::consume_run(std::uint32_t layer, std::uint32_t run, cudaSt
     }
     const std::uint32_t ring_run = (layer_first_run_[layer] + run) % ring_runs_;
     CUDA_CHECK(cudaEventRecord(consumed_run_[ring_run], compute));
-    if (std::getenv("NINFER_STREAM_TRACE") != nullptr) {
-        std::fprintf(stderr, "[trace] %llu consume layer=%u run=%u count=%u\n",
-                     static_cast<unsigned long long>(trace_seq_++), layer, ring_run,
-                     ++trace_consumes_[layer]);
-    }
+}
+
+void StreamedKVSpace::consume_run_range(std::uint32_t layer, std::uint32_t first_run,
+                                        std::uint32_t last_run, cudaStream_t compute) {
+    for (std::uint32_t run = first_run; run <= last_run; ++run) { consume_run(layer, run, compute); }
 }
 
 std::uint32_t StreamedKVSpace::first_run(std::uint32_t layer) const {

@@ -141,10 +141,17 @@ public:
 
     // The same for one run, which is what a consumer that dispatches a run at a time waits on.
     void wait_run(std::uint32_t layer, std::uint32_t run, cudaStream_t compute);
+    // A launch reads a contiguous page range, which may cover several runs or part of one: the range
+    // form is what keeps the hook and the copies in agreement when a run is not a whole number of
+    // attention spans (text.h, StreamFrameFeed).
+    void wait_run_range(std::uint32_t layer, std::uint32_t first_run, std::uint32_t last_run,
+                        cudaStream_t compute);
 
     // Frees the layer's runs: the consumer records this once the attention that read them finished.
     void consume(std::uint32_t layer, cudaStream_t compute);
     void consume_run(std::uint32_t layer, std::uint32_t run, cudaStream_t compute);
+    void consume_run_range(std::uint32_t layer, std::uint32_t first_run, std::uint32_t last_run,
+                           cudaStream_t compute);
 
     // The ring run a layer's first run takes this round, and the slot a page is named by now.
     [[nodiscard]] std::uint32_t first_run(std::uint32_t layer) const;
@@ -344,8 +351,6 @@ private:
     bool entering_decode_layout_                 = true;
     // The `NINFER_STREAM_VERIFY` diagnostic: how many streamed pages it still compares, and the one-page
     // pinned staging area it reads a ring slot into.
-    std::uint64_t trace_seq_ = 0;
-    std::vector<std::uint32_t> trace_consumes_;
     int verify_budget_ = 20000;
     int verify_after_budget_ = 64;
     std::unique_ptr<HostKVArena> verify_arena_;

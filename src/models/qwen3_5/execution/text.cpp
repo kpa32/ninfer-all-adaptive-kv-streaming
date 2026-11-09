@@ -1471,20 +1471,32 @@ void TextContext::mtp_propose_batch(const Tensor& hidden, Tensor& logits, Tensor
     proposal_argmax(hidden, logits, draft_tokens);
 }
 
-void TextContext::stream_run_wait(void* context, std::int32_t run, std::int32_t, std::int32_t) {
+void TextContext::stream_run_wait(void* context, std::int32_t, std::int32_t first_page,
+                                 std::int32_t page_count) {
     auto& feed = *static_cast<StreamFrameFeed*>(context);
-    // Every run of the layer was queued before its first launch, so the wait is the only ordering
-    // left. A run index past the last one that copied pages reads resident keys only.
-    if (run < 0 || static_cast<std::uint32_t>(run) >= feed.runs) { return; }
-    feed.space->wait_run(feed.layer, static_cast<std::uint32_t>(run), feed.compute);
+    // The launch reads keys of pages [first_page, first_page + page_count). Pages past the streamed
+    // prefix are resident and need no run; the ones inside it name the runs whose copies must land.
+    if (first_page < 0 || page_count <= 0 || feed.run_pages == 0) { return; }
+    const std::uint32_t begin = static_cast<std::uint32_t>(first_page);
+    const std::uint32_t end   = begin + static_cast<std::uint32_t>(page_count);
+    if (begin >= feed.streamed_pages) { return; }
+    const std::uint32_t last = (end < feed.streamed_pages ? end : feed.streamed_pages) - 1U;
+    feed.space->wait_run_range(feed.layer, begin / feed.run_pages, last / feed.run_pages,
+                               feed.compute);
 }
 
-void TextContext::stream_run_consumed(void* context, std::int32_t run, std::int32_t, std::int32_t) {
+void TextContext::stream_run_consumed(void* context, std::int32_t, std::int32_t first_page,
+                                     std::int32_t page_count) {
     auto& feed = *static_cast<StreamFrameFeed*>(context);
-    // The run is free again; the copy that refills it waits on this event, which is what turns the
-    // ring into a pipeline while the layer is still being read.
-    if (run < 0 || static_cast<std::uint32_t>(run) >= feed.runs) { return; }
-    feed.space->consume_run(feed.layer, static_cast<std::uint32_t>(run), feed.compute);
+    // The runs those pages live in are free again; the copy that refills them waits on this event,
+    // which is what turns the ring into a pipeline while the layer is still being read.
+    if (first_page < 0 || page_count <= 0 || feed.run_pages == 0) { return; }
+    const std::uint32_t begin = static_cast<std::uint32_t>(first_page);
+    const std::uint32_t end   = begin + static_cast<std::uint32_t>(page_count);
+    if (begin >= feed.streamed_pages) { return; }
+    const std::uint32_t last = (end < feed.streamed_pages ? end : feed.streamed_pages) - 1U;
+    feed.space->consume_run_range(feed.layer, begin / feed.run_pages, last / feed.run_pages,
+                                  feed.compute);
 }
 
 void TextContext::plan_stream_round(std::int32_t width) {
@@ -1496,13 +1508,8 @@ void TextContext::plan_stream_round(std::int32_t width) {
     // One launch per run only pays when the runs are wider than one attention split and the ring was
     // planned for it; the tuner has to have measured it on this layout (kv_stream_span_tuner.h).
     //
-    // Off by default until the frame-to-run mapping is exact: the callbacks are indexed by *span* (a
-    // fixed number of splits) while the copies are indexed by *run* (a fixed number of pages), and the
-    // two only line up when a run happens to be a whole number of spans. With them adrift, the last
-    // spans of a layer wait for nothing and read slots whose copy may not have landed - which measured
-    // as a 0.13-nat shift in the log probabilities with the greedy ids unchanged. Opt-in for the work
-    // on that mapping, never as the delivered path.
-    if (std::getenv("NINFER_STREAM_BOUNDED") == nullptr) { return; }
+    // The callbacks are driven by the page range each launch names, not by a span index, so a run may
+    // be any whole number of pages (kv_stream_space.h).
     if (!stream_span_tuner_.use_bounded()) { return; }
     if (kv_stream_space_->runs_per_layer() <= 1) { return; }
     const std::uint32_t segment_keys = batch_text_kv_->attention_segment_keys();
@@ -1638,6 +1645,8 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
     if (kv_stream_space_ != nullptr && stream_layer < kv_stream_space_->layers()) {
         if (bounded_stream) {
             stream_feed = StreamFrameFeed{kv_stream_space_, stream_layer, stream_runs_,
+                                          kv_stream_space_->run_pages(),
+                                          kv_stream_space_->window_start(stream_layer),
                                           kv_stream_copy_, s};
             frame_hook  = ops::CausalAttentionFrameHook{stream_window_tokens_,
                                                         stream_splits_per_run_, stream_run_wait,
@@ -2198,19 +2207,25 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                         const std::uint32_t current = static_cast<std::uint32_t>(compact);
                         const std::uint32_t ahead =
                             runs == 0 ? 0
-                                      : std::max<std::uint32_t>(1U, kv_stream_space_->ring_runs() / runs) - 1U;
+                                      : std::min(count - 1, std::max<std::uint32_t>(1U,
+                                                                            kv_stream_space_->ring_runs() /
+                                                                                runs) -
+                                                                   1U);
                         const auto issue = [&](std::uint32_t target) {
-                            (void)kv_stream_space_->upload(target, kv_stream_copy_);
+                            // A round can never copy more layers ahead than the model has: the ring's
+                            // depth over one layer's extent is a bound on *overlap*, not on the layer
+                            // count, and a wide ring made the pre-issue run past the last layer
+                            // (measured as "Streamed KV layer is out of range" at 251K).
+                            if (target < count) { (void)kv_stream_space_->upload(target, kv_stream_copy_); }
                         };
                         // The first layers of the first round have nothing ahead of them to overlap.
                         if (current == 0) {
                             for (std::uint32_t target = 0; target < ahead; ++target) { issue(target); }
                         }
-                        if (ahead == 0 || std::getenv("NINFER_STREAM_SAFE") != nullptr) {
+                        if (ahead == 0) {
                             // The ring holds one layer's streamed extent and no more, so nothing can run
                             // ahead: this layer copies for itself, and its copy waits for the previous
                             // layer's consumption (the depth-one regime the article describes first).
-                            // `NINFER_STREAM_SAFE` forces the same shape everywhere, as a diagnostic.
                             issue(current);
                         } else if (current + ahead < count) {
                             issue(current + ahead);

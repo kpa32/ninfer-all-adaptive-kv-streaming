@@ -302,7 +302,11 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     // entered once the frontier holds its window: `repartition` refuses a window larger than the
     // active context, which is exactly the state a first prompt chunk is in.
     if (!decode_phase) { return false; }
-    const std::uint32_t context = pages != 0 ? pages : active_;
+    // The ring is planned over the pool's context, not the frontier in force: the frontier only says
+    // how much of that context a request has reached, and a ring sized to it would shrink as the
+    // request grew into the last pages (which is what turned 11 runs into 9 and cost 10% of a round
+    // here). `pages` overrides it only when the caller knows the context it is planning for.
+    const std::uint32_t context = pages != 0 ? pages : pages_per_layer_;
     if (context == 0) { return false; }
     const std::optional<KVStreamSplit> target =
         plan_kv_stream_split(slot_count_, context, layers_, split_.run_pages, kKVStreamRingRatio);

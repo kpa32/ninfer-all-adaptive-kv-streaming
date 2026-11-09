@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <cstdlib>
 #include <optional>
 #include <vector>
 
@@ -70,17 +69,6 @@ struct KVStreamSplit {
 // overlap), not a property of the design: this fleet's numbers are in
 // docs/maintainer/kv-streaming-measurements.md.
 constexpr double kKVStreamRingRatio = 1.10;
-
-// The ratio a plan actually uses. It is a constant in a product build; `NINFER_STREAM_RING_RATIO`
-// exists so a measurement sweep can price the same build at several ratios without a rebuild, which
-// is the only way to choose one on a card the reference never measured.
-[[nodiscard]] inline double kv_stream_ring_ratio() noexcept {
-    if (const char* env = std::getenv("NINFER_STREAM_RING_RATIO")) {
-        const double value = std::strtod(env, nullptr);
-        if (value >= 1.0 && value <= 8.0) { return value; }
-    }
-    return kKVStreamRingRatio;
-}
 
 // Pages a run covers when the ring is planned without an explicit choice.
 constexpr std::uint32_t kKVStreamRunPages = 128;

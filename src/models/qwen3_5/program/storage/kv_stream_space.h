@@ -190,6 +190,9 @@ public:
         std::uint32_t streamed_pages  = 0;
         std::uint32_t layers          = 0;
         std::uint32_t ring_runs       = 0;
+        // The geometry a record was taken in: a run is the unit of copy and of look-ahead, so the
+        // width has to travel with the numbers it produced.
+        std::uint32_t run_pages       = 0;
         std::uint32_t pages_per_layer = 0;
         std::uint64_t page_bytes      = 0;
         std::uint64_t host_bytes      = 0;

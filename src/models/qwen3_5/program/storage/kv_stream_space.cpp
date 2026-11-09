@@ -832,6 +832,7 @@ StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
     out.streamed_pages  = round_streamed_pages_;
     out.layers          = layers_;
     out.ring_runs       = ring_runs_;
+    out.run_pages       = split_.run_pages;
     out.pages_per_layer = pages_per_layer_;
     out.page_bytes      = page_bytes_;
     out.host_bytes      = host_bytes();

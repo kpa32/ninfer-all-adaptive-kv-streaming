@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <vector>
 
@@ -72,6 +73,21 @@ constexpr double kKVStreamRingRatio = 1.10;
 
 // Pages a run covers when the ring is planned without an explicit choice.
 constexpr std::uint32_t kKVStreamRunPages = 128;
+
+
+// The run width a plan actually uses. `kKVStreamRunPages` is the default the design ships with; the
+// environment variable exists so the width can be swept on a host without a rebuild, because the width
+// is a *measured* trade - a run is the unit of copy and of look-ahead, so a narrower run overlaps
+// sooner and costs more launches, a wider one does the opposite - and the answer depends on the card,
+// the cache format and the ring. Every run record carries the value it ran with (`stream.run_pages`),
+// so a measurement can never be read against the wrong geometry.
+[[nodiscard]] inline std::uint32_t kv_stream_run_pages() noexcept {
+    if (const char* env = std::getenv("NINFER_STREAM_RUN_PAGES")) {
+        const long value = std::strtol(env, nullptr, 10);
+        if (value >= 8 && value <= 4096) { return static_cast<std::uint32_t>(value); }
+    }
+    return kKVStreamRunPages;
+}
 
 // Slots the pool holds for this split.
 [[nodiscard]] inline std::uint32_t kv_stream_pool_pages(const KVStreamSplit& split) noexcept {

@@ -96,6 +96,7 @@ json stream_stats(const StreamedKvStats& stream) {
     out["streamed_pages"]    = stream.streamed_pages;
     out["layers"]            = stream.layers;
     out["ring_runs"]         = stream.ring_runs;
+    out["run_pages"]         = stream.run_pages;
     out["pages_per_layer"]   = stream.pages_per_layer;
     out["page_bytes"]        = stream.page_bytes;
     out["host_bytes"]        = stream.host_bytes;

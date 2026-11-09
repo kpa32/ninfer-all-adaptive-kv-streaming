@@ -1519,10 +1519,18 @@ void TextContext::plan_stream_round(std::int32_t width) {
     const bool pinned_off   = bounded_env != nullptr && bounded_env[0] == '0';
     const bool pinned_on    = bounded_env != nullptr && bounded_env[0] == '1';
     const std::uint32_t runs = kv_stream_space_->runs_per_layer();
-    if (runs <= 1) { return; }
+    if (runs == 0) { return; }
+    // The tuner matches a finished round against the step it was measuring, so the round must report
+    // the width it actually ran: an unframed round covers every run, and reporting zero there left the
+    // ladder's baseline without a single sample, so the tuner silently no-opped in every measurement
+    // of this round.
+    stream_runs_per_frame_ = runs;
     const std::uint32_t per_frame =
         pinned_off ? runs : (pinned_on ? 1U : stream_span_tuner_.candidate_runs_per_frame(runs));
-    if (per_frame >= runs) { return; }
+    if (per_frame >= runs) {
+        stream_runs_ = runs;
+        return;
+    }
     const std::uint32_t segment_keys = batch_text_kv_->attention_segment_keys();
     if (segment_keys == 0) { return; }
     const std::uint32_t run_keys = kv_stream_space_->run_pages() *

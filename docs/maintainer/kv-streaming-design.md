@@ -1,15 +1,11 @@
 ---
 id: kv-streaming-design
 type: architecture-design
-title: 自适应 KV 流式：原型设计（16 GB 上的 262 144 上下文）
-status: draft
+title: 自适应 KV 流式：设计与实施现状（16 GB 上的 262 144 上下文）
+status: active
 parent: ninfer-kv-streaming
-depends-on:
-  - paged-kv-cache
-  - kv-stream-op
-references:
-  - adaptive-kv-streaming-inputs
-  - qwen3-5-model
+depends-on: [paged-kv-cache, kv-stream-op]
+references: [adaptive-kv-streaming-inputs, qwen3-5-model]
 ---
 
 # 自适应 KV 流式：原型设计

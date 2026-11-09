@@ -421,8 +421,7 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         const std::uint64_t after_bytes  = after_streamed * page_bytes_;
         const std::uint64_t saving       = before_bytes > after_bytes ? before_bytes - after_bytes : 0;
         if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-            std::fprintf(stderr, "[partition] ahead %u -> %u saving %llu of %llu bytes
-",
+            std::fprintf(stderr, "[partition] ahead %u -> %u saving %llu of %llu bytes\n",
                          kv_stream_ahead_of(active_, split_), kv_stream_ahead_of(active_, *next),
                          static_cast<unsigned long long>(saving),
                          static_cast<unsigned long long>(before_bytes));

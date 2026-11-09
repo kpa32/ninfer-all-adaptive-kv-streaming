@@ -1499,16 +1499,17 @@ void feed_stream_frames(StreamFrameFeed& feed, std::int32_t frame) {
 void stream_frame_wait(void* context, std::int32_t frame, std::int32_t, std::int32_t) {
     auto& feed = *static_cast<StreamFrameFeed*>(context);
     // Everything this layer reads was queued before the call started (`feed_stream_frames`), so the
-    // wait is the only ordering left: the link has a whole layer of copy to do under this layer's
-    // compute, and a frame that is already in the ring waits for nothing.
-    (void)frame;
+    // wait is the only ordering left. A frame past the last one that moved pages reads resident keys
+    // only and waits for nothing.
+    if (frame > feed.sealed_frame) { return; }
     feed.space->wait_ready_frame(feed.layer, static_cast<std::uint32_t>(frame), feed.compute);
 }
 
 void stream_frame_consumed(void* context, std::int32_t frame, std::int32_t, std::int32_t) {
     auto& feed = *static_cast<StreamFrameFeed*>(context);
     // The ring slots this frame read are the ones the layer `ring_depth` back wrote, so the copy
-    // that refills them waits on this event.
+    // that refills them waits on this event. A frame that copied nothing wrote none.
+    if (frame > feed.sealed_frame) { return; }
     CUDA_CHECK(cudaEventRecord(
         feed.space->consumed_frame_event(feed.layer, static_cast<std::uint32_t>(frame)),
         feed.compute));
@@ -2215,7 +2216,10 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
         kv_stream_space_->begin_round();
         // A round's frames start over: the copies of round r-1 have been consumed by now, so the
         // first frame of each layer can be issued again (design 5.13.2).
-        for (StreamFrameFeed& feed : stream_feeds_) { feed.issued = 0; }
+        for (StreamFrameFeed& feed : stream_feeds_) {
+            feed.issued       = 0;
+            feed.sealed_frame = -1;
+        }
         // The frame geometry is the round's, not the layer's: the caller copies before it launches,
         // so it has to know the frame width before the first layer runs.
         plan_stream_round(x.ne[1]);

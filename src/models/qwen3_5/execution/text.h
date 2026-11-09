@@ -124,6 +124,9 @@ struct StreamFrameFeed {
     std::uint32_t layer     = 0;
     std::int32_t page_width = 0;
     std::int32_t issued     = 0;
+    // The last frame that really moved pages this round: only the streamed prefix of the window
+    // travels, so the frames past it are empty and carry no copy, no ready event and no wait.
+    std::int32_t sealed_frame = -1;
     cudaStream_t copy       = nullptr;
     cudaStream_t compute    = nullptr;
 };

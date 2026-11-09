@@ -2163,11 +2163,9 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                          kv_stream_space_ != nullptr ? 1 : 0);
         }
     }
-    // A stage-0 pass shapes the split for its phase: a prompt chunk wants the uniform shape (its
-    // traffic grows with the square of the streamed extent), a decode round the concentrated one
-    // (kv_stream_space.h, enter_layout). The first pass of a request is a phase change by definition.
-    if (kv_stream_space_ != nullptr && stage == 0) {
-        (void)kv_stream_space_->enter_layout(!prefill, RankStreams::compute(ctx_));
+    // A stage-0 pass names its phase; the split is shaped once per change (kv_stream_space.h).
+    if (kv_stream_space_ != nullptr && !prefill && stage == 0) {
+        (void)kv_stream_space_->enter_layout(true, 0, RankStreams::compute(ctx_));
     }
     // A stage-0 decode pass is one round of the streaming loop, and the round before it is done
     // with its copies by the time this one starts issuing them.

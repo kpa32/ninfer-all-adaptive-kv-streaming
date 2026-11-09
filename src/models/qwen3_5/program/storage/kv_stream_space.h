@@ -236,9 +236,14 @@ public:
     // Puts the split into the shape the phase streams best in, migrating the pages that change sides
     // when the phase changed. A prompt chunk reads the same extent in every layer, and the traffic its
     // chunks move grows with the square of that extent (kv-streaming-strategy.md M4), so it wants the
-    // uniform shape; a decode round copies layer by layer, so it wants the concentrated one where the
-    // pool allows it (kv_stream_layout.h). One repartition per phase change, never per chunk.
-    bool enter_layout(bool decode_phase, RankStreams streams);
+    // uniform shape at the ring's floor; a decode round copies layer by layer, so it wants the
+    // concentrated shape where the pool allows it (kv_stream_layout.h). One repartition per phase
+    // change, never per chunk.
+    //
+    // `pages` is the context the shape is planned for: a prompt names its whole prompt, because its
+    // last chunk reads all of it and a ring sized to the first chunk would be an order too small.
+    // Zero means the frontier in force (what a decode round streams).
+    bool enter_layout(bool decode_phase, std::uint32_t pages, RankStreams streams);
 
     // The controller's decision for this round, applied when it moves the boundary (port of the
     // reference implementation's `kv_stream_adapt` + `reconfigure`/`repartition`). Returns true when

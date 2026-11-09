@@ -286,7 +286,7 @@ void StreamedKVSpace::begin_round(cudaStream_t compute) {
     (void)evaluate_partition(RankStreams(compute));
 }
 
-bool StreamedKVSpace::enter_layout(bool decode_phase, RankStreams streams) {
+bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankStreams streams) {
     // A prompt chunk reads the same extent in every layer, and the traffic a chunk moves grows with the
     // square of that extent (kv-streaming-strategy.md M4), so the uniform shape is the prompt's. A
     // decode round copies layer by layer, so it concentrates the streams into fewer layers and keeps
@@ -297,11 +297,17 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, RankStreams streams) {
     const int phase = decode_phase ? 1 : 0;
     if (phase_ == phase) { return false; }
     phase_ = phase;
+    const std::uint32_t context = pages != 0 ? pages : active_;
+    if (context == 0) { return false; }
     const std::optional<KVStreamSplit> target =
-        decode_phase ? plan_kv_stream_split(slot_count_, active_, layers_, split_.run_pages,
+        decode_phase ? plan_kv_stream_split(slot_count_, context, layers_, split_.run_pages,
                                             kKVStreamRingRatio)
-                     : plan_kv_stream_uniform(slot_count_, active_, layers_, split_.run_pages,
-                                              kKVStreamRingRatio);
+                     // A prompt chunk exposes no compute of its own: its copies are hidden behind the
+                     // chunk's attention (measurements, table 2: 0.0 s exposed), so ring depth buys
+                     // nothing there and only takes window away. At the ring's own floor every slot
+                     // the ring gives back is a resident page, and a chunk's traffic grows with the
+                     // square of what streams (kv-streaming-strategy.md M4).
+                     : plan_kv_stream_uniform(slot_count_, context, layers_, split_.run_pages, 1.0);
     if (!target) { return false; }
     if (target->layer_resident == split_.layer_resident &&
         target->ring_pages == split_.ring_pages) {

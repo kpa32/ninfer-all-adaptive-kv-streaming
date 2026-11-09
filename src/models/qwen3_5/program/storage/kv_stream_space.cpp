@@ -296,6 +296,7 @@ bool StreamedKVSpace::close_signal_window() noexcept {
     sample.window_seconds  = window.seconds;
     sample.recorded        = copy.recorded;
     round_.copy_busy_ratio = kv_stream_copy_busy_ratio(sample);
+    window_seconds_        = window.seconds;
     if (copy.recorded) {
         copy_busy_ratio_ = round_.copy_busy_ratio;
         window_busy_     = round_.copy_busy_ratio;
@@ -415,6 +416,7 @@ void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams
     run_owner_.assign(ring_runs_, kNoLayer);
     run_layer_.assign(ring_runs_, kNoLayer);
     run_cursor_ = 0;
+    ++layout_generation_;
     // The host copies above ran on the compute stream; the uploads that read them run on the copy
     // stream, so they are ordered behind this mark.
     for (std::uint32_t layer = 0; layer < layers_; ++layer) {

@@ -116,14 +116,12 @@ struct PrefillBatchHost {
 };
 
 // The frames one streamed layer's keys are launched in, and the copies that feed them.
+// What one streamed layer's bounded-span round needs between the attention op's callbacks: the space,
+// the layer, the runs it issued, and the two streams.
 struct StreamFrameFeed {
     StreamedKVSpace* space  = nullptr;
     std::uint32_t layer     = 0;
-    std::int32_t page_width = 0;
-    std::int32_t issued     = 0;
-    // The last frame that really moved pages this round: only the streamed prefix of the window
-    // travels, so the frames past it are empty and carry no copy, no ready event and no wait.
-    std::int32_t sealed_frame = -1;
+    std::uint32_t runs      = 0;
     cudaStream_t copy       = nullptr;
     cudaStream_t compute    = nullptr;
 };
@@ -281,6 +279,17 @@ private:
     // frame by frame, so the caller has to know the frame width before it copies, not when it
     // launches. Framed only where the attention op can frame at all (INT8-family caches) and the
     // window needs more than one frame; otherwise the round copies a layer at a time (design 5.13).
+    // Plans a decode round's span geometry once, before its first layer: the copies are issued run by
+    // run, so the caller has to know how many splits a run covers before it copies, not when it
+    // launches. Bounded only where the attention op can frame at all (the INT8 family) and the tuner
+    // has measured that starting a launch per run beats one launch per layer
+    // (kv_stream_span_tuner.h).
+    void plan_stream_round(std::int32_t width);
+
+    // The callbacks the attention op uses to wait for one run and to free it (kv_stream_space.h).
+    static void stream_run_wait(void* context, std::int32_t run, std::int32_t, std::int32_t);
+    static void stream_run_consumed(void* context, std::int32_t run, std::int32_t, std::int32_t);
+
     // Position-split attention's second half on a rank: the merge of every rank's partial for its
     // query heads, gated by the gates attn_mix kept, and its share of the output projection.
     void attn_merge_output(const BlockParameters& weights, Tensor& x,
@@ -432,6 +441,16 @@ private:
     const qwen3_5::PagedKVCache* batch_text_kv_ = nullptr;
     StreamedKVSpace* kv_stream_space_           = nullptr;
     cudaStream_t kv_stream_copy_                = nullptr;
+    // The pipeline the tuner currently measures, and the layout it was measured in: a change of
+    // layout invalidates every sample (kv_stream_span_tuner.h).
+    KVStreamSpanTuner stream_span_tuner_;
+    std::uint32_t stream_layout_generation_ = 0;
+    bool stream_bounded_round_              = false;
+    // The round's span geometry, planned once before its first layer and the same for every layer of
+    // it: how many keys attention splits into per run, and how many keys the round sees at all.
+    std::int32_t stream_splits_per_run_ = 0;
+    std::int32_t stream_window_tokens_  = 0;
+    std::uint32_t stream_runs_          = 0;
     const qwen3_5::PagedKVCache* batch_mtp_kv_  = nullptr;
     LinearAttentionStatePool& state_;
     qwen3_5::RoundState& io_;

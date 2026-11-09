@@ -60,6 +60,15 @@ public:
     // Runs the ring holds, which is how far ahead of the attending layer a copy may run.
     [[nodiscard]] std::uint32_t ring_runs() const noexcept { return ring_runs_; }
 
+    // The layout this space was built with, bumped whenever the resident/ring boundary moves: a
+    // measurement taken in one layout says nothing about another, so the caller resets its tuners on
+    // a change (kv_stream_span_tuner.h).
+    [[nodiscard]] std::uint32_t layout_generation() const noexcept { return layout_generation_; }
+
+    // The device time of the last closed decode round's window, zero until one completes. The span
+    // tuner compares pipelines by it.
+    [[nodiscard]] double last_window_seconds() const noexcept { return window_seconds_; }
+
     // Pages the tables describe, and where the resident window currently starts.
     [[nodiscard]] std::uint32_t active_pages() const noexcept { return active_; }
 
@@ -299,6 +308,8 @@ private:
     std::uint64_t window_samples_ = 0;
     std::uint64_t window_misses_  = 0;
     double window_busy_           = 0.0;
+    double window_seconds_        = 0.0;
+    std::uint32_t layout_generation_ = 0;
     bool window_measured_         = false;
     // The controller's state: the ring may never shrink below the size the cache was planned with
     // (the reference sets its minimum from the initial ring), and a repartition costs a table rebuild,

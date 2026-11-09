@@ -9,6 +9,7 @@
 #include "models/qwen3_5/execution/workspace.h"
 
 #include "core/nvtx.h"
+#include "core/kv_stream_span_tuner.h"
 #include "models/qwen3_5/execution/visual_scatter.h"
 #include "models/qwen3_5/execution/vision.h"
 #include "models/qwen3_5/program/vision_control.h"
@@ -1470,6 +1471,45 @@ void TextContext::mtp_propose_batch(const Tensor& hidden, Tensor& logits, Tensor
     proposal_argmax(hidden, logits, draft_tokens);
 }
 
+void TextContext::stream_run_wait(void* context, std::int32_t run, std::int32_t, std::int32_t) {
+    auto& feed = *static_cast<StreamFrameFeed*>(context);
+    // Every run of the layer was queued before its first launch, so the wait is the only ordering
+    // left. A run index past the last one that copied pages reads resident keys only.
+    if (run < 0 || static_cast<std::uint32_t>(run) >= feed.runs) { return; }
+    feed.space->wait_run(feed.layer, static_cast<std::uint32_t>(run), feed.compute);
+}
+
+void TextContext::stream_run_consumed(void* context, std::int32_t run, std::int32_t, std::int32_t) {
+    auto& feed = *static_cast<StreamFrameFeed*>(context);
+    // The run is free again; the copy that refills it waits on this event, which is what turns the
+    // ring into a pipeline while the layer is still being read.
+    if (run < 0 || static_cast<std::uint32_t>(run) >= feed.runs) { return; }
+    feed.space->consume_run(feed.layer, static_cast<std::uint32_t>(run), feed.compute);
+}
+
+void TextContext::plan_stream_round(std::int32_t width) {
+    stream_bounded_round_  = false;
+    stream_splits_per_run_ = 0;
+    stream_window_tokens_  = 0;
+    stream_runs_           = 0;
+    if (kv_stream_space_ == nullptr || batch_text_kv_ == nullptr || width <= 0) { return; }
+    // One launch per run only pays when the runs are wider than one attention split and the ring was
+    // planned for it; the tuner has to have measured it on this layout (kv_stream_span_tuner.h).
+    if (!stream_span_tuner_.use_bounded()) { return; }
+    if (kv_stream_space_->runs_per_layer() <= 1) { return; }
+    const std::uint32_t segment_keys = batch_text_kv_->attention_segment_keys();
+    if (segment_keys == 0) { return; }
+    const std::uint32_t run_keys = kv_stream_space_->run_pages() *
+                                   static_cast<std::uint32_t>(kPagedKVPageSize);
+    const std::uint32_t splits_per_run = (run_keys + segment_keys - 1) / segment_keys;
+    if (splits_per_run == 0) { return; }
+    stream_bounded_round_  = true;
+    stream_splits_per_run_ = static_cast<std::int32_t>(splits_per_run);
+    stream_window_tokens_  = static_cast<std::int32_t>(
+        kv_stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize));
+    stream_runs_           = kv_stream_space_->runs_per_layer();
+}
+
 void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase ph) {
     const auto& p  = std::get<AttentionParameters>(w.mixer);
     cudaStream_t s = ctx_.stream;
@@ -1569,6 +1609,31 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
     const bool rotated_output = rotated(p.output.hadamard_signs);
     const Tensor& kv_table_rows =
         active_kv_table_rows_ != nullptr ? *active_kv_table_rows_ : io_.text_kv_table_row;
+    // Streaming, decided where the op's own gating is known: a bounded round waits for one run at a
+    // time inside the launch loop, so it needs single-sequence decode with no explicit positions; every
+    // other path waits for the whole layer here and frees its runs after the launch
+    // (kv_stream_space.h, kv_stream_span_tuner.h).
+    const auto stream_layer =
+        static_cast<std::uint32_t>(dimension(config_.compact_layer_indices[fidx]));
+    StreamFrameFeed stream_feed{};
+    ops::CausalAttentionFrameHook frame_hook{};
+    const ops::CausalAttentionFrameHook* frames = nullptr;
+    const bool bounded_stream = kv_stream_space_ != nullptr && !positions &&
+                                ph != Phase::Prefill && active_sequence_batch_ <= 1 &&
+                                stream_bounded_round_ && stream_splits_per_run_ > 0 &&
+                                stream_layer < kv_stream_space_->layers();
+    if (kv_stream_space_ != nullptr && stream_layer < kv_stream_space_->layers()) {
+        if (bounded_stream) {
+            stream_feed = StreamFrameFeed{kv_stream_space_, stream_layer, stream_runs_,
+                                          kv_stream_copy_, s};
+            frame_hook  = ops::CausalAttentionFrameHook{stream_window_tokens_,
+                                                        stream_splits_per_run_, stream_run_wait,
+                                                        stream_run_consumed, &stream_feed};
+            frames      = &frame_hook;
+        } else {
+            kv_stream_space_->wait_ready(stream_layer, s);
+        }
+    }
     if (active_sequence_batch_ != 0) {
         const std::int32_t width = active_sequence_width_;
         if (width <= 0 || width * active_sequence_batch_ != T) {
@@ -1604,7 +1669,7 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
             static_cast<float>(1.0 / std::sqrt(static_cast<double>(config.attention->head_dim))),
             batch_text_kv_->batch_layer_view(fidx, kv_rank), envelope, work_, a_batch, s,
             rotated_output || positions ? nullptr : &gate_batch, positions ? &partial : nullptr,
-            nullptr);
+            frames);
     } else if (!active_segments_.empty()) {
         // Each segment attends over its own sequence exactly as its prefill alone would.
         for (const SegmentBinding& segment : active_segments_) {
@@ -1638,7 +1703,14 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
              dimension(config.attention->num_key_value_heads)},
             static_cast<float>(1.0 / std::sqrt(static_cast<double>(config.attention->head_dim))),
             cache_view, envelope, work_, a, s,
-            rotated_output || positions ? nullptr : &gate, positions ? &partial : nullptr, nullptr);
+            rotated_output || positions ? nullptr : &gate, positions ? &partial : nullptr, frames);
+    }
+    if (kv_stream_space_ != nullptr && !bounded_stream &&
+        stream_layer < kv_stream_space_->layers()) {
+        // The runs this layer read are free again; the copy that refills them waits on this event,
+        // which is what turns the ring into a pipeline. A bounded round recorded them run by run
+        // inside the launch loop instead.
+        kv_stream_space_->consume(stream_layer, s);
     }
     if (positions) {
         // The rank's query heads' gates, contiguous for the merge.
@@ -2053,6 +2125,17 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
     // with its copies by the time this one starts issuing them.
     if (kv_stream_space_ != nullptr && !prefill && stage == 0) {
         kv_stream_space_->begin_round(ctx_.stream);
+        // The round that just closed is one sample for the pipeline tuner, if it streamed at all. A
+        // layout change makes every earlier sample meaningless, so the tuner starts over.
+        if (kv_stream_space_->layout_generation() != stream_layout_generation_) {
+            stream_layout_generation_ = kv_stream_space_->layout_generation();
+            stream_span_tuner_.reset();
+            stream_bounded_round_ = false;
+        }
+        const bool streamed = kv_stream_space_->window_start() != 0;
+        stream_span_tuner_.observe(kv_stream_space_->last_window_seconds() * 1000.0, streamed,
+                                   stream_bounded_round_);
+        plan_stream_round(x.ne[1]);
     }
     // A streamed round copies a layer's pages in runs before its attention and releases them after:
     // the ring is one flat pool of runs, and how far ahead a copy may run is the ring's size over one
@@ -2121,17 +2204,9 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                             }
                         }
                         if (runs == 0) { issue(current); }
-                        // The wait is measured: whatever it costs here is copy time this round could
-                        // not hide behind compute.
-                        kv_stream_space_->wait_ready(current, ctx_.stream);
                     }
 
                     attn_mix(block, x, compact, ph);
-                    if (layer_copy) {
-                        // The runs this layer read are free again; the copy that refills them waits on
-                        // this event, which is what turns the ring into a pipeline.
-                        kv_stream_space_->consume(static_cast<std::uint32_t>(compact), ctx_.stream);
-                    }
                 } else {
                     gdn_mix(block, x, compact, ph);
                 }

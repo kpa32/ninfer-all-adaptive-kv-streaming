@@ -93,6 +93,7 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     // layer is the unit that can be late.
     signal_ = std::make_unique<KVStreamSignal>(layers_);
     minimum_ring_pages_ = split_.ring_pages;
+    trace_consumes_.assign(layers_, 0);
     round_.layers.resize(layers_);
     for (std::uint32_t layer = 0; layer < layers_; ++layer) { round_.layers[layer].layer = layer; }
     if (report_) {
@@ -459,12 +460,12 @@ std::uint32_t StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
         // only one extent therefore serialises the layers - the copy waits for the reader - while a
         // ring that holds one extent plus a margin lets the next layer start as this one reads, which
         // is what the split's ratio buys (kv_stream_layout.h).
+        if (std::getenv("NINFER_STREAM_TRACE") != nullptr) {
+            std::fprintf(stderr, "[trace] %llu upload layer=%u run=%u used=%u owner=%d\n",
+                         static_cast<unsigned long long>(trace_seq_++), layer, ring_run,
+                         run_used_[ring_run], static_cast<int>(run_owner_[ring_run]));
+        }
         if (run_used_[ring_run]) {
-            if (std::getenv("NINFER_STREAM_TRACE") != nullptr) {
-                std::fprintf(stderr, "[trace] %llu upload layer=%u run=%u overwrites=%u\n",
-                             static_cast<unsigned long long>(trace_seq_++), layer, ring_run,
-                             run_owner_[ring_run]);
-            }
             CUDA_CHECK(cudaStreamWaitEvent(copy, consumed_run_[ring_run], 0));
             // `NINFER_STREAM_SAFE` is a diagnostic that removes the ordering question entirely: the host
             // waits for the run's previous reader before the copy is enqueued, so a copy can never
@@ -670,8 +671,9 @@ void StreamedKVSpace::consume_run(std::uint32_t layer, std::uint32_t run, cudaSt
     const std::uint32_t ring_run = (layer_first_run_[layer] + run) % ring_runs_;
     CUDA_CHECK(cudaEventRecord(consumed_run_[ring_run], compute));
     if (std::getenv("NINFER_STREAM_TRACE") != nullptr) {
-        std::fprintf(stderr, "[trace] %llu consume layer=%u run=%u\n",
-                     static_cast<unsigned long long>(trace_seq_++), layer, ring_run);
+        std::fprintf(stderr, "[trace] %llu consume layer=%u run=%u count=%u\n",
+                     static_cast<unsigned long long>(trace_seq_++), layer, ring_run,
+                     ++trace_consumes_[layer]);
     }
 }
 

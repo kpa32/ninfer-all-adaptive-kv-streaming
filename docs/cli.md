@@ -259,6 +259,8 @@ The table lists executable defaults. The examples above select INT8 KV and MTP3.
 | `--rope-scaling-original-context N` | the interpolation threshold | the native window |
 | `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` | `2048` |
 | `--kv-headroom-mib N` | device memory in MiB that `--kv-capacity auto` leaves free after sizing the KV pool; requires `auto`. `--vram-headroom-mib` is accepted as an alias | `1024` |
+| `--kv-stream` | keep each full-attention layer's newest pages on the device and stream the rest from pinned host memory every round, so the context exceeds the device pool. Opt-in, one sequence, one device, `--kv-capacity auto`, no retained context; see [Streaming KV past the pool](#streaming-kv-past-the-pool) | off |
+| `--kv-stream-report` | with `--kv-stream`, time the copies and the compute they exposed, per round and per layer, into `--report-json` | off |
 | `--prefill-chunk N` | text-prefill chunk, in multiples of 128; with an `int8` or `rk*` KV cache a Qwen3.5-core model runs the nearby multiple of 128 that best fills the GPU's prompt-attention waves, up to 256 tokens more (see [device profiles](device-profiles.md)) | `1024`; `4096` for native MoE experts in host memory or files; `2048` for Qwen3.8-Flash-Next with `--tensor-parallel` when every device has room ([prompt pieces](maintainer/pipeline-stages.md#tensor-parallelism-of-qwen38-flash-next)); `2048` for DeepSeek-V4.1, which takes at most `4096` and a narrower chunk where the card lacks room ([its prompt chunks](deepseek-v41.md#prompt-spans)) |
 | `--prefill-tail exact\|full\|N` | DeepSeek-V4.1: the prompt rows that blocks 21 to 39, which keep no compressed cache, run: `exact` runs those the kept state and the last token's logits depend on, from the prompt chunk at or below them, so the output is `full`'s; `full` runs every row; `N` (at least 128) runs the last `N` rows before each kept state, a lossy mode: the output changes ([the prefill tail](deepseek-v41.md#the-prefill-tail)) | `exact` |
 | `--max-new N` | requested output-token limit | `128` |
@@ -453,6 +455,35 @@ from this one-request interface; the persistent Engine and server routes own cro
 optional Host backing.
 
 All weight, sequence, workspace, and graph allocations are released when the Engine is destroyed.
+
+### Streaming KV past the pool
+
+`--kv-stream` keeps each full-attention layer's newest pages on the device and streams the rest back
+from pinned host memory every decode round, so the context may exceed the device pool. The device
+holds a resident window per layer plus one ring of slots that every layer borrows; a round copies what
+the window lacks over PCIe and the block table names the slot a page currently occupies, so nothing
+about the graph's topology changes.
+
+```bash
+./build/apps/ninfer model.ninfer --messages long.json \
+  --max-context 262144 --kv-capacity auto --kv-stream \
+  --kv-dtype rk8v4 --spec mtp --draft-tokens 3
+```
+
+A streamed round copies bytes that a fully resident cache keeps on the device, so streaming is
+opt-in and never the default: below the capacity a pool can hold, the all-resident path is faster.
+It serves one sequence on one device with a pool sized from measured free memory, and it cannot
+retain or checkpoint context; any other combination is rejected at startup with the flag that fixes
+it (`--max-concurrency 1`, one device, `--kv-capacity auto`, `--no-prefix-reuse`).
+
+`--kv-stream-report` additionally times the copies and the compute they exposed, per round and per
+layer, and writes them to `--report-json`. The timing events cost device time of their own, so a run
+that is not being measured does not record them.
+
+The plan, its measured limits and the open work are in
+[streaming design](maintainer/kv-streaming-design.md) and
+[strategy](maintainer/kv-streaming-strategy.md); the run records behind every number are in
+[measurements](maintainer/kv-streaming-measurements.md).
 
 ## JSON and JSON Schema output
 

@@ -13,6 +13,7 @@
 #include "models/qwen3_5/execution/workspace.h"
 #include "core/device.h"
 #include "core/host_kv_arena.h"
+#include "core/kv_stream_guards.h"
 #include "core/tensor_parallel.h"
 #include "ops/common/device_tier.h"
 #include "ninfer/ops/gated_delta_net.h"
@@ -1351,25 +1352,21 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     // whole contexts, so the axis reaches every layer's whole context and the size follows free
     // memory. What it rules out is everything whose device pages stop meaning "the whole KV": a
     // second sequence sharing the ring, a second device holding part of every layer, a checkpoint
-    // taken from the device, and a capacity chosen by token count rather than measured.
-    if (options.kv_stream_report && !options.kv_stream) {
-        throw std::invalid_argument("--kv-stream-report measures --kv-stream: pass --kv-stream");
-    }
-    if (options.kv_stream) {
-        if (options.kv_capacity.mode != KvCapacityMode::Automatic) {
-            throw std::invalid_argument(
-                "--kv-stream sizes its KV pool from free memory: pass --kv-capacity auto");
-        }
-        if (options.max_concurrency != 1) {
-            throw std::invalid_argument("--kv-stream serves one sequence: set --max-concurrency 1");
-        }
-        if (device.size() != 1 || parameters.text.tensor_parallel()) {
-            throw std::invalid_argument("--kv-stream keeps the KV cache on one device");
-        }
-        if (options.context_cache.enabled) {
-            throw std::invalid_argument(
-                "--kv-stream cannot checkpoint or reuse retained context (--no-prefix-reuse)");
-        }
+    // taken from the device, and a capacity chosen by token count rather than measured. The table
+    // itself lives in core/kv_stream_guards.h so that tests/test_kv_stream_guards.cpp checks every
+    // exclusion instead of the planner owning messages nobody tests.
+    const KVStreamRequest streaming{
+        .enabled            = options.kv_stream,
+        .report             = options.kv_stream_report,
+        .capacity_automatic = options.kv_capacity.mode == KvCapacityMode::Automatic,
+        .sequences          = options.max_concurrency,
+        .devices            = device.size(),
+        .tensor_parallel    = parameters.text.tensor_parallel(),
+        .retained_context   = options.context_cache.enabled,
+    };
+    if (const KVStreamRejection rejection = kv_stream_rejection(streaming);
+        rejection != KVStreamRejection::None) {
+        throw std::invalid_argument(kv_stream_rejection_message(rejection));
     }
     const std::uint64_t maximum_pages64 =
         options.kv_stream

@@ -178,6 +178,16 @@ two different images. Any other value is refused with `image_detail_not_supporte
 default). DeepSeek-V4.1 gives an image's span at most the release's 1024 prompt positions (fewer
 with `--vision-max-merged`) at `auto` and `high`, and a quarter of that at `low`.
 
+### Streaming KV is not a server mode
+
+`--kv-stream` keeps a context past the device pool by giving each full-attention layer a resident
+window and borrowing one shared ring of slots per round. That geometry assumes exactly one sequence
+owns the ring, so the server rejects the flag: `--kv-stream` requires `--max-concurrency 1`, one
+device, `--kv-capacity auto` and `--no-prefix-reuse`, while a served process holds several
+admissible requests and reuses prefixes. A streamed context is therefore a single-request
+CLI/Engine mode ([CLI](cli.md#streaming-kv-past-the-pool)); serving a long context through the
+server uses the all-resident pool the request's reservation has to cover.
+
 ## Several models (router)
 
 Started with `--models-dir` or `--models-preset` and no artifact path, the server is a router in

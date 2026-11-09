@@ -1,0 +1,77 @@
+#pragma once
+
+#include <cstdint>
+
+namespace ninfer {
+
+// What rules a request out of the streaming KV cache (docs/maintainer/kv-streaming-design.md).
+//
+// A streamed pool holds *slots*, not contexts: the device keeps each full-attention layer's newest
+// pages plus one ring that every layer borrows, and the block table names whichever slot a logical
+// page currently occupies. Everything that would make a device page stop meaning "this layer's whole
+// context" therefore rules the request out, and the reason is named here rather than in a branch of
+// the startup planner: the same table is what `tests/test_kv_stream_guards.cpp` checks, so a new
+// exclusion cannot quietly become a message nobody tests and an accepted combination cannot quietly
+// lose its guard.
+enum class KVStreamRejection : std::uint8_t {
+    // The request is servable with the streaming cache, or it does not ask for one.
+    None = 0,
+    // The pool is sized from measured free memory; an explicit token count would size it by arithmetic
+    // that cannot see the ring.
+    CapacityNotAutomatic,
+    // A second sequence would have to share the ring, whose slots are claimed per layer per round.
+    ManySequences,
+    // Pipeline stages and tensor-parallel ranks split every layer's KV over the devices, while a
+    // streaming pool keeps one layer's whole context on one device.
+    ManyDevices,
+    // Retained context and checkpoints reason about device pages as whole-context pages.
+    RetainedContext,
+    // The timing report exists to measure the streaming loop.
+    ReportWithoutStream,
+};
+
+// The request as the planner sees it, copied out of the CLI/Engine options so this stays a pure
+// function of plain values.
+struct KVStreamRequest {
+    bool enabled             = false;
+    bool report              = false;
+    bool capacity_automatic  = false;
+    std::uint32_t sequences  = 1;
+    std::size_t devices      = 1;
+    bool tensor_parallel     = false;
+    bool retained_context    = false;
+};
+
+// Why `request` cannot run with the streaming KV cache, in the order a user meets the conditions.
+[[nodiscard]] constexpr KVStreamRejection kv_stream_rejection(
+    const KVStreamRequest& request) noexcept {
+    if (request.report && !request.enabled) { return KVStreamRejection::ReportWithoutStream; }
+    if (!request.enabled) { return KVStreamRejection::None; }
+    if (!request.capacity_automatic) { return KVStreamRejection::CapacityNotAutomatic; }
+    if (request.sequences != 1) { return KVStreamRejection::ManySequences; }
+    if (request.devices != 1 || request.tensor_parallel) { return KVStreamRejection::ManyDevices; }
+    if (request.retained_context) { return KVStreamRejection::RetainedContext; }
+    return KVStreamRejection::None;
+}
+
+// The message the CLI prints. Every accepted request has no message; every rejected one names the flag
+// that fixes it, because these are the only paths a user can hit.
+[[nodiscard]] constexpr const char* kv_stream_rejection_message(KVStreamRejection rejection) noexcept {
+    switch (rejection) {
+    case KVStreamRejection::None:
+        return "";
+    case KVStreamRejection::CapacityNotAutomatic:
+        return "--kv-stream sizes its KV pool from free memory: pass --kv-capacity auto";
+    case KVStreamRejection::ManySequences:
+        return "--kv-stream serves one sequence: set --max-concurrency 1";
+    case KVStreamRejection::ManyDevices:
+        return "--kv-stream keeps the KV cache on one device";
+    case KVStreamRejection::RetainedContext:
+        return "--kv-stream cannot checkpoint or reuse retained context (--no-prefix-reuse)";
+    case KVStreamRejection::ReportWithoutStream:
+        return "--kv-stream-report measures --kv-stream: pass --kv-stream";
+    }
+    return "";
+}
+
+} // namespace ninfer

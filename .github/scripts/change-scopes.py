@@ -39,6 +39,7 @@ def classify(paths):
         result['linux_scripts'] |= path.endswith('.sh') or path == '.gitattributes'
         result['linux_runtime'] |= path in ('scripts/run.sh', 'scripts/download-model.sh', 'scripts/check-linux-scripts.sh', '.gitattributes')
         result['python'] |= (path.startswith(('tools/', 'tests/artifact/', 'tests/convert/', 'tests/reference/', 'tests/pods/', 'scripts/pods/'))
+                             or path == 'tests/test_kv_stream_tool.py'
                              or path.startswith(('src/artifact/', 'include/ninfer/artifact')))
         result['docker'] |= path in ('Dockerfile', '.dockerignore', 'tests/test_docker_build_cache.sh', '.github/scripts/toolchain-image.sh')
         result['release_tools'] |= (path.startswith(('.github/scripts/', 'tests/release/'))

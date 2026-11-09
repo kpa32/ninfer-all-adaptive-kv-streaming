@@ -307,6 +307,11 @@ jobs:
           python -m pip install numpy safetensors pytest jinja2 gguf tokenizers transformers
       - name: Run artifact, conversion, reference and pod tooling tests
         run: python -m pytest -q tests/artifact tests/convert tests/reference tests/pods
+      - name: Run the benchmark tool's own tests
+        # The KV-stream benchmark is the only writer of the run records the streaming documents cite, so
+        # its readers (metrics, ids, digests, case table, dtype pinning) are gated here rather than only by
+        # hand on the host that produced the records.
+        run: python -m pytest -q tests/test_kv_stream_tool.py
 
   docker-build-cache:
     name: Dockerfile build cache

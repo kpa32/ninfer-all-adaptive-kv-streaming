@@ -461,6 +461,14 @@ std::uint32_t StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
         // is what the split's ratio buys (kv_stream_layout.h).
         if (run_used_[ring_run]) {
             CUDA_CHECK(cudaStreamWaitEvent(copy, consumed_run_[ring_run], 0));
+            // `NINFER_STREAM_SAFE` is a diagnostic that removes the ordering question entirely: the host
+            // waits for the run's previous reader before the copy is enqueued, so a copy can never
+            // overlap the attention that reads the same slots. Slow by construction (one synchronisation
+            // per run per layer); it exists to prove or disprove that the reuse gate is what corrupts a
+            // streamed round.
+            if (std::getenv("NINFER_STREAM_SAFE") != nullptr) {
+                CUDA_CHECK(cudaEventSynchronize(consumed_run_[ring_run]));
+            }
         }
         const std::uint32_t first = run*split_.run_pages;
         const std::uint32_t count =

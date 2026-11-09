@@ -2201,10 +2201,11 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                         if (current == 0) {
                             for (std::uint32_t target = 0; target < ahead; ++target) { issue(target); }
                         }
-                        if (ahead == 0) {
+                        if (ahead == 0 || std::getenv("NINFER_STREAM_SAFE") != nullptr) {
                             // The ring holds one layer's streamed extent and no more, so nothing can run
                             // ahead: this layer copies for itself, and its copy waits for the previous
                             // layer's consumption (the depth-one regime the article describes first).
+                            // `NINFER_STREAM_SAFE` forces the same shape everywhere, as a diagnostic.
                             issue(current);
                         } else if (current + ahead < count) {
                             issue(current + ahead);

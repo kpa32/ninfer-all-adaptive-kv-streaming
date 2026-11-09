@@ -1752,7 +1752,9 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
         ops::CausalAttentionFrameHook frame_hook{};
         const ops::CausalAttentionFrameHook* framed = nullptr;
         const auto layer = static_cast<std::uint32_t>(fidx);
-        if (stream_framed_round_ && !positions && active_sequence_batch_ == 0 &&
+        // One sequence only: a speculative decode pass states its batch as one (the verify call's
+        // batch dimension is 1 even for a single sequence), so "one sequence" is `<= 1`, not `== 0`.
+        if (stream_framed_round_ && !positions && active_sequence_batch_ <= 1 &&
             ph != Phase::Prefill && layer < stream_feeds_.size()) {
             StreamFrameFeed& feed = stream_feeds_[layer];
             feed.page_width       = stream_frame_pages_;

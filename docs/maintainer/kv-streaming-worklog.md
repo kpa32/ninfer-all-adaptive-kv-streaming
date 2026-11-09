@@ -276,6 +276,8 @@ const auto stream_layer = static_cast<std::uint32_t>(dimension(config_.compact_l
 | C4 | 上游后续能力未移植 | 有意 | phase arena、图切分、多卡、图像 prefill、MTP/DFlash/Gemma 的 handoff，以及"**驻留旧前缀、最新页在环里**"的布局（与本实现的"最新页驻留"相反） |
 | C5 | 集中 decode 形状（S6）的实际收益 | 未测 | 池恒等式下它不改变每轮字节，只改拷贝层数与 run 长度；`rk8v4`/251 K 是唯一真正触发它的场景，没有做 A/B |
 | C6 | 运行记录不入库 | 有意 | `bench/results/kv-stream/runs/` 累计 126 MiB 留在主机；仓库只保留被结论引用的少量。复现靠"按决策索引重跑用例"，不是 checkout 目录 |
+| **C7** | **流式下是否该开 CUDA Graph**（继承自旧 handoff 第 4 条） | **未决策，先测** | 现状 `startup.cpp:1510` 是 `use_cuda_graph && !kv_stream`（**`e3dd5bf3` 起就是这样，不是本分支引入**）。旧 handoff 记的是"流式下恢复 CUDA Graph：−3%（≤130 K）"——即当时实测**开图更慢**，但那份记录没有 argv、没有逐轮样本，**本分支从未复测**。要做的是先在 183K/251K 上量 graph on/off，再决定，而不是按"设计上应该同"去改 |
+| **C8** | **跨轮预取**（`depth` 回绕那一半） | **已删，未替代** | `e3dd5bf3` 的 `text.cpp:2303` 有 `issue(current + depth - 1 - count)`；因在活读者底下刷新环槽导致 ids 漂移（M-17）而删（`0c6927c7`）。上游不是删预取，而是用 `producer_attention_index`（拷贝等写该页的 attention 完成）+ 设备侧 ready 标志把它做成合法依赖。要补的是那个依赖机制，不是把旧代码放回去 |
 
 
 ### prefill 的现状（为后续的 prefill 专项留证据）

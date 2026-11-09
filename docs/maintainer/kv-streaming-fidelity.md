@@ -303,6 +303,12 @@ impl->use_cuda_graph = inputs.use_cuda_graph && !inputs.features.kv_stream;
 
 **流式一开，CUDA Graph 全部关掉。** 上游把整轮换页放在图内（`fattn.cu:1564-1720`，跨流等待是图内
 event 节点），我们则是"关掉图、主机逐层发拷贝"。这一条被写成"✅ 同"，是本轮最大的失实。
+**归属要说清楚：这一行不是本分支引入的。** `git show e3dd5bf3:src/models/qwen3_5/program/planning/startup.cpp`
+（本分支的起点）第 1509 行就是同一个写法；旧 `kv-streaming-handoff.md` 的第 4 条还记着
+「流式下恢复 CUDA Graph：−3%（≤130 K）」——即当时实测**开图更慢**，但那条记录没有 argv、没有逐轮
+样本，本分支从未复测。所以它不是"漏做"，是**未复测的旧结论**被我在 §3 写成了"✅ 同"（worklog §8 C7）。
+prefill 侧同理：`begin_round` 的 `!prefill` 与 prefill 被排除在分帧之外，也都在 `e3dd5bf3` 上已存在。
+
 
 **（2）对照表的组织轴是"decode 一轮怎么跑"。** 于是四类机制从头到尾没有成为表里的一行：
 
@@ -313,6 +319,12 @@ event 节点），我们则是"关掉图、主机逐层发拷贝"。这一条被
 4. 图内调度：`kv_stream_graph_schedule_batch` 认领槽位、跨层预取、`ready_flags_device` 设备侧放行。
 
 这四类不在表里 ⇒ 移植时自然也没被当成工作项 ⇒ "遗漏"不可能被自己发现。
+
+**（3）我把已记录的工作项删掉了。** `kv-streaming-handoff.md` 在 `1d3eae83` 被"归档"删除，而它
+第 4、5 条与第 2 节里记着两件本分支**从未替代**的东西：**流式下恢复 CUDA Graph（旧实测 −3%，≤130 K）**
+与**跨轮预取＝`depth` 回绕的那一半**。我写的 worklog §8 两项都没收，等于把前任记下的工作项从我方
+文档里抹掉（现已作为 C7/C8 补回，带出处）。这是本次最该被追责的动作：不是没做到，是**把待办删了**。
+
 
 ### 11.2 上游机制 × 我方现状（逐条，带位置）
 
@@ -356,7 +368,8 @@ event 节点），我们则是"关掉图、主机逐层发拷贝"。这一条被
 
 | 期 | 内容 | 验收判据 |
 |---|---|---|
-| **T1** | **恢复 CUDA Graph**：块表/control 更新做成图内合法形状（固定形状 H2D + 设备侧放行），布局代数进图缓存键 | 251K rk4v4 ≥ 72.8 tok/s；同构建 eager vs graph 的 logprobs 512/512 逐位相同 |
+| **T0** | **先量后改**：在 183K/251K 上量 `--no-cuda-graph` ↔ graph 的差（旧记录说开图 −3%，未复测；没有这条数字，T1 就是拍脑袋） | 两个容量、两个 KV 格式各一组逐轮样本；结论写进 measurements |
+| **T1** | **CUDA Graph 与流式的关系**：按 T0 的实测决定是"补图内换页"还是"维持关图并写清理由"；若补，则块表/control 更新做成图内合法形状，布局代数进图缓存键 | 251K rk4v4 不慢于 72.8 tok/s；graph vs eager 的 logprobs 512/512 逐位 |
 | **T2** | **双布局**：prompt 用 uniform、decode 用 concentrated、下一个 prompt chunk 回退 uniform | 251K prefill 字节与 tok/s 优于 1281/94 GiB；decode 不退；日志与报告能读出当前布局 |
 | **T3** | **每 chunk 适配 + 脏页回写** | prefill 期出现 `[partition]` 决策；prefill 回写字节 ≤ 实际写过页数 |
 | **T4** | **跨轮预取 + 槽位认领**（照上游 `producer_attention_index` 的依赖思想，而不是删掉预取） | `--kv-stream-ring-ratio 2.0` 下 251K `check --case equiv-183k` PASS，且每轮不慢于 1.10 |
@@ -371,3 +384,22 @@ event 节点），我们则是"关掉图、主机逐层发拷贝"。这一条被
 2. 对照表以 decode 流水为轴，**没有按"上游机制的完整清单"来写**，所以 11.2 里第 6–11 条从一开始就
    不在比较对象里。
 3. 第 92 行那条"✅ 同"是在没有核对 `startup.cpp:1510` 的情况下写的**推断**，却被写成事实。
+
+### 11.6 本分支到底做了什么、没做什么（git 证据，防止误判为"推倒重来"）
+
+`kv-stream-faithful` 是 `kv-streaming`（`e3dd5bf3`）之上的 **87 个提交**，`e3dd5bf3` 是它的祖先，
+`git log HEAD..origin/kv-streaming` 为空——**没有丢掉父分支的任何提交**。
+
+**加进来的**（`git diff --stat e3dd5bf3..HEAD`：20 文件 +2174/−715）：
+`kv_stream_feedback` / `kv_stream_partition` / `kv_stream_signal` / `kv_stream_slot_map` /
+`kv_stream_span_tuner` 五个新模块（上游机制），`kv_stream_space` +843/−…的重构（平铺环 + run 级
+拷贝/消费 + 逐层窗口），`text.cpp` 的发射与消费重写，以及四个真缺陷的修复（层号二次映射、块表发布
+未等待、`ahead` 无上限越界、span 按帧序而非页区间寻址）。
+
+**减出去的**：`NINFER_STREAM_FRAMES` 那条固定帧路径（改为调优器驱动）与 `depth` 回绕的跨轮预取
+（因 ids 漂移，见 C8）。
+
+**没碰的**：`startup.cpp:1510` 的关图、`text.cpp` 里 prefill 被排除在分帧与适配之外、写路径脏行、
+prompt/decode 双布局——这四件都在父分支上就是如此（C7/C8 与 §11.2 第 6–9 条）。
+
+结论：需要的是**补这六件 + 补齐验证**，不是废掉分支重建。

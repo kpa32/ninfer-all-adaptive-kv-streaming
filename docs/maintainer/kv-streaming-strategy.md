@@ -321,11 +321,11 @@ P3 才是重叠与调度器；P4 由图决定；P5 容量；P6 多请求与服�
 | 期 | 内容 | 上游对应 | 验收（可驳回） |
 |---|---|---|---|
 | **P0** | 基线 + 可视化：graph on/off 各一组（183 K、251 K × `rk4v4`、`rk8v4`）；报告写进布局形状（uniform/concentrated）、`entering_decode_layout`、repartition 次数、**每层窗口**。**并入合规快项**：`docs/cli.md` 补 `--kv-stream`、README What's New 一行、注册 `test_kv_stream_span_tuner.cpp`、`kv_stream_signal.cu` 的 oracle 测试 + `compute-sanitizer` racecheck/synccheck、env 旋钮定性、文档结构整改方案（把日期日志移出 `docs/`） | M6、Y2、`CONTRIBUTING.md:184/193/200` | 8 组样本落盘并验证 Y2；四项门禁全绿（CTest 含新测试、sanitizer 无报错、`docs/cli.md` 有条目、What's New 有行） |
-| **P1** | **prefill 三件套 + 双布局**：移植 `b2ec300a2`（staging 批量搬行）、`3552d1b7d`（宽 batch 流式注意力/部分输出）、`46c1778f7`（放开 `Q->ne[1] <= 256`），同时做 prompt=uniform / decode=concentrated / 下一 chunk 回退；布局代数进表发布与图缓存键；`aee6bb66c` 的 ubatch 组合（256/512/768/1024）实测 | 9.4 全组、R9/R12 | 251 K prefill 流量按 M4 下降、时间不差（Y3/Y4）；ubatch 四档各跑通一次；decode 不退 |
+| **P1** | **分阶段布局**：prompt 用 uniform、decode 用 concentrated、下一个 prompt chunk 回退 uniform；布局代数进表发布与图缓存键；`aee6bb66c` 的 ubatch 组合（256/512/768/1024）各跑一次。上游三个 prefill 提交**不移植**（理由见 §9.4 的判定：本机 prefill 只慢 0.3%、计算侧暴露 0，且我们的 staging 已是每次 128 页一次 memcpy） | R9、R12、§9.4 | 251 K prefill 流量按 M4 下降、时间不变差（Y3/Y4）；ubatch 四档各跑通；decode 不退 |
 | **P2** | 每 chunk 适配（prefill 也跑控制器与阶梯）+ 写路径脏行/镜像（`f0957c082` 的"稳定页"） | R8、R10 | prefill 期出现 `[partition]`；回写 ≤ 脏页量；251 K/183 K 逐位不变 |
 | **P3** | 跨轮预取 + **deadline 驱动的槽位调度器**（`39704675e` + `82a9a538c` 的机制，用生产者依赖而不是删预取） | R5/R11、C8 | `--kv-stream-ring-ratio 2.0` 下 183 K/251 K 逐位 PASS、每轮 ≥4%（Y5）；`1.0` 仍可跑 |
 | **P4** | CUDA Graph：按 P0 的 Y2 决定补图内换页或维持关图（维持必须写清代价） | R11、C7 | 251 K `rk4v4` 不慢于 72.8 tok/s；graph vs eager 512/512 逐位 |
-| **P5** | 草稿 KV（MTP/DFlash2）作为独立驻留角色 | R13（上游未接线）、9.6 | 同容量下池更大或每轮字节更少，逐位不破 |
+| **P5**（可选，收益已算过） | 草稿 KV（MTP）搬进同一个池：MTP 现在是"整段驻留、不进池"（`startup.cpp:162-164` 的注释与 `mtp_layers=1`）。262 144 时它占 `rk4v4` 293 MB / `rk8v4` 428 MB；搬进池可让窗口 +256/+257 页每层，但 drafter 每轮要取回自己的整段前缀（1 层 ≈ 226–317 MiB/轮），**净账 ≈ 每轮字节 −5%** | 上游**没做**（`pin_all` 只出现在单测，`plan_make` 运行时零调用者） | 251 K 每轮字节降 ≥3% 且逐位不破；否则明确否掉 |
 | **P6** | **串行提示 / 缓存恢复 / 服务端接线**：一进程两请求（`7dc5fccd5`）、`reset()` 路径逐位、`docs/serving.md` 明确不支持并发与前缀缓存（或接线，`c9484b2e6`）；KV 格式泛化到 `int8`（`50a7de723`） | 9.5、9.6 | 两请求逐位 PASS；`int8` 262 144 启动+稳态；`docs/serving.md` 有明确边界 |
 | **P7** | 注意力侧：span 融合（`6a536bfd6`）与相邻流式页合并（`4f2cb3e91`），按实测决定是否采用 | 9.3 | 251 K 每轮进一步下降或明确否掉（带样本） |
 | **P8** | 收官：262 144 prefill+decode × {`rk4v4`,`rk8v4`,`int8`} × resident(≤110 K)/streamed；活体迁移逐位；2000+ 长跑；**交错运行**的 A/B 证据；跨架构构建确认；作者口径曲线 | 全部、`CONTRIBUTING.md:171` | 每格 ids + logprobs；SPEC 完成条件 1–5 逐条对账 |
@@ -384,15 +384,38 @@ P3 才是重叠与调度器；P4 由图决定；P5 容量；P6 多请求与服�
 | `fdf83bf1b` | 有界 attention reduction workspace | ✅ 我们的 run 复用一个归约缓冲 |
 | `63459f5c3`+`1336c7cfd`、`540cbe990`+`d976c1824`、`1eb2faaa0`+`3b0feeff9`+`e03b76505`+`e4489bb10`、`65d814435`+`cfaa42c60` | 作者自己**提交后又回滚**的尝试：延后归约、合并页上传、精确脏页跟踪、有界 span 重叠 | ⚠️ 其中"有界 span 重叠"我们做了（`kv_stream_span_tuner`）但本机更慢；"脏页跟踪"我们也没做 |
 
-### 9.4 **prefill 专项（我之前完全漏掉的一组）**
+### 9.4 **prefill 专项**（判定：**本机不移植**，理由在这张表之后）
 
-| 提交 | 内容 | 我方 |
-|---|---|---|
-| `b2ec300a2` | **加速自适应 KV 的 prefill staging**：`set-rows` 批量搬 KV 行（`set-rows.cu` +67 行、`ggml-cuda.cu` +90 行），减少每页一次小拷贝的开销 | ❌ 无（我们的 `upload()` 按 run 一次 memcpy，但 prefill 每 chunk 仍按层串行） |
-| `3552d1b7d` | **加速流式 KV 的 prefill attention**：给 `launch_fattn` 加 `partial_dst/partial_meta`，宽 batch 的流式注意力输出部分结果再合并；关闭 parallel-block 调优 | ⏸ 不需要（块表间接寻址，prefill 与 decode 同一注意力），但**它把流式注意力从 decode 扩到宽 prefill** 这件事我们没有对应机制 |
-| `46c1778f7` | **允许宽 prefill batch 走流式注意力**：删掉 `Q->ne[1] <= 256` 的限制 | ⚠️ 我们无此限制，但 prefill 被排除在分帧/适配外 |
-| `aee6bb66c` | 文档：自适应 KV 的 ubatch 支持（`256/256`、`512/512`、`768/512`、`1024/1024` 实测通过） | ⚠️ 我们只测 `--prefill-chunk 256` |
-| `cef30daab` / `15154a688` | 按注意力模式缩放 KV stream scratch / 有界查询工作区 | ✅ 我们的 run 宽度与工作区固定有界 |
+| 提交 | 内容 | 我方 | 判定 |
+|---|---|---|---|
+| `b2ec300a2` | 加速自适应 KV 的 prefill staging：`set-rows` 批量搬 KV 行，减少"每页一次小拷贝" | 我们的 `upload()` 本来就是每 run（128 页 = 9 MB）一次 `cudaMemcpyAsync` | ⏸ 不适用 |
+| `3552d1b7d` | 加速流式 prefill attention：`launch_fattn` 加 `partial_dst/partial_meta`，宽 batch 输出部分结果再合并 | 我们走块表间接寻址，prefill 与 decode 用同一条注意力，没有分段合并这回事 | ⏸ 不适用 |
+| `46c1778f7` | 放开 `Q->ne[1] <= 256`，允许宽 prefill batch 走流式注意力 | 我们无此限制（prefill 一直走流式空间） | ⏸ 不适用 |
+| `aee6bb66c` | ubatch 组合实测（256/512/768/1024） | 只测过 256 | ✅ **保留为 P1 的实测项** |
+| `cef30daab` / `15154a688` | 按注意力模式缩放 scratch / 有界查询工作区 | 我们的 run 宽度与工作区固定有界 | ✅ 等价 |
+
+**为什么不移植前三条**（三条实测/事实依据，不是判断）：
+
+1. **prefill 在本机只慢 0.3%**：同上下文 183 K 的 A/B，流式 1476 tok/s vs 全驻留 1481 tok/s，且计算侧
+   暴露 0.0 s ⇒ 搬运完全被注意力掩盖（[measurements](kv-streaming-measurements.md) 表 2）。
+   前两条提交解决的是"搬运/注意力拖慢 prompt"，本机不存在这个症状。
+2. **它们的根因我们没有**：上游流式注意力原本被 `Q->ne[1] <= 256` 挡住（`46c1778f7` 才放开），
+   staging 原本逐页（`b2ec300a2` 才批量）；我们的 prefill 一直走同一条块表注意力、拷贝一直是 per-run。
+3. **池一直是共享的**：上游一个 `kv_stream_stage_bytes` 池同时服务 prompt 与 decode，这三个提交不是
+   "让 prefill 和 KV 共享池子"，而是"让共享在他们引擎里可用且不慢"。我方的共享是本实现的前提，
+   不需要额外工作。
+
+**prefill 真正欠的只有一件事**：prompt 与 decode 用同一套几何（R9 的双布局）。它不是速度问题，而是
+**风险与流量**问题：窗口由 decode 需求决定，prefill 流量按 `(P−W)²` 放大（`rk8v4` 251 K 实测 582.9 GiB）；
+今天这笔流量被计算掩盖，一旦链路与计算不再互相掩盖（更快的卡、更慢的链路、更大的 chunk），它就会变成
+真的时间。所以 P1 只做布局分档 + ubatch 实测。
+
+**MTP 与"扩大池子"的关系（与 prefill 无关）**：作者**不做** MTP 流式——上游把 MTP 页当作 `pinned`
+（`llama-kv-stream-plan.cpp:259` 的 `pin_all`/`pin_tail`，只在单测里出现，`plan_make` 运行时零调用者），
+运行时 MTP KV 根本不进流式池。我方同理（`startup.cpp:162`：`The MTP cache holds its own whole context
+and never streams`），MTP 层数 1。所以"把 MTP 搬进池"是**我们的可选延伸**（P5），它才是唯一能扩大可用
+窗口的一项，量级已算：262 144 时 MTP 占 `rk4v4` 293 MB / `rk8v4` 428 MB ⇒ 窗口 +256/+257 页每层，
+但 drafter 每轮要取回自己的整段前缀（1 层 ≈ 226–317 MiB/轮），**净账约每轮字节 −5%**。
 
 ### 9.5 多提示 / 缓存恢复 / 服务端
 

@@ -49,7 +49,7 @@ L6 是合并门槛。
 | C6 | 零窗口 / `ratio=1.0` 可规划且可跑 | 单测 ∈ L1；GPU 需一次 `--kv-stream-ring-ratio 1.0` 跑通 | 半（仅 L1） | `test_kv_stream_layout` |
 | C7 | 一进程两请求（`reset()` 路径） | `7dc5fccd5` 的串行提示场景，逐位 | 未跑 | — |
 | C8 | graph vs eager 逐位 | `--no-cuda-graph` 对照 | 未跑（依赖 P4） | — |
-| C9 | 环→表→attention 字节一致 | `NINFER_STREAM_VERIFY=1` 逐字节 oracle | 手动可用，**未入 CTest** | worklog §5.4 |
+| C9 | 环→表→attention 字节一致 | `NINFER_STREAM_VERIFY=1` 逐字节 oracle | 手动可用，**未入 CTest** | `bench/results/kv-stream/ledger.md` |
 | C10 | span 区间发射逐位 | `small_t_i8` 的 run 区间与整层结果比对 | 未跑 | — |
 | C11 | 无守卫组合被拒 | 纯函数 `kv_stream_rejection`（`src/core/kv_stream_guards.h`）的单测覆盖 9 组组合与报错顺序；CLI 可达路径 `--kv-capacity 8192 --kv-stream` 实跑 | **PASS** | `test_kv_stream_guards` 全过；实跑报 `error: --kv-stream sizes its KV pool from free memory: pass --kv-capacity auto`。注：单请求 CLI **不暴露** `--max-concurrency`，序列守卫只经 Engine 生效，由单测覆盖 |
 | C12 | MTP/DFlash2 KV 不受影响 | 流式下 MTP 接受率与 resident 相同 | 未跑 | — |
@@ -88,7 +88,7 @@ L6 是合并门槛。
 | G4 | 新 kernel 的 racecheck/synccheck 记录 | **PASS**（= K2/K3） |
 | G5 | 测试注册进 CTest | 缺 span_tuner ⇒ FAIL（= T2） |
 | G6 | 测量交错运行 | **PASS**：`run_case` 改为 rep 在外、变体在内（[measurements](kv-streaming-measurements.md) 表 1） |
-| G7 | 文档只写当前状态（无日期日志/尝试过程） | worklog/measurements 违反 ⇒ FAIL |
+| G7 | 文档只写当前状态（无日期日志/尝试过程） | **PASS**：`docs/` 只留设计、策略、验证、参考表；历史移到 `bench/results/kv-stream/ledger.md` |
 | G8 | Conventional Commits | 遵守 ⇒ PASS |
 
 ## 3 评分规则
@@ -116,9 +116,9 @@ L6 是合并门槛。
 | 正确性 | 6/12（C1、C11 全过；C6、C9 半） | **20/40** | C1 等价套件 + C11 守卫表与新 CLI 实跑 |
 | 性能回归 | 8/8（P1–P8 全过，P8 为交错） | **20/20** | 5 条实测基线 + 交错口径 |
 | 内核与工具 | 5/6（T1、T2、K1–K3 全过；K4 跨架构未做） | **12.5/15** | oracle + racecheck + synccheck 落地 |
-| 门禁与文档 | 6/8（G1、G2、G3、G4、G6、G8 过；G5 等 CTest 树、G7 文档结构） | **11.25/15** | 只剩注册与文档结构 |
+| 门禁与文档 | 7/8（G1、G2、G3、G4、G6、G7、G8 过；G5 等 CTest 树） | **13.1/15** | 只差把已注册的测试在 CI 里真跑一次 |
 | 机制覆盖 | ~10/40 工作包 | **2.5/10** | §11 |
-| **总分** | | **≈66/100 ⇒ D** | 正确性 6/12 是唯一挡 C 线的项 |
+| **总分** | | **≈68/100 ⇒ D** | 正确性 6/12 是唯一挡 C 线的项 |
 
 **这就是为什么不能说"方向对了"**：方向对不对要由 M 表与 P 表证明（P1–P7 过、机制 25%），
 而"结果对、可交付"要由 C 表与 G 表证明（C 只过 1 项、G 只过 1 项）。当前结论只能是

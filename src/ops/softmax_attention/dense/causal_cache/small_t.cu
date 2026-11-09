@@ -537,13 +537,18 @@ void causal_attention_small_t_launch(const Tensor& q, const Tensor& k, const Ten
                                              partial_l, out, stream, partial_out);
         return;
     }
-    if (splits.begin != 0 || splits.end != 0) {
-        throw std::invalid_argument(
-            "a split range needs an INT8-family cache (rk8v4, rk4v4, rk2v4, int8)");
-    }
-    if (frames != nullptr && frames->splits_per_frame > 0) {
-        throw std::invalid_argument(
-            "framed launches need an INT8-family cache (rk8v4, rk4v4, rk2v4, int8)");
+    // Every other storage keeps the whole range and copies a layer at a time: the FP8 and NVFP4
+    // small-T routes and the shared BF16 one reduce with their own kernels and cannot take a
+    // frame's split range.
+    if (!kv_cache_is_int8_family(cache.storage)) {
+        if (splits.begin != 0 || splits.end != 0) {
+            throw std::invalid_argument(
+                "a split range needs an INT8-family cache (rk8v4, rk4v4, rk2v4, int8)");
+        }
+        if (frames != nullptr && frames->splits_per_frame > 0) {
+            throw std::invalid_argument(
+                "framed launches need an INT8-family cache (rk8v4, rk4v4, rk2v4, int8)");
+        }
     }
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
         causal_attention_small_t_fp8_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,

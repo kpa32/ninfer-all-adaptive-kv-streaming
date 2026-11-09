@@ -126,6 +126,15 @@ set_tests_properties(
   ninfer_qwen3_5_prefix_real_test
   PROPERTIES SKIP_RETURN_CODE 77)
 
+# C7: two requests in one process over a streamed context (kv-streaming-verification.md).
+ninfer_add_test(ninfer_qwen3_5_kv_stream_serial_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_kv_stream_serial_real.cpp"
+  LIBRARIES ninfer_engine)
+
+set_tests_properties(
+  ninfer_qwen3_5_kv_stream_serial_real_test
+  PROPERTIES SKIP_RETURN_CODE 77)
+
 ninfer_add_test(ninfer_qwen3_5_hybrid_prefix_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_hybrid_prefix_real.cpp"
   LIBRARIES ninfer_engine)

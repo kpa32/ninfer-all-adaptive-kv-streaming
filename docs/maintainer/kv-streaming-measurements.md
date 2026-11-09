@@ -567,3 +567,40 @@ M-17 把 −17% 全归给"环变小、没有前视"，这不完整。逐轮样�
 走到；251K 的尖峰于是最可能来自"迁移本身"而非门限之后的代码路径。定位方法已就位：
 `NINFER_STREAM_DEBUG=1` 会在门限被求值时打印 `ahead a → b, saving s of b bytes`，需要一轮带该
 环境变量的长跑（prompt 可复用 `equiv-183k` 的，bench 用例的 `prompt.json` 不落盘）。
+
+### M-19 追平并超过：251K 稳态 72.8 tok/s（移植前 69.3）
+
+M-18 里那四个 ~170 ms 尖峰的来源查清了，**不是控制器，是我自己的实验机制**：
+
+```
+[partition] trial start baseline=67.39 ring 1408 -> 1152 pages, streamed max 1017 -> 1001
+[partition] trial done mean=120.70 baseline=67.39 revert
+[partition] trial start baseline=58.43 ring 1408 -> 1152 pages, ...   ← 冷却 64 轮后又试一次
+[partition] trial done mean=117.61 baseline=58.43 revert
+```
+
+三个错都在我这边：
+
+1. **试-run 的均值里含了迁移那一轮**（174.5 ms），所以任何实验都必然"变慢"、必然回退。
+2. **基线取到首轮暖机**（67.39 是第 1 轮），不是一个稳态值。
+3. **被否掉的目标在冷却后又重试**，把第二次迁移又摊进窗口。
+
+另外 `ahead`（整层前视）用整数除法太粗：251K 上 1408 页 = 11 runs、1152 页 = 9 runs，对一层 8 runs
+都是 "0 层前视"，但实测 54.9 ms 与 60.6 ms 明显不同。改成**比例** `kv_stream_lookahead_ratio =
+ring_runs / runs_per_layer`（1.375 对 1.125），门限才看得见差别。
+
+修完之后（`s16-fair`，rk4v4，512 token）：
+
+| | 移植前 `cf90eaaf` | 现在 `s16-fair` |
+|---|---:|---:|
+| 稳态中位数 | 56.6 ms | **54.4 ms（+3.9%）** |
+| decode tok/s | 69.27 | **72.8（+5.0%）** |
+| 迁移实验 | 无（静态 2× 环） | **一次都没触发**（门限拒绝缩环：只省 1.6% 字节） |
+| 每轮上载 | 1193.6 MiB | 1116.2 MiB（−6.5%） |
+
+门限打印的原文：`[partition] lookahead 1.375 -> 1.125 saving 18350080 of 1166376960 bytes` ——
+省 1.6% 的字节却要放弃 18% 的前视余量，29% 的判据（`kPartitionSavingDivisor = 4`）当场拒绝。
+
+**为什么这不是"给它调了一个数"**：判据两边都是运行时量——`lookahead` 是布局几何、`saving` 是两种
+布局各自的每轮字节数，没有一项来自这张卡、这个模型或这条 PCIe；换一张卡只要比值不同就会给出不同
+的答案。实验本身（试 4 轮、比中位数、慢则回退）同样只用实测轮时。

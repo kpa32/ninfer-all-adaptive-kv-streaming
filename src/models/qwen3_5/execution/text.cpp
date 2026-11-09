@@ -49,6 +49,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <initializer_list>
 #include <limits>
 #include <stdexcept>
@@ -1478,17 +1480,24 @@ constexpr std::int32_t kStreamFeedChunkPages = 64;
 // moves nothing while still recording the event its launch waits on.
 void feed_stream_frames(StreamFrameFeed& feed, std::int32_t frame) {
     if (feed.space == nullptr || feed.page_width <= 0) { return; }
+    static const bool debug = std::getenv("NINFER_STREAM_DEBUG") != nullptr;
     for (; feed.issued <= frame; ++feed.issued) {
         // One spare page on each side: a split can begin on a 32-key tile boundary, mid-page.
         const std::int32_t first = feed.issued * feed.page_width - 1;
         const std::int32_t last  = first + feed.page_width + 2;
+        std::uint32_t moved      = 0;
         for (std::int32_t page = first; page < last; page += kStreamFeedChunkPages) {
             const std::int32_t count = last - page < kStreamFeedChunkPages ? last - page
                                                                          : kStreamFeedChunkPages;
-            feed.space->upload_frame(feed.layer, static_cast<std::uint32_t>(feed.issued), page,
-                                     count, feed.copy, false);
+            moved += feed.space->upload_frame(feed.layer, static_cast<std::uint32_t>(feed.issued),
+                                              page, count, feed.copy, false);
         }
         feed.space->seal_frame(feed.layer, static_cast<std::uint32_t>(feed.issued), feed.copy);
+        if (debug) {
+            std::fprintf(stderr, "[stream] layer=%u frame=%d pages=[%d,%d) moved=%u window=%u\n",
+                         feed.layer, feed.issued, first, last, moved,
+                         feed.space->window_start());
+        }
     }
 }
 
@@ -1705,6 +1714,19 @@ void TextContext::attn_mix(const BlockParameters& w, Tensor& x, int fidx, Phase 
                                                            stream_frame_wait, stream_frame_consumed,
                                                            &feed};
                 framed     = &frame_hook;
+                if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+                    std::fprintf(stderr,
+                                 "[stream] attn layer=%u active=%u window=%u frames=%d pages=%d "
+                                 "spf=%d\n",
+                                 layer, kv_stream_space_->active_pages(), window_tokens,
+                                 plan.frames, plan.pages, plan.splits_per_frame);
+                }
+            } else if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+                std::fprintf(stderr,
+                             "[stream] attn layer=%u UNFRAMED active=%u window=%u frames=%d "
+                             "pages=%d spf=%d\n",
+                             layer, kv_stream_space_->active_pages(), window_tokens, plan.frames,
+                             plan.pages, plan.splits_per_frame);
             }
         }
         ops::causal_softmax_attention(

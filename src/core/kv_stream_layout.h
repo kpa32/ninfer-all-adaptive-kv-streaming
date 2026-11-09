@@ -152,6 +152,11 @@ namespace detail {
 //
 // which is a fixed point rather than a formula - a larger window makes a smaller ring, which allows a
 // larger window - so it is iterated (the map is monotone).
+//
+// The run size is a request, not a promise: the ring must be a whole number of runs and hold a whole
+// layer's streamed extent, so a pool too small to do that at `run_pages` is planned at the largest
+// run it can actually hold (a probe candidate a capacity scan evaluates is exactly that case). The
+// split carries the run size it was planned with, so the copy and its consumer agree.
 [[nodiscard]] inline std::optional<KVStreamSplit>
 plan_kv_stream_uniform(std::uint32_t budget_pages, std::uint32_t active_pages,
                        std::uint32_t layers, std::uint32_t run_pages = kKVStreamRunPages,
@@ -161,26 +166,29 @@ plan_kv_stream_uniform(std::uint32_t budget_pages, std::uint32_t active_pages,
         return kv_stream_all_resident(active_pages, layers, run_pages);
     }
     if (!(ring_ratio >= 1.0)) { ring_ratio = 1.0; }
-    std::uint32_t resident = budget_pages / layers;
-    for (int pass = 0; pass < 8; ++pass) {
-        if (resident > active_pages) { resident = active_pages; }
-        const std::uint64_t streamed = active_pages - resident;
-        std::uint64_t ring = std::uint64_t(ring_ratio * double(streamed));
-        if (ring < streamed) { ring = streamed; }
-        const std::uint32_t rounded = detail::kv_stream_ceil_to_run(ring, run_pages);
-        if (rounded + run_pages > budget_pages) { return std::nullopt; }
-        const std::uint32_t next = (budget_pages - rounded) / layers;
-        if (next == resident) {
-            // A window of zero pages is a legitimate plan: it is what a pool that holds only one
-            // layer's streamed extent can serve. The capacity resolution evaluates such candidates
-            // before it can offer a larger pool, and refusing them here aborts the scan.
-            KVStreamSplit split;
-            split.layer_resident.assign(layers, resident);
-            split.ring_pages = rounded;
-            split.run_pages  = run_pages;
-            return split;
+    for (std::uint32_t run = run_pages; run >= 1; run = run > 1 ? run / 2 : 0) {
+        std::uint32_t resident = budget_pages / layers;
+        for (int pass = 0; pass < 8; ++pass) {
+            if (resident > active_pages) { resident = active_pages; }
+            const std::uint64_t streamed = active_pages - resident;
+            std::uint64_t ring = std::uint64_t(ring_ratio * double(streamed));
+            if (ring < streamed) { ring = streamed; }
+            const std::uint32_t rounded = detail::kv_stream_ceil_to_run(ring, run);
+            if (rounded + run > budget_pages) { break; }
+            const std::uint32_t next = (budget_pages - rounded) / layers;
+            if (next == resident) {
+                // A window of zero pages is a legitimate plan: it is what a pool that holds only one
+                // layer's streamed extent can serve. The capacity resolution evaluates such candidates
+                // before it can offer a larger pool, and refusing them aborts the scan.
+                KVStreamSplit split;
+                split.layer_resident.assign(layers, resident);
+                split.ring_pages = rounded;
+                split.run_pages  = run;
+                return split;
+            }
+            resident = next;
         }
-        resident = next;
+        if (run == 1) { break; }
     }
     return std::nullopt;
 }

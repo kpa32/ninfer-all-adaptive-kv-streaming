@@ -65,7 +65,7 @@ L6 是合并门槛。
 | P5 | 每轮字节 | ≤ 基线 +2%（1116.2 / 3366.9 MiB） | **PASS** |
 | P6 | 暴露时间 | 183 K ≤ 7.9 ms/轮；251 K 记录不设门限（带宽受限） | **PASS**（183 K） |
 | P7 | 全驻留不回退 | `equiv-100k` resident ≥ 118 tok/s，且 ≤120 K 不启用流式 | **PASS** |
-| P8 | 交错 A/B（`CONTRIBUTING:171`） | 两变体按 rep 交错；当前是顺序跑 | **FAIL** |
+| P8 | 交错 A/B（`CONTRIBUTING:171`） | 两变体按 rep 交错；提示词不加 nonce（新进程、且会毁金标） | **PASS**：`equiv-183k --reps 2` 交错跑完，两臂 PASS（M-25） |
 
 ### 2.3 内核与工具（K / T）
 
@@ -75,7 +75,7 @@ L6 是合并门槛。
 | K2 | `compute-sanitizer --tool racecheck` | 0 error（`tests/README.md:96-110` 的跑法） | **PASS**：0 hazards（M-24） |
 | K3 | `compute-sanitizer --tool synccheck` | 0 error | **PASS**：0 errors；另跑 initcheck 也是 0（M-24） |
 | K4 | 跨架构可编 | `sm_70/75/80/86/89/120a` 全部构建通过 | 未做（本地仅 `sm_89`） |
-| T1 | bench 工具单测 | `tests/test_kv_stream_tool.py`（12 个用例）纳入 CI | **PASS**（`ci.yml` 新增一步 + `change-scopes.py` 把该文件计入 python 范围；2026-11-10，提交 `9e7d7797`） |
+| T1 | bench 工具单测 | `tests/test_kv_stream_tool.py`（11 个用例，`python -m pytest` 在仓库根跑）纳入 CI | **PASS**（`ci.yml` 新增一步 + `change-scopes.py` 把该文件计入 python 范围；2026-11-10，提交 `9e7d7797`） |
 | T2 | span tuner + guards 注册 | `CoreTests.cmake` 有 `ninfer_kv_stream_span_tuner_test` 与 `ninfer_kv_stream_guards_test` | **PASS**（`9e7d7797`） |
 
 ### 2.4 门禁与文档（G，来自 `CONTRIBUTING.md`）
@@ -87,7 +87,7 @@ L6 是合并门槛。
 | G3 | `docs/serving.md` 写明边界 | **PASS**：新增 "Streaming KV is not a server mode"（`9e7d7797`） |
 | G4 | 新 kernel 的 racecheck/synccheck 记录 | **PASS**（= K2/K3，M-24） |
 | G5 | 测试注册进 CTest | 缺 span_tuner ⇒ FAIL（= T2） |
-| G6 | 测量交错运行 | 顺序跑 ⇒ FAIL（= P8，P1 之后修） |
+| G6 | 测量交错运行 | **PASS**：`run_case` 改为 rep 在外、变体在内（M-25） |
 | G7 | 文档只写当前状态（无日期日志/尝试过程） | worklog/measurements 违反 ⇒ FAIL |
 | G8 | Conventional Commits | 遵守 ⇒ PASS |
 
@@ -114,11 +114,11 @@ L6 是合并门槛。
 | 维度 | 通过/总 | 得分 | 依据 |
 |---|---|---:|---|
 | 正确性 | 6/12（C1、C11 全过；C6、C9 半） | **20/40** | C1 等价套件 + C11 守卫表与新 CLI 实跑 |
-| 性能回归 | 7/8（P1–P7 ✅、P8 ✗） | **17.5/20** | 4 条实测基线 |
+| 性能回归 | 8/8（P1–P8 全过，P8 为交错） | **20/20** | 5 条实测基线 + 交错口径 |
 | 内核与工具 | 5/6（T1、T2、K1–K3 全过；K4 跨架构未做） | **12.5/15** | oracle + racecheck + synccheck 落地 |
-| 门禁与文档 | 5/8（G1、G2、G3、G4、G8 过；G5、G6、G7 未过） | **9.4/15** | 只剩注册（等 CTest 树）、交错、文档结构 |
+| 门禁与文档 | 6/8（G1、G2、G3、G4、G6、G8 过；G5 等 CTest 树、G7 文档结构） | **11.25/15** | 只剩注册与文档结构 |
 | 机制覆盖 | ~10/40 工作包 | **2.5/10** | §11 |
-| **总分** | | **≈60/100 ⇒ D** | 正确性 6/12、门禁 4/8 仍挡着 C 线 |
+| **总分** | | **≈66/100 ⇒ D** | 正确性 6/12 是唯一挡 C 线的项 |
 
 **这就是为什么不能说"方向对了"**：方向对不对要由 M 表与 P 表证明（P1–P7 过、机制 25%），
 而"结果对、可交付"要由 C 表与 G 表证明（C 只过 1 项、G 只过 1 项）。当前结论只能是

@@ -779,3 +779,30 @@ compute-sanitizer --tool initcheck  /tmp/t_signal → ERROR SUMMARY: 0 errors
 实测报 3 条失败。查实现（`kv_stream_signal.cu:98-118`）确认契约是"只有被 `begin_copy_sample`
 采样的那个 run 才有数，`uploads` 表示该窗口发出几个 run"，于是改成按真实契约断言（并补一条
 "未采样的窗口必须报无、不能报 0"）。**这是测试写错，不是内核错**——但正是它把契约记了下来。
+
+## M-25 交错运行的 A/B（2026-11-10，`kv-stream-27b-16g`）
+
+**做了什么**：`run_case` 的循环从「变体在外、rep 在内」改成「rep 在外、变体在内」——rep 1 的全
+变体、rep 2 的全变体……。理由写在代码注释里：报告比较的是变体，两个变体必须在同一热/时钟/页缓存
+状态下测；旧顺序里后跑的那个变体承担了前一个变体整块时间造成的漂移
+（`CONTRIBUTING.md` 的 Comparable measurements）。
+
+**提示词不加 nonce**：每个 rep 都是新进程，不存在跨 rep 的前缀缓存可复用；而两个变体的判据是
+**同一串 prompt ids**，逐 rep 加 nonce 会直接毁掉金标 ids 的对照。这一条在代码注释里写明。
+
+**结果**（`bench --case equiv-183k --reps 2`，`rk4v4`，提交 `0fcbe9fb`）：
+
+```
+equiv-183k/resident: rep 1/2 → rep 2/2
+equiv-183k/streamed: rep 1/2 → rep 2/2      （交错顺序在日志里可见）
+equiv-183k/resident: 106.8 tok/s, 37.1 ms/轮                  -> PASS
+equiv-183k/streamed: 85.4 tok/s, 46.6 ms/轮, 779.9 MiB/轮, 暴露 6.7 ms -> PASS
+campaign: 20261109T141717Z-bench-s24-interleave-0fcbe9fb -> PASS
+```
+
+两个变体都 PASS（逐位等价），数字与顺序跑时的 106.1 / 85.2 一致，说明交错没有改变结论，只改变了
+两臂的条件一致性。
+
+**顺带**：`tests/test_kv_stream_tool.py` 实际是 **11** 个用例（不是此前写的 12），在仓库根用
+`python -m pytest` 跑（CWD 进 sys.path 才能 `from tools.bench import …`）；主机上无 pytest 时可用
+`PYTHONPATH=. python3 tests/test_kv_stream_tool.py`，实测 `11/11 passed`。

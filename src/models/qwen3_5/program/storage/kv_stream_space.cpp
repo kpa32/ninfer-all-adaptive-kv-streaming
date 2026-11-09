@@ -30,34 +30,34 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     if (!cache.flat_slots()) {
         throw std::invalid_argument("A streamed KV space needs a cache planned with a flat pool");
     }
-    if (layers_ == 0 || split_.resident_pages == 0 || split_.run_pages == 0 ||
+    if (layers_ == 0 || split_.resident_pages() == 0 || split_.run_pages == 0 ||
         cache.max_context() == 0) {
         throw std::invalid_argument(
             "A streamed KV space needs layers, a window, runs and a context: layers=" +
-            std::to_string(layers_) + " resident=" + std::to_string(split_.resident_pages) +
+            std::to_string(layers_) + " resident=" + std::to_string(split_.resident_pages()) +
             " ring=" + std::to_string(split_.ring_pages) + " run=" +
             std::to_string(split_.run_pages) + " slots=" +
             std::to_string(cache.page_pool().capacity_pages()) + " context=" +
             std::to_string(cache.max_context()));
     }
     pages_per_layer_ = page_count(cache.max_context());
-    ring_base_       = layers_ * split_.resident_pages;
+    ring_base_       = split_.layer_offset(layers_);
     // Every slot of the pool belongs to this space for the cache's lifetime: the mapping names
     // slots, so nothing else may allocate, lend or release one.
     const std::uint32_t slot_count = cache.page_pool().capacity_pages();
     slot_count_                    = slot_count;
-    if (slot_count < kv_stream_pool_pages(split_, layers_)) {
+    if (slot_count < kv_stream_pool_pages(split_)) {
         throw std::invalid_argument(
             "A streamed KV pool is smaller than its split: slots=" + std::to_string(slot_count) +
-            " needs=" + std::to_string(kv_stream_pool_pages(split_, layers_)));
+            " needs=" + std::to_string(kv_stream_pool_pages(split_)));
     }
     // A layer reads its whole streamed extent in one call, so the ring must hold that extent -
     // otherwise the copy would overwrite slots the consumer has not read yet.
-    if (split_.ring_pages < pages_per_layer_ - split_.resident_pages) {
+    if (split_.ring_pages < pages_per_layer_ - split_.min_resident()) {
         throw std::invalid_argument(
             "A streamed KV ring cannot hold one layer's streamed pages: ring=" +
             std::to_string(split_.ring_pages) + " extent=" +
-            std::to_string(pages_per_layer_ - split_.resident_pages));
+            std::to_string(pages_per_layer_ - split_.min_resident()));
     }
     host_layout_ = plan_host_kv_page_layout(cache.page_pool().geometry());
     page_bytes_  = host_layout_.page_stride;
@@ -267,7 +267,7 @@ void StreamedKVSpace::begin_round(cudaStream_t compute) {
         if (rounds_ != 0) { close_round(); }
     }
     ++rounds_;
-    round_streamed_pages_ = window_start();
+    round_streamed_pages_ = max_streamed_pages();
     // The controller runs once per round, on the window that just closed: whether the boundary still
     // pays for itself is decided from measurement, never from the plan that started the run.
     (void)evaluate_partition(RankStreams(compute));
@@ -315,23 +315,22 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         return false;
     }
     KVStreamPartitionParams params;
-    params.total_pool_pages       = kv_stream_pool_pages(split_, layers_);
+    params.total_pool_pages       = kv_stream_pool_pages(split_);
     params.layers                 = layers_;
     params.active_pages_per_layer = active_;
-    // The least ring this layout can run with is one layer's whole streamed extent: a run sequence has
-    // to cover every page the layer reads in one call.
-    params.minimum_ring_pages =
-        active_ > split_.resident_pages ? active_ - split_.resident_pages : 0;
-    params.previous_resident_pages = split_.resident_pages;
+    // The least ring this layout can run with is the widest layer's whole streamed extent: a run
+    // sequence has to cover every page that layer reads in one call.
+    params.minimum_ring_pages      = max_streamed_pages();
+    params.previous_resident_pages = split_.resident_pages();
     params.previous_ring_pages     = split_.ring_pages;
     params.deadline_miss_ratio     = window_samples_ != 0
                                          ? static_cast<double>(window_misses_) /
                                                static_cast<double>(window_samples_)
                                          : 0.0;
     params.copy_engine_busy_ratio  = window_busy_;
-    // The ring holds the runs of one layer's extent, so its peak occupancy is that extent over its size.
     params.ring_peak_occupancy_ratio = kv_stream_ring_peak_ratio(
-        window_start() < split_.ring_pages ? window_start() : split_.ring_pages, split_.ring_pages);
+        max_streamed_pages() < split_.ring_pages ? max_streamed_pages() : split_.ring_pages,
+        split_.ring_pages);
     params.starved_evaluations           = starved_evaluations_;
     params.overprovisioned_evaluations   = overprovisioned_evaluations_;
     params.evaluations_since_repartition = evaluations_since_repartition_;
@@ -345,17 +344,15 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
         if (evaluations_since_repartition_ != UINT32_MAX) { ++evaluations_since_repartition_; }
         return false;
     }
-    // The controller answers in slots; the split is re-sized with that ring, keeping the ratio the
-    // planner derives the window from (kv_stream_layout.h).
-    const std::uint32_t streamed = window_start();
-    const double ratio = streamed == 0
-                             ? 1.0
-                             : static_cast<double>(decision.ring_pages) /
-                                   static_cast<double>(streamed);
-    const auto next = resize_kv_stream_split(split_, slot_count_, active_, layers_,
-                                             ratio < 1.0 ? 1.0 : ratio);
-    if (!next || (next->resident_pages == split_.resident_pages &&
-                  next->ring_pages == split_.ring_pages)) {
+    // The controller answers in slots for a uniform window; the planner turns that ring into the split
+    // the pool can actually build at this context, which may concentrate the streams into fewer layers
+    // (kv_stream_layout.h).
+    const std::uint32_t streamed = std::max(max_streamed_pages(), 1U);
+    double ratio = static_cast<double>(decision.ring_pages) / static_cast<double>(streamed);
+    if (!(ratio >= 1.0)) { ratio = 1.0; }
+    const auto next = resize_kv_stream_split(split_, slot_count_, active_, ratio);
+    if (!next) { return false; }
+    if (next->layer_resident == split_.layer_resident && next->ring_pages == split_.ring_pages) {
         return false;
     }
     repartition(*next, streams);
@@ -364,36 +361,39 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
 }
 
 void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams) {
-    if (next.run_pages == 0 || next.resident_pages > pages_per_layer_ ||
-        next.resident_pages > active_) {
-        throw std::invalid_argument("A streamed KV partition is out of range");
+    if (next.run_pages == 0 || next.layers() != layers_) {
+        throw std::invalid_argument("A streamed KV partition does not match the cache's layers");
     }
-    if (kv_stream_pool_pages(next, layers_) > slot_count_) {
+    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+        if (next.resident_of(layer) > pages_per_layer_ || next.resident_of(layer) > active_) {
+            throw std::invalid_argument("A streamed KV partition window is out of range");
+        }
+    }
+    if (kv_stream_pool_pages(next) > slot_count_) {
         throw std::invalid_argument("A streamed KV partition exceeds the pool");
     }
-    const std::uint32_t next_window_start =
-        active_ > next.resident_pages ? active_ - next.resident_pages : 0;
-    if (next.ring_pages < next_window_start) {
+    if (next.ring_pages < max_streamed_pages(next)) {
         throw std::invalid_argument("A streamed KV partition's ring cannot hold a layer's stream");
     }
-    if (next.resident_pages == split_.resident_pages && next.ring_pages == split_.ring_pages) {
+    if (next.layer_resident == split_.layer_resident && next.ring_pages == split_.ring_pages) {
         return;
     }
-    const std::uint32_t old_window_start = window_start();
     // A page keeps its bytes where they are and changes only the slot it is named by, except the pages
-    // that cross the boundary: those are written back to or read from their host record, which is the
-    // one source both sides agree on.
+    // that cross a window boundary: those are written back to or read from their host record, which is
+    // the one source both sides agree on.
     for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+        const std::uint32_t old_start = kv_stream_window_start(active_, split_, layer);
+        const std::uint32_t new_start = kv_stream_window_start(active_, next, layer);
         for (std::uint32_t page = 0; page < active_; ++page) {
-            const bool was_streamed = page < old_window_start;
-            const bool now_streamed = page < next_window_start;
+            const bool was_streamed = page < old_start;
+            const bool now_streamed = page < new_start;
+            const std::int32_t new_slot = kv_stream_window_slot(layer, page, next);
             if (was_streamed && !now_streamed) {
                 // The page becomes resident: its bytes come back from the authority into the slot its
                 // window position names.
                 cache_->page_pool().copy_from_host_pages(
-                    host_pages(layer).subview(page, 1).data(), host_layout_,
-                    kv_stream_window_slot(layer, page, next), 1, streams);
-                publish_slot(layer, page, kv_stream_window_slot(layer, page, next), streams);
+                    host_pages(layer).subview(page, 1).data(), host_layout_, new_slot, 1, streams);
+                publish_slot(layer, page, new_slot, streams);
             } else if (!was_streamed && now_streamed) {
                 // The page leaves the window: its bytes must reach the host before the slot it held
                 // stops being its own, exactly as a page the frontier drops does. Its streamed slot is
@@ -404,12 +404,12 @@ void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams
             } else if (!was_streamed && !now_streamed) {
                 // Both partitions keep the page resident, but the window's shape changed, so the slot
                 // it is named by did too.
-                publish_slot(layer, page, kv_stream_window_slot(layer, page, next), streams);
+                publish_slot(layer, page, new_slot, streams);
             }
         }
     }
     split_     = next;
-    ring_base_ = layers_ * split_.resident_pages;
+    ring_base_ = split_.layer_offset(layers_);
     // The runs no longer hold what they claimed: their slots are re-assigned by this round's copies.
     ring_runs_ = kv_stream_ring_runs(split_);
     run_used_.assign(ring_runs_, 0);
@@ -423,12 +423,11 @@ void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams
         CUDA_CHECK(cudaEventRecord(dropped_[layer], streams[0]));
     }
 }
-
 std::uint32_t StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
     if (copy == nullptr) { throw std::invalid_argument("A streamed KV upload needs a copy stream"); }
-    const std::uint32_t streamed = window_start();
-    const std::uint32_t runs     = kv_stream_runs_per_layer(active_, split_);
+    const std::uint32_t streamed = window_start(layer);
+    const std::uint32_t runs     = kv_stream_runs_of_layer(active_, split_, layer);
     layer_first_run_[layer]      = run_cursor_;
     layer_runs_[layer]           = runs;
     if (runs == 0) {
@@ -546,7 +545,7 @@ std::uint32_t StreamedKVSpace::first_run(std::uint32_t layer) const {
 
 std::uint32_t StreamedKVSpace::slot_of_page(std::uint32_t layer, std::uint32_t page) const {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
-    if (page >= window_start()) {
+    if (page >= window_start(layer)) {
         return static_cast<std::uint32_t>(kv_stream_window_slot(layer, page, split_));
     }
     const std::uint32_t run = (layer_first_run_[layer] + page / split_.run_pages) % ring_runs_;
@@ -564,10 +563,11 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
         // The page appears in its layer's window, where this round's append writes it.
         for (std::uint32_t layer = 0; layer < layers_; ++layer) {
             publish_slot(layer, page, kv_stream_window_slot(layer, page, split_), streams);
-            if (page < split_.resident_pages) { continue; }
+            const std::uint32_t resident = split_.resident_of(layer);
+            if (page < resident) { continue; }
             // The window is full, so the page it drops leaves the device: its bytes reach the host
             // first, and this round's copy names its streamed slot when it brings it back.
-            const std::uint32_t dropped = page - split_.resident_pages;
+            const std::uint32_t dropped = page - resident;
             cache_->page_pool().copy_to_host_pages(
                 kv_stream_window_slot(layer, dropped, split_), 1, host_pages(layer).subview(dropped, 1),
                 streams);
@@ -585,7 +585,7 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
 StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
     if (report_) { collect_timings(); }
     TransferStats out;
-    out.resident_pages  = split_.resident_pages;
+    out.resident_pages  = split_.min_resident();
     out.streamed_pages  = round_streamed_pages_;
     out.layers          = layers_;
     out.ring_runs       = ring_runs_;

@@ -55,8 +55,7 @@ public:
     // Runs one layer's streamed pages take at the current context, and the pages a run covers.
     [[nodiscard]] std::uint32_t runs_per_layer() const noexcept {
         return kv_stream_runs_per_layer(active_, split_);
-    }
-    [[nodiscard]] std::uint32_t run_pages() const noexcept { return split_.run_pages; }
+    }    [[nodiscard]] std::uint32_t run_pages() const noexcept { return split_.run_pages; }
     // Runs the ring holds, which is how far ahead of the attending layer a copy may run.
     [[nodiscard]] std::uint32_t ring_runs() const noexcept { return ring_runs_; }
 
@@ -72,8 +71,30 @@ public:
     // Pages the tables describe, and where the resident window currently starts.
     [[nodiscard]] std::uint32_t active_pages() const noexcept { return active_; }
 
+    // The narrowest window any streaming layer keeps: a round is described by its largest streamed
+    // extent, so the reported numbers use the layer that streams most.
     [[nodiscard]] std::uint32_t window_start() const noexcept {
-        return kv_stream_window_start(active_, split_);
+        return kv_stream_window_start(active_, split_, 0);
+    }
+
+    // The same for one layer, whose window may be wider when a round concentrates its streams.
+    [[nodiscard]] std::uint32_t window_start(std::uint32_t layer) const noexcept {
+        return kv_stream_window_start(active_, split_, layer);
+    }
+
+    // Pages any layer streams at the current context - the widest streamed extent, which is what the
+    // ring has to hold.
+    [[nodiscard]] std::uint32_t max_streamed_pages() const noexcept {
+        return max_streamed_pages(split_);
+    }
+
+    [[nodiscard]] std::uint32_t max_streamed_pages(const KVStreamSplit& of) const noexcept {
+        std::uint32_t most = 0;
+        for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+            const std::uint32_t streamed = kv_stream_window_start(active_, of, layer);
+            if (streamed > most) { most = streamed; }
+        }
+        return most;
     }
 
     // Host pages of one layer: page `p` is record `p` of this view, so a caller can copy a run of

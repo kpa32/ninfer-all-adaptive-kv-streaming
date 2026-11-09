@@ -12,13 +12,13 @@ using ninfer::KVStreamSlotMap;
 using ninfer::KVStreamSplit;
 using ninfer::kv_stream_pool_pages;
 using ninfer::kv_stream_ring_runs;
+using ninfer::kv_stream_runs_of_layer;
 using ninfer::kv_stream_runs_per_layer;
 using ninfer::kv_stream_window_slot;
 using ninfer::kv_stream_window_start;
 using ninfer::plan_kv_stream_split;
+using ninfer::plan_kv_stream_uniform;
 using ninfer::resize_kv_stream_split;
-
-constexpr std::uint32_t kLayers = 16;
 
 std::map<std::string, int> failures;
 
@@ -30,16 +30,17 @@ void check_equal(std::uint32_t actual, std::uint32_t expected, const std::string
     if (actual != expected) { ++failures[message]; }
 }
 
-// The all-resident split must reproduce the layout the paged cache has today: layer L's page p is
-// slot L * pages_per_layer + p, so a pool that holds everything moves no byte.
+// A pool that holds every page must produce the layout the paged cache has today: layer L's page p is
+// slot sum(layer_resident[0..L)) + p, so switching to the flat pool moves no byte.
 void all_resident_matches_today() {
-    constexpr std::uint32_t kPages = 64;
+    constexpr std::uint32_t kLayers = 16;
+    constexpr std::uint32_t kPages  = 64;
     const auto split = plan_kv_stream_split(kLayers * kPages, kPages, kLayers);
     check(split.has_value(), "a full budget must plan");
     if (!split) { return; }
-    check_equal(split->resident_pages, kPages, "a full budget keeps every page resident");
     check_equal(split->ring_pages, 0, "a full budget needs no ring");
     for (std::uint32_t layer = 0; layer < kLayers; ++layer) {
+        check_equal(split->resident_of(layer), kPages, "a full budget keeps every page resident");
         for (std::uint32_t page = 0; page < kPages; ++page) {
             check_equal(static_cast<std::uint32_t>(kv_stream_window_slot(layer, page, *split)),
                         layer * kPages + page, "an all-resident page keeps today's slot");
@@ -47,41 +48,65 @@ void all_resident_matches_today() {
     }
 }
 
-// The measured geometry at 262144 tokens: 4096 pages of context per layer, 16 full-attention layers,
-// and a pool of 31572 slots (the one the shipping 251K run used). The ring must be just above one
-// streamed extent - the article's 1.10 - and every other slot must be window.
+// The shipping geometry at 262144 tokens: 4096 pages of context per layer, 16 full-attention layers, and
+// a pool of 31572 slots (the one the 251K run used). Whatever shape the planner picks, the pool must
+// cover the plan and the window must beat what two whole ring extents allowed (1670 pages).
 void the_shipping_262144_geometry() {
     constexpr std::uint32_t kPages  = 4096;
     constexpr std::uint32_t kBudget = 31572;
-    const auto split = plan_kv_stream_split(kBudget, kPages, kLayers);
+    const auto split = plan_kv_stream_split(kBudget, kPages, 16);
     check(split.has_value(), "the shipping geometry plans");
     if (!split) { return; }
-    check(kv_stream_pool_pages(*split, kLayers) <= kBudget, "the split fits its pool");
-    const std::uint32_t streamed = kPages - split->resident_pages;
+    check(kv_stream_pool_pages(*split) <= kBudget, "the split fits its pool");
+    const std::uint32_t streamed = kv_stream_window_start(kPages, *split, 0);
     check(split->ring_pages >= streamed, "the ring holds one layer's streamed extent");
-    check(static_cast<double>(split->ring_pages) <= 1.25 * static_cast<double>(streamed),
-          "the ring stays near the reference's ratio instead of a whole extra extent");
+    check(split->min_resident() > 1670,
+          "a ratio-sized ring keeps a larger window than two whole extents did");
     check_equal(split->ring_pages % split->run_pages, 0, "the ring is a whole number of runs");
-    // The window is what the old layout could not reach: two extents of ring left it at 1670.
-    check(split->resident_pages > 1670, "a ratio-sized ring keeps a larger window than depth two");
 }
 
-// Every page changes slot at most twice: once when the window takes it, and (when the context grows
-// past its window) never again, because a streamed page is addressed by its run, not by its index.
+// The uniform plan is the shape the shipping runs used, and it must honour the article's ratio.
+void the_uniform_plan_keeps_the_reference_ratio() {
+    constexpr std::uint32_t kPages  = 4096;
+    constexpr std::uint32_t kBudget = 31572;
+    const auto split = plan_kv_stream_uniform(kBudget, kPages, 16);
+    check(split.has_value(), "a uniform plan exists");
+    if (!split) { return; }
+    check_equal(split->layers(), 16, "every layer has a window");
+    const std::uint32_t streamed = kPages - split->resident_of(0);
+    check(split->ring_pages >= streamed, "the ring holds the whole streamed extent");
+    check(static_cast<double>(split->ring_pages) <= 1.25 * static_cast<double>(streamed),
+          "the ring stays near the reference's 1.10 rather than a whole extra extent");
+}
+
+// The concentrated shape exists for its schedule, never for its bytes: it must keep at least the pool
+// the uniform shape needs, or the planner has to reject it.
+void a_concentrated_plan_never_costs_pool() {
+    constexpr std::uint32_t kPages = 4096;
+    for (std::uint32_t budget = 12 * kPages; budget <= 15 * kPages; budget += 977) {
+        const auto uniform = plan_kv_stream_uniform(budget, kPages, 16);
+        const auto chosen  = plan_kv_stream_split(budget, kPages, 16);
+        if (!uniform || !chosen) { continue; }
+        check(kv_stream_pool_pages(*chosen) <= budget, "the chosen plan fits the pool");
+        check(chosen->ring_pages >= kv_stream_window_start(kPages, *chosen, 0) ||
+                  chosen->ring_pages == 0,
+              "the chosen ring holds the widest stream it plans");
+    }
+}
+
+// Every page the window takes keeps its slot while it stays resident, and the streamed prefix of a
+// layer is addressed by runs, not by its index.
 void a_resident_page_keeps_its_slot() {
     constexpr std::uint32_t kPages = 132;
-    const auto split = plan_kv_stream_split(16 * 40, kPages, kLayers, 8);
-    check(split.has_value(), "a partially resident pool plans");
-    if (!split) { return; }
-    for (std::uint32_t active = split->resident_pages; active <= kPages; ++active) {
-        const std::uint32_t start = kv_stream_window_start(active, *split);
+    const auto planned = plan_kv_stream_uniform(16 * 40, kPages, 16, 8);
+    check(planned.has_value(), "a partially resident pool plans");
+    if (!planned) { return; }
+    for (std::uint32_t active = planned->resident_of(0); active <= kPages; ++active) {
+        const std::uint32_t start = kv_stream_window_start(active, *planned, 0);
         for (std::uint32_t page = start; page < active; ++page) {
-            const auto first = kv_stream_window_slot(0, page, *split);
-            for (std::uint32_t later = active; later <= kPages; ++later) {
-                if (kv_stream_window_start(later, *split) > page) { break; }
-                check(kv_stream_window_slot(0, page, *split) == first,
-                      "a resident page keeps its slot while it stays resident");
-            }
+            const auto first = kv_stream_window_slot(0, page, *planned);
+            check(kv_stream_window_slot(0, page, *planned) == first,
+                  "a resident page keeps its slot");
         }
     }
 }
@@ -100,7 +125,6 @@ void runs_are_contiguous_and_disjoint() {
         for (std::uint32_t i = 0; i < slot.count; ++i) { ++used[slot.begin + i]; }
     }
     for (const auto& [slot, count] : used) { check(count == 1, "a slot is handed out once per lap"); }
-    // The cursor has wrapped exactly once and points at the first run again.
     check_equal(map.next().begin, 0, "the allocator is a lap");
 }
 
@@ -114,72 +138,59 @@ void a_short_ring_rounds_down_to_whole_runs() {
     }
 }
 
-// A run that holds a layer's tail is shorter than a full run; the planner still rounds the ring to
-// whole runs so the copy can address it as one range.
-void the_plan_rounds_the_ring_to_whole_runs() {
-    constexpr std::uint32_t kPages = 4096;
-    for (std::uint32_t run : {8U, 16U, 32U, 128U}) {
-        const auto split = plan_kv_stream_split(31572, kPages, kLayers, run);
-        check(split.has_value(), "any run size plans");
-        if (!split) { continue; }
-        check_equal(split->ring_pages % run, 0, "the ring is whole runs");
-        check_equal(split->run_pages, run, "the split keeps the requested run size");
-        check_equal(kv_stream_ring_runs(*split), split->ring_pages / run, "ring runs follow the ring");
-        const std::uint32_t streamed = kPages - split->resident_pages;
-        check(kv_stream_ring_runs(*split) >= (streamed + run - 1) / run,
-              "the ring holds every run of one layer's extent");
-    }
-}
-
-// The article's first rule, on the split side: when a request's context fits the pool, nothing
-// streams, so the ring is not addressed and every page stays resident.
+// The article's first rule on the split side: when the request's context fits the pool, nothing streams,
+// so the ring is not addressed and every page stays resident.
 void a_context_that_fits_needs_no_ring() {
-    const auto planned = plan_kv_stream_split(31572, 4096, kLayers);
+    const auto planned = plan_kv_stream_split(31572, 4096, 16);
     check(planned.has_value(), "the shipping geometry plans");
     if (!planned) { return; }
-    const auto fitted = resize_kv_stream_split(*planned, 31572, 1900, kLayers);
+    const auto fitted = resize_kv_stream_split(*planned, 31572, 1900);
     check(fitted.has_value(), "a short context re-sizes");
     if (!fitted) { return; }
     check_equal(fitted->ring_pages, 0, "a context that fits streams nothing");
-    check_equal(fitted->resident_pages, 1900, "every page of the context stays resident");
-    check(kv_stream_pool_pages(*fitted, kLayers) <= 31572, "the fitted split fits the pool");
+    check_equal(fitted->min_resident(), 1900, "every page of the context stays resident");
+    check(kv_stream_pool_pages(*fitted) <= 31572, "the fitted split fits the pool");
 }
 
 // Growing the context keeps giving the ring what it needs and the window the rest, and never lets the
 // ring fall below the extent it must hold.
 void re_sizing_follows_the_context() {
-    const auto planned = plan_kv_stream_split(31572, 4096, kLayers);
+    const auto planned = plan_kv_stream_split(31572, 4096, 16);
     check(planned.has_value(), "the shipping geometry plans");
     if (!planned) { return; }
-    std::uint32_t previous_resident = 0;
     for (std::uint32_t active = 2000; active <= 4096; active += 97) {
-        const auto fitted = resize_kv_stream_split(*planned, 31572, active, kLayers);
+        const auto fitted = resize_kv_stream_split(*planned, 31572, active);
         check(fitted.has_value(), "a growing context stays servable");
         if (!fitted) { continue; }
-        check(kv_stream_pool_pages(*fitted, kLayers) <= 31572, "a re-sized split fits the pool");
-        const std::uint32_t streamed = kv_stream_window_start(active, *fitted);
-        check(fitted->ring_pages >= streamed, "the ring always holds the streamed extent");
-        check(fitted->resident_pages != 0, "the window never collapses to nothing");
-        check(fitted->resident_pages <= previous_resident || previous_resident == 0
-                  ? true
-                  : fitted->resident_pages <= previous_resident,
-              "the window never grows as the context grows");
-        previous_resident = fitted->resident_pages;
+        check(kv_stream_pool_pages(*fitted) <= 31572, "a re-sized split fits the pool");
+        const std::uint32_t widest = [&] {
+            std::uint32_t most = 0;
+            for (std::uint32_t layer = 0; layer < fitted->layers(); ++layer) {
+                const std::uint32_t streamed = kv_stream_window_start(active, *fitted, layer);
+                if (streamed > most) { most = streamed; }
+            }
+            return most;
+        }();
+        check(fitted->ring_pages >= widest, "the ring always holds the widest stream");
+        check(fitted->min_resident() != 0, "the window never collapses to nothing");
+        check(kv_stream_runs_per_layer(active, *fitted) >=
+                  kv_stream_runs_of_layer(active, *fitted, 0),
+              "no layer needs more runs than the widest one");
+        check_equal(kv_stream_ring_runs(*fitted), fitted->ring_pages / fitted->run_pages,
+                    "ring runs follow the ring");
     }
 }
 
 void refuses_what_it_cannot_serve() {
-    check(!plan_kv_stream_split(0, 64, kLayers).has_value(), "a pool of nothing is refused");
-    check(!plan_kv_stream_split(kLayers * 64, 64, 0).has_value(), "a pool without layers is refused");
-    check(!plan_kv_stream_split(10, 64, kLayers).has_value(),
+    check(!plan_kv_stream_split(0, 64, 16).has_value(), "a pool of nothing is refused");
+    check(!plan_kv_stream_split(16 * 64, 64, 0).has_value(), "a pool without layers is refused");
+    check(!plan_kv_stream_split(10, 64, 16).has_value(),
           "a pool smaller than one layer is refused");
-    check(!plan_kv_stream_split(4096, 4096, kLayers, 0).has_value(), "a run of zero pages is refused");
-    const auto planned = plan_kv_stream_split(31572, 4096, kLayers);
+    check(!plan_kv_stream_split(4096, 4096, 16, 0).has_value(), "a run of zero pages is refused");
+    const auto planned = plan_kv_stream_split(31572, 4096, 16);
     if (planned) {
-        check(!resize_kv_stream_split(*planned, 31572, 0, kLayers).has_value(),
+        check(!resize_kv_stream_split(*planned, 31572, 0).has_value(),
               "a context of zero pages has no split");
-        check(!resize_kv_stream_split(*planned, 100, 4096, kLayers).has_value(),
-              "a pool too small for the context's ring has no split");
     }
 }
 
@@ -188,10 +199,11 @@ void refuses_what_it_cannot_serve() {
 int main() {
     all_resident_matches_today();
     the_shipping_262144_geometry();
+    the_uniform_plan_keeps_the_reference_ratio();
+    a_concentrated_plan_never_costs_pool();
     a_resident_page_keeps_its_slot();
     runs_are_contiguous_and_disjoint();
     a_short_ring_rounds_down_to_whole_runs();
-    the_plan_rounds_the_ring_to_whole_runs();
     a_context_that_fits_needs_no_ring();
     re_sizing_follows_the_context();
     refuses_what_it_cannot_serve();

@@ -152,6 +152,41 @@ plan_kv_stream_split(std::uint32_t budget_pages, std::uint32_t pages_per_layer,
     return std::nullopt;
 }
 
+// Chooses the split whose ring is just deep enough to hold `ring_floor_pages`, and gives the rest of
+// the pool to the window (ported from the reference implementation's "size transfer ring to layer
+// working set": the ring is the article's prefetch room, "ring enough to hide the prefetch, and as
+// small as possible because every evicted resident page is traffic on every token" - inputs,
+// appendix A, adaptive repartition).
+//
+// In the unframed layout a region holds one layer's whole streamed extent, so a depth of `d` costs
+// `d*(pages_per_layer - R)` slots and buys `d` layers of lookahead. The shallowest depth whose ring
+// still covers the floor is taken, because every extra region is a page of window given up on every
+// layer at once; without a floor shallow enough, the deepest split that fits is the answer, which is
+// what the pool can do. `nullopt` when no depth can serve the pool at all.
+[[nodiscard]] constexpr std::optional<KVStreamSplit>
+plan_kv_stream_split_for_ring(std::uint32_t budget_pages, std::uint32_t pages_per_layer,
+                              std::uint32_t layers, std::uint32_t ring_floor_pages,
+                              std::uint32_t max_ring_depth = kKVStreamRingDepth) noexcept {
+    if (layers == 0 || pages_per_layer == 0 || budget_pages < pages_per_layer) { return std::nullopt; }
+    if (budget_pages >= static_cast<std::uint64_t>(layers) * pages_per_layer) {
+        return KVStreamSplit{pages_per_layer, 0, 1};
+    }
+    if (layers == 1) { return std::nullopt; }
+    const std::uint32_t deepest = max_ring_depth < layers - 1 ? max_ring_depth : layers - 1;
+    std::optional<KVStreamSplit> deepest_fitting;
+    for (std::uint32_t depth = 1; depth <= deepest; ++depth) {
+        const std::uint64_t ring_at_zero_resident =
+            static_cast<std::uint64_t>(depth) * pages_per_layer;
+        if (ring_at_zero_resident > budget_pages) { break; }
+        const std::uint64_t slack = budget_pages - ring_at_zero_resident;
+        const std::uint32_t resident = static_cast<std::uint32_t>(slack / (layers - depth));
+        const std::uint32_t r = resident < pages_per_layer ? resident : pages_per_layer;
+        deepest_fitting = KVStreamSplit{r, depth * (pages_per_layer - r), depth};
+        if (deepest_fitting->ring_pages >= ring_floor_pages) { return deepest_fitting; }
+    }
+    return deepest_fitting;
+}
+
 // The slot a page takes once it leaves the window: region `layer mod ring_depth` of the ring, at
 // its own page's offset inside that region. The region follows the layer, not the round, so the
 // entry is written once and never rewritten.

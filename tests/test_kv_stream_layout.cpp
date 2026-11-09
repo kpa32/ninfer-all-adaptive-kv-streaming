@@ -98,6 +98,52 @@ void a_page_changes_slot_at_most_twice() {
     }
 }
 
+using ninfer::plan_kv_stream_split_for_ring;
+
+// The ring is the article's prefetch room: just deep enough to hold the working-set floor, and every
+// spare slot belongs to the window. With a floor of zero the shallowest depth wins, which is the
+// largest window the pool can hold at all.
+void a_ring_floor_trades_lookahead_for_window() {
+    constexpr std::uint32_t kLayers = 16;
+    constexpr std::uint32_t kPages  = 128;
+    const std::uint32_t budget      = 1200;
+
+    const auto shallow = plan_kv_stream_split_for_ring(budget, kPages, kLayers, 0);
+    check(shallow.has_value(), "a pool that holds a layer must plan a ring-floor split");
+    if (shallow) {
+        check(shallow->ring_depth == 1, "a floor of zero takes the shallowest ring");
+        check(kv_stream_pool_pages(*shallow, kLayers) <= budget,
+              "a ring-floor split never exceeds its budget");
+        const std::uint32_t streamed = kPages - shallow->resident_pages;
+        check(shallow->ring_pages == streamed, "a depth-one ring holds one streamed extent");
+    }
+
+    // A floor that one region cannot cover must buy a second region, and pay for it in window.
+    const std::uint32_t one_region = shallow ? shallow->ring_pages : 0;
+    const auto deep = plan_kv_stream_split_for_ring(budget, kPages, kLayers, one_region + 1);
+    check(deep.has_value(), "a deeper floor still plans");
+    if (shallow && deep) {
+        check(deep->ring_depth == 2, "a floor beyond one region takes two");
+        check(deep->ring_pages >= one_region + 1, "the deeper ring covers its floor");
+        check(deep->resident_pages <= shallow->resident_pages,
+              "lookahead is bought with window, never with pool");
+        check(kv_stream_pool_pages(*deep, kLayers) <= budget, "the deeper split still fits");
+    }
+
+    // No depth can hold a floor larger than the whole pool: the deepest split that fits is the
+    // answer, because refusing to run would leave the context unserved.
+    const auto unreachable = plan_kv_stream_split_for_ring(budget, kPages, kLayers, 100000);
+    check(unreachable.has_value(), "an unreachable floor still yields the deepest fitting split");
+    if (unreachable) {
+        check(unreachable->ring_depth >= 1, "the deepest fitting split has a ring");
+        check(kv_stream_pool_pages(*unreachable, kLayers) <= budget, "and it fits the pool");
+    }
+
+    // A pool that cannot hold one layer's pages has no split, floor or not.
+    check(!plan_kv_stream_split_for_ring(kPages - 1, kPages, kLayers, 0).has_value(),
+          "a pool smaller than one layer is refused");
+}
+
 void slots_stay_inside_their_regions() {
     constexpr std::uint32_t kLayers = 16;
     constexpr std::uint32_t kPages  = 96;
@@ -257,6 +303,7 @@ int main() {
     all_resident_matches_today();
     the_measured_262144_split();
     a_page_changes_slot_at_most_twice();
+    a_ring_floor_trades_lookahead_for_window();
     slots_stay_inside_their_regions();
     a_framed_ring_rotates_through_the_streamed_pages();
     refuses_what_it_cannot_serve();

@@ -165,6 +165,23 @@ CASES: dict[str, Case] = {
         oracle="self",
         require_full_generation=True,
     ),
+    # The same shape with a long enough decode that the one-time costs - the pool's first layout
+    # experiment, the first round's warm-up - are a rounding error. A 64-token decode reports a
+    # median that hides them and a mean that over-weights them; this case is what a session sees.
+    "stream-251k-steady": Case(
+        name="stream-251k-steady",
+        purpose=(
+            "Steady-state 251 K decode: 512 tokens, so the first-round and first-experiment costs "
+            "amortise the way they do in a session."
+        ),
+        kind="perf",
+        target_tokens=251_000,
+        capacity=262_144,
+        max_new=512,
+        variants=("streamed",),
+        oracle="self",
+        require_full_generation=True,
+    ),
     "resident-8k": Case(
         name="resident-8k",
         purpose="Card-speed reference: the same shape without streaming, to price the streamed path.",

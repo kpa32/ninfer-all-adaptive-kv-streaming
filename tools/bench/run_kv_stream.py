@@ -287,6 +287,24 @@ CASES: dict[str, Case] = {
         oracle="self",
         require_full_generation=True,
     ),
+    # SPEC completion condition 3: the all-resident path at 120 K must not be slower than the
+    # measured 109.1 tok/s / 15 632 MiB that this card served before streaming existed. It is the one
+    # point of the delivery whose record did not exist; 100 K and 150 K bracket it but cannot stand
+    # in for it, because a streamed run whose pool holds the context is not the same question as an
+    # all-resident run.
+    "resident-120k": Case(
+        name="resident-120k",
+        purpose="SPEC condition 3: 120 K all-resident at 109.1 tok/s or better, on 15 632 MiB or less.",
+        kind="perf",
+        target_tokens=120_000,
+        capacity=122_880,
+        max_new=512,
+        variants=("resident",),
+        resident_flags=("--kv-headroom-mib", "16"),
+        oracle="self",
+        require_full_generation=True,
+        kv_dtype="rk8v4",
+    ),
     # The speculative arm of the 251 K comparison: one flag apart from stream-251k, because the
     # n-gram copier would otherwise hide what the drafter itself accepts.
     "spec-251k-none": Case(

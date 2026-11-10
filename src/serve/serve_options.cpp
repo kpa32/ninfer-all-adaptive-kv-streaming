@@ -259,7 +259,16 @@ std::string serve_usage_text(const char* argv0) {
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            "); alias --vram-headroom-mib\n"
            "  --kv-dtype T                  KV storage: bf16 (default), int8, fp8, rk8v4,\n"
-           "                                rk4v4, rk4v4-e8, rk2v4-e8, nvfp4 or k8v4\n" +
+           "                                rk4v4, rk4v4-e8, rk2v4-e8, nvfp4 or k8v4\n"
+           "  --kv-stream                   keep each full-attention layer's newest pages\n"
+           "                                on the device and stream the rest from pinned\n"
+           "                                host memory every round, so a 16 GB card serves\n"
+           "                                a context its pool cannot hold. One sequence at\n"
+           "                                a time and --kv-capacity auto; drops prefix\n"
+           "                                reuse. Defaults --embedding-residency host and\n"
+           "                                MTP's adaptive width\n"
+           "  --kv-stream-report            time the streaming loop's copies and the compute\n"
+           "                                their waits exposed, per round\n" +
            std::string(product::kKvResidentHelp) +
            "\n"
            "CONTEXT CACHE\n"
@@ -638,6 +647,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     bool long_anchor_spacing_explicit = false;
     bool ngram_width_explicit         = false;
     bool spec_explicit                = false;
+    bool embedding_explicit           = false;
+    bool draft_tokens_explicit        = false;
+    bool mtp_policy_explicit          = false;
     bool vision_max_merged_explicit   = false;
     std::optional<std::size_t> kv_headroom_mib;
     // Last flag seen that belongs to only one prefix-cache mode, for the cross-mode error.
@@ -710,6 +722,14 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         if (arg == "--kv-capacity") {
             options.kv_capacity  = parse_kv_capacity(require_value("--kv-capacity"));
             kv_capacity_explicit = true;
+            continue;
+        }
+        if (arg == "--kv-stream") {
+            options.kv_stream = true;
+            continue;
+        }
+        if (arg == "--kv-stream-report") {
+            options.kv_stream_report = true;
             continue;
         }
         if (arg == "--kv-headroom-mib" || arg == "--vram-headroom-mib") {
@@ -1214,6 +1234,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         if (arg == "--draft-tokens") {
             options.speculative.draft_tokens = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--draft-tokens"), "draft-tokens"));
+            draft_tokens_explicit = true;
             continue;
         }
         if (arg == "--draft-min-p") {
@@ -1400,6 +1421,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         }
         if (arg == "--adaptive-mtp") {
             options.speculative.mtp_policy = MtpDraftPolicy::Adaptive;
+            mtp_policy_explicit            = true;
             continue;
         }
         if (arg == "--mtp-attention-window") {
@@ -1418,6 +1440,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         }
         if (arg == "--embedding-residency") {
             const std::string residency = require_value("--embedding-residency");
+            embedding_explicit          = true;
             if (residency == "device") {
                 options.embedding_residency = EmbeddingResidency::Device;
             } else if (residency == "host") {
@@ -1801,6 +1824,41 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         options.context_cache.enabled                = false;
         options.context_cache.host_state_slots       = 0;
         options.context_cache.host_kv_capacity_bytes = 0;
+    }
+    // One sequence owns the streamed ring, so a served run of it is a single-lane run: the queue may
+    // still hold several requests, but the ring is only ever one request's. Prefix reuse keeps
+    // context for another request, which is the same ring's antagonist, so it is dropped here rather
+    // than rejected - a streamed run has nothing to reuse it with.
+    if (options.kv_stream) {
+        if (options.max_concurrency != 1) {
+            throw std::invalid_argument(
+                "--kv-stream serves one sequence at a time: pass --max-concurrency 1");
+        }
+        if (options.kv_capacity.mode != KvCapacityMode::Automatic) {
+            throw std::invalid_argument(
+                "--kv-stream sizes its KV pool from free memory: pass --kv-capacity auto");
+        }
+        if (options.devices.size() > 1) {
+            throw std::invalid_argument("--kv-stream runs on one device");
+        }
+        options.allow_prefix_reuse                   = false;
+        options.context_cache.enabled                = false;
+        options.context_cache.host_state_slots       = 0;
+        options.context_cache.host_kv_capacity_bytes = 0;
+        // The same defaults the CLI applies: a streamed run is bounded by its pool, so the embedding
+        // table and MTP's adaptive width all move bytes into the window. An explicit flag wins.
+        if (!embedding_explicit) {
+            options.embedding_residency = EmbeddingResidency::Host;
+        }
+        if (!spec_explicit) {
+            options.speculative.backend = SpeculativeBackend::Mtp;
+        }
+        if (options.speculative.backend == SpeculativeBackend::Mtp) {
+            if (!draft_tokens_explicit) { options.speculative.draft_tokens = 5; }
+            if (!mtp_policy_explicit) {
+                options.speculative.mtp_policy = MtpDraftPolicy::Adaptive;
+            }
+        }
     }
     if (options.context_cache.disk_kv_path.empty() &&
         (options.context_cache.disk_kv_restore || options.context_cache.disk_kv_directstorage ||

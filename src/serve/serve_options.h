@@ -50,6 +50,11 @@ struct ServeOptions {
     std::uint32_t max_context          = 8192;
     KvCapacityPolicy kv_capacity       = KvCapacityPolicy::explicit_capacity(8192);
     std::optional<std::size_t> kv_headroom_mib;
+    // The single-sequence streamed mode and its per-round timing report (kv-streaming-design.md).
+    // The ring is one sequence's resource, so this mode forces max_concurrency 1, an automatic pool
+    // and no prefix reuse.
+    bool kv_stream                         = false;
+    bool kv_stream_report                  = false;
     std::uint32_t max_concurrency      = 1;
     std::uint32_t max_pending_requests = 16;
     // Admission waits behind the active set, so the deadline has to cover the generation

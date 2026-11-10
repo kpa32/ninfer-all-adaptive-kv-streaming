@@ -259,7 +259,7 @@ The table lists executable defaults. The examples above select INT8 KV and MTP3.
 | `--rope-scaling-original-context N` | the interpolation threshold | the native window |
 | `--kv-capacity N\|auto` | explicit shared Main Text KV capacity, or maximize it from remaining GPU memory; omitted means `--max-context` | `2048` |
 | `--kv-headroom-mib N` | device memory in MiB that `--kv-capacity auto` leaves free after sizing the KV pool; requires `auto`. `--vram-headroom-mib` is accepted as an alias | `1024` |
-| `--kv-stream` | keep each full-attention layer's newest pages on the device and stream the rest from pinned host memory every round, so the context exceeds the device pool. Opt-in, one sequence, one device, `--kv-capacity auto`, no retained context. Defaults the run to the choices that trade memory for speed: `--embedding-residency host` (its 388 MiB becomes window), a 16 MiB headroom, and `--spec mtp --draft-tokens 5 --adaptive-mtp` (adaptive width is lossless); an explicit flag still wins. See [Streaming KV past the pool](#streaming-kv-past-the-pool) | off |
+| `--kv-stream` | keep each full-attention layer's newest pages on the device and stream the rest from pinned host memory every round, so the context exceeds the device pool. Opt-in, one sequence, one device, `--kv-capacity auto`, no retained context. Defaults the run to the choices that trade memory for speed: `--embedding-residency host` (its 388 MiB becomes window: 251 K measures 71.3 → 96.5 tok/s at 1116 → 693 MiB a round) and `--spec mtp --draft-tokens 5 --adaptive-mtp` (adaptive width is lossless); an explicit flag still wins. The headroom stays 64 MiB: 16 MiB was measured to break the run (cuBLAS handle creation). See [Streaming KV past the pool](#streaming-kv-past-the-pool) | off |
 | `--kv-stream-report` | with `--kv-stream`, time the copies and the compute they exposed, per round and per layer, into `--report-json` | off |
 | `--prefill-chunk N` | text-prefill chunk, in multiples of 128; with an `int8` or `rk*` KV cache a Qwen3.5-core model runs the nearby multiple of 128 that best fills the GPU's prompt-attention waves, up to 256 tokens more (see [device profiles](device-profiles.md)) | `1024`; `4096` for native MoE experts in host memory or files; `2048` for Qwen3.8-Flash-Next with `--tensor-parallel` when every device has room ([prompt pieces](maintainer/pipeline-stages.md#tensor-parallelism-of-qwen38-flash-next)); `2048` for DeepSeek-V4.1, which takes at most `4096` and a narrower chunk where the card lacks room ([its prompt chunks](deepseek-v41.md#prompt-spans)) |
 | `--prefill-tail exact\|full\|N` | DeepSeek-V4.1: the prompt rows that blocks 21 to 39, which keep no compressed cache, run: `exact` runs those the kept state and the last token's logits depend on, from the prompt chunk at or below them, so the output is `full`'s; `full` runs every row; `N` (at least 128) runs the last `N` rows before each kept state, a lossy mode: the output changes ([the prefill tail](deepseek-v41.md#the-prefill-tail)) | `exact` |
@@ -485,11 +485,15 @@ migration per request. `--prefill-chunk` also sizes the prompt's workspace out o
 a decode round takes 63.9 ms instead of 54.1 ms (see [measurements](maintainer/kv-streaming-measurements.md)
 table 7).
 
-`--kv-stream` also defaults the three choices whose trade is memory for speed, because the pool,
-not the weights, bounds such a run: `--embedding-residency host` (the token table's 388 MiB becomes
-window), a 16 MiB `--kv-headroom-mib`, and `--spec mtp --draft-tokens 5 --adaptive-mtp`. Adaptive
-width is lossless (the greedy output is a fixed width's); an explicit flag still wins, so
-`--spec none` on a streamed run turns drafting off rather than being overridden.
+`--kv-stream` also defaults the choices whose trade is memory for speed, because the pool, not the
+weights, bounds such a run: `--embedding-residency host` (the token table's 388 MiB becomes window)
+and `--spec mtp --draft-tokens 5 --adaptive-mtp`. On 251 K those defaults alone take a decode round
+from 1116 to 693 MiB and 71.3 to 96.5 tok/s. Adaptive width is lossless (the greedy output is a
+fixed width's); an explicit flag still wins, so `--spec none` on a streamed run turns drafting off.
+
+The headroom keeps its 64 MiB (`kDefaultKvStreamHeadroomBytes`): 16 MiB was measured to break a
+251 K streamed run with `cublasCreate failed` at layer 13 (5 MiB left after startup), while 64 MiB
+leaves 53.5 MiB and runs.
 
 `--kv-stream-report` additionally times the copies and the compute they exposed, per round and per
 layer, and writes them to `--report-json`. The timing events cost device time of their own, so a run

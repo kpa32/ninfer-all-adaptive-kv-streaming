@@ -938,6 +938,15 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     if (active_pages > pages_per_layer_) {
         throw std::invalid_argument("A streamed KV frontier exceeds the cache's context");
     }
+    if (ring_runs_ == 0 && active_pages > split_.resident_of(0)) {
+        // An all-resident split has no ring, so its window must cover the whole frontier. Growing it is a
+        // partition change: every layer's slot base is a prefix sum of the window sizes, and only
+        // `repartition` may move one (it republishes the tables and leaves the bytes where they are,
+        // since the pages stay inside the widened window). Writing that arithmetic here instead moved
+        // the bases under the old names and made the model read the wrong page.
+        repartition(kv_stream_all_resident(active_pages, layers_, split_.run_pages), streams,
+                    active_pages);
+    }
     for (std::uint32_t page = active_; page < active_pages; ++page) {
         // The page appears in its layer's window, where this round's append writes it.
         for (std::uint32_t layer = 0; layer < layers_; ++layer) {

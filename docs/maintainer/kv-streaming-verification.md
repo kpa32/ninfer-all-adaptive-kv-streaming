@@ -179,7 +179,7 @@ SPEC 的六条是交付契约。每条的现有证据都指向 `bench/results/kv
 |---|---|---|
 | R11 图内调度 / 图内换页 | 流式布局下不可捕获（捕获行无页，380 µs 失败）；即便可捕获，graph 只值 0.65 ms/轮（1.75%@183 K，≈1.3%@251 K） | 维持关图，measurements 表 5 |
 | R10 写路径脏行/镜像 | 本实现的页只在写满后离窗（design §4.6），回写时整页都是脏的，不存在“回写未写过的行” | 不需要移植，已在本节记录理由 |
-| **serve + 流式 + 草稿（曾经的挂起）** | 现象是 `Engine` 的 wait 永不返回、进程随后 `SIGFPE` 消失且无日志。根因不在 serve：`StreamedKVSpace::advance` 对没有环的整段驻留布局也走“页滑出窗口→写回 host”，而 `slot_of_page` 随后去取模一个 0 run 的环。serve 的 warmup（短上下文按整段驻留规划、窗口 1 页）留下这样的布局，第一个真实请求把前沿推过去就必死；CLI 的 prompt 一次规划到位、前沿不再增长，所以长期未暴露。gdb 抓到 `slot_of_page` 帧与 HTTP 线程的 `wait_for_request` 同时在场，才把“挂起”和“崩溃”分开 | 已修（`2fb81289`：整段驻留的窗口跟随前沿，层表随基址重发；`slot_of_page` 以 `std::logic_error` 陈述契约）。三个连续 serve 请求全通过：TTFT 61–78 ms、total 243–350 ms、decode 56.5–86.5 tok/s、MTP 接受 28.6–60.0% |
+| **serve + 流式 + 草稿（曾经的挂起）** | 现象是 `Engine` 的 wait 永不返回、进程随后 `SIGFPE` 消失且无日志。根因不在 serve：没有环的整段驻留布局，其窗口是前沿本身，而 `advance` 让前沿越过窗口、`slot_of_page` 再去取模一个 0 run 的环。serve 的 warmup 与 192 512 上下文都会走到这种布局（前沿 2229 页时 `16×2229 ≤ 36 567`，控制器据此规划成整段驻留），CLI 的 251 K 是 4096 页/层、永远装不下，所以长期未暴露。gdb 抓到 `slot_of_page` 帧与 HTTP 线程的 `wait_for_request` 同时在场，才把“挂起”和“崩溃”分开 | 已修（`519c02a7`）：整段驻留的窗口由 `advance` 经 `repartition` 随前沿扩大（层表随基址重发，页留在原字节、窗口内不搬迁），结果仍是整段驻留，与 resident 布局相同。控制器保持按前沿规划，这是 SPEC 条件 2 验证过的布局；改成按池上下文会改变 183 K 布局、使 logprobs 差 1e-4（ids 全同），已实测否决。三项证据：`check --suite equiv` PASS、251 K bench 96.6 tok/s / 40.8 ms、serve 142 593 token prompt 跨窗口边界 1 531 token 输出（decode 112.3 tok/s、accept 70.5%、HTML 可运行） |
 | 跨轮预取 | 多留一个 extent 的实测代价（+5.6% 字节）大于收益（≤3 ms） | 已否决，ledger “跨轮重叠” |
 | span 合并（更细发射） | 更细的发射在本卡上更慢（1 run/帧 166.7 ms vs 整层 54.7 ms） | 不作默认，C10 |
 | 跨架构构建（K4） | 本机只有 `sm_89` | 依赖 CI 的四套构建，PR 里点名 |

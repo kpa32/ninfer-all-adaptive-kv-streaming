@@ -242,3 +242,16 @@ embedding 常驻占 388.4 MiB；换成 host 后这部分显存回到 KV 池（�
 
 **引用时必须标注：上面两个数（−400 MiB、+355 页/层）是模型推算，不是实测。** 要把它变成流式的
 默认（现在默认仍是 `device`）则是一次产品决定，需要先实测再改默认。
+
+---
+
+## 缺陷记录：布局改名不搬字节（流式槽位的正确性通道）
+
+- 现象：同一 prompt、同一构建，只改"建引擎前预留多少显存"，答案就变（0.19–0.63 nat、top-1 翻转）；
+  serve 上表现为首个请求 4 token 后 EOS、`mtp 0/9`。
+- 根因：槽号由布局推导（`kv_stream_layout.h:156`），`repartition` 的"两边都常驻"分支只重发表项不搬字节，
+  表项于是指向别的页。责任链：`85f95f6e` → `60dad291` → `0b46796f` → `1159d91a`（均 2026-11-09，分支本地）。
+- 处置：`c8bdb380` 先修正确性（回写 host 权威再读入新槽）；随后移除请求中途换形（唯一收益 decode 0.2%，
+  P1 记录），池在启动时按 decode 形规划、进程内不变。
+- 回退点：tag `kv-stream/layout-switch-before-removal`、分支 `kv-stream/preserved-layout-switch`。
+- 完整档案（证据表、被排除的假设、复现配方、不变量）：`bench/results/kv-stream/layout-rename-defect.md`。

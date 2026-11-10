@@ -808,7 +808,16 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
     }
     ninfer::GenerationResult result;
     try {
+        if (options_.kv_stream) {
+            write_console_log(ConsoleLogLevel::Info,
+                              "streamed request: waiting for the Engine");
+        }
         result = prepared.generation.wait(public_sink, cancellation);
+        if (options_.kv_stream) {
+            write_console_log(ConsoleLogLevel::Info,
+                              "streamed request: the Engine returned " +
+                                  std::to_string(result.generated_token_ids.size()) + " tokens");
+        }
     } catch (const ninfer::RequestError& exception) { throw_request_error(exception); }
     if (prepared.held_branches && result.branches.size() == prepared.held_branches->run.size()) {
         // The Engine's records in read order between the held ones, and into the memo.

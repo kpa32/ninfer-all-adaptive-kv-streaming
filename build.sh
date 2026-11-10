@@ -69,13 +69,13 @@ done
 # [4a] Built-in WebUI: prebuilt llama.cpp pages compiled into ninfer-serve.
 # third_party/webui is gitignored; take it from a sibling tree when absent.
 WEBUI_DIR=""
-for d in "$REPO_DIR"/third_party/webui/*/; do
+for d in "$REPO_DIR"/third_party/webui/*/*/ "$REPO_DIR"/third_party/webui/*/; do
     if [[ -f "$d/index.html" || -f "$d/index.html.gz" ]]; then WEBUI_DIR="${d%/}"; break; fi
 done
 if [[ -z "$WEBUI_DIR" ]]; then
     for s in /home/kpa/ninfer-fork/ninfer-all-adaptive-kv-streaming /home/kpa/ninfer/ninfer-all; do
         if cp -rn "$s/third_party/webui" "$REPO_DIR/third_party/" 2>/dev/null; then
-            for d in "$REPO_DIR"/third_party/webui/*/; do
+            for d in "$REPO_DIR"/third_party/webui/*/*/ "$REPO_DIR"/third_party/webui/*/; do
                 if [[ -f "$d/index.html" || -f "$d/index.html.gz" ]]; then WEBUI_DIR="${d%/}"; break; fi
             done
             [[ -n "$WEBUI_DIR" ]] && break

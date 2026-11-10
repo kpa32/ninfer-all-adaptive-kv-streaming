@@ -819,6 +819,13 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
                                   std::to_string(result.generated_token_ids.size()) + " tokens");
         }
     } catch (const ninfer::RequestError& exception) { throw_request_error(exception); }
+    catch (const std::exception& exception) {
+        if (options_.kv_stream) {
+            write_console_log(ConsoleLogLevel::Error,
+                              std::string("streamed request failed: ") + exception.what());
+        }
+        throw;
+    }
     if (prepared.held_branches && result.branches.size() == prepared.held_branches->run.size()) {
         // The Engine's records in read order between the held ones, and into the memo.
         HeldBranches& held                         = *prepared.held_branches;

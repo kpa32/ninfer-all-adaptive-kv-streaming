@@ -349,12 +349,10 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     std::optional<KVStreamSplit> target =
         plan_kv_stream_split(slot_count_, context, layers_, split_.run_pages,
                              kv_stream_ring_ratio());
-    // A context shorter than the planned window is all-resident by definition: warming up with a
-    // one-page prefix must not install a window the frontier cannot reach. The capacity's shape is for
-    // the contexts that need it; this one has nothing to stream.
-    if (target && target->min_resident() > active_) {
-        target = plan_kv_stream_uniform(slot_count_, active_, layers_, split_.run_pages, 1.0);
-    }
+    // The window is planned over the pool's context, so it may exceed the pages this request has
+    // written: the frontier only says how far the request has reached, and a plan cut down to it would
+    // be crossed by the first page a decode round appends. repartition installs it against the context
+    // it was planned for, so no short-context fallback is needed here.
     if (!target) { return false; }
     if (target->layer_resident == split_.layer_resident &&
         target->ring_pages == split_.ring_pages) {

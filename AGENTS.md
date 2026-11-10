@@ -239,3 +239,38 @@ check could not run because it was not free.
 
 Create commits only when requested. Commit subjects follow the
 [tests and tooling rules](CONTRIBUTING.md#tests-and-tooling).
+
+## Remote test host (192.168.2.13)
+
+The measurement card is reached as `kpa@192.168.2.13` (Debian 13, 16 cores, 62 GB RAM,
+RTX 4080 SUPER 16,376 MiB, driver 615.71.09). CUDA 13.4: `nvcc` is not on the non-login
+PATH, use `/usr/local/cuda/bin/nvcc`; cmake 3.31.6; Python 3.13.5.
+
+- **Dedicated directory.** `/home/kpa/ninfer-16` is used exclusively for this fork branch,
+  isolated from the other trees on the host. The repo clone and build tree live under it;
+  `models/` is already in place (`Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer` plus
+  `Qwen-UD-Chat-Templates.jinja`).
+- **Forbidden zone.** `~/ninfer/` on the host: do not read, write, create, or build there;
+  the stock binaries inside are executed only by the bench tool.
+- **Old tree.** `~/ninfer-fork/ninfer-all-adaptive-kv-streaming` belongs to the
+  `kv-stream-27b-16g` branch; never build or reset it for this fork.
+
+Typical commands (sync only after pushing; never edit sources during a build):
+
+```bash
+# sync the dedicated tree (after local push)
+ssh kpa@192.168.2.13 'cd /home/kpa/ninfer-16/<repo> && git fetch -q origin && git reset --hard -q origin/fork-qwen38-27b-16gb'
+# incremental single target
+ssh kpa@192.168.2.13 'cd /home/kpa/ninfer-16/<repo> && cmake --build <build-dir> --target ninfer -j 16'
+# single-file syntax check (not a substitute for running)
+g++ -std=c++20 -fsyntax-only -Iinclude -Isrc -I/usr/local/cuda/include <file>.cpp
+```
+
+Pitfalls recorded from prior work on this host:
+
+- `pgrep -f` self-matches its own pattern; use a bracketed form such as `[r]un_kv_stream[.]py`.
+- The Windows and Linux clocks skew 10–25 s; `tar` reports future timestamps — `touch` a
+  common header before building after editing it.
+- Killing the local SSH client does not stop remote processes; confirm with `pgrep`.
+- The bench tool refuses a busy card; check `nvidia-smi --query-compute-apps` before running.
+- A full `BUILD_TESTING=ON` tree build takes about 30 minutes; never trigger it for one test.

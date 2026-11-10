@@ -4,9 +4,6 @@
 #include "models/qwen3_5/frontend/prepared_prompt.h"
 
 #include "models/qwen3_5/frontend/chat_template.h"
-#include "models/qwen3_5/frontend/deepseek_output.h"
-#include "models/qwen3_5/frontend/flint_output.h"
-#include "models/qwen3_5/frontend/gemma_output.h"
 #include "models/qwen3_5/frontend/media_cache.h"
 #include "models/qwen3_5/frontend/processor.h"
 #include "models/qwen3_5/frontend/steering.h"
@@ -51,10 +48,6 @@ constexpr std::string_view kThinkingControl =
     "\n\n Considering the limited time by the user, I have to give the solution based on the "
     "thinking directly now.\n</think>\n\n";
 static_assert(kThinkingControl.ends_with(fi::kCanonicalReasoningCloseSerialization));
-// DeepSeek-V4.1's early-close guidance, which its </think> token follows.
-constexpr std::string_view kDeepSeekThinkingGuidance =
-    "\n\nConsidering the limited time by the user, I have to give the solution based on the "
-    "thinking directly now.";
 constexpr double kRescaleFactor = 1.0 / 255.0;
 constexpr double kVideoFps      = 2.0;
 constexpr int kVideoMinFrames   = 4;
@@ -192,87 +185,6 @@ fi::ProcessorOptions processor_options(const FrontendResources& resources) {
     return options;
 }
 
-// Gemma 4's processor_config.json: patches of 16 pooled 3 x 3, pixels rescaled by 1/255 with no
-// normalization (or a mean of 0 and a deviation of 1), bicubic resizing, and the soft-token
-// budgets of an image and of a video frame.
-fi::GemmaMediaOptions gemma_media_options(const FrontendResources& resources) {
-    constexpr std::string_view kResource = "processor_config.json";
-    const Json config = parse_resource_json(resources.processor_config_json, kResource);
-    const Json& image = require_object(config, "image_processor", kResource);
-    const Json& video = require_object(config, "video_processor", kResource);
-    fi::GemmaMediaOptions out;
-    for (const auto* processor : {&image, &video}) {
-        if (require_integer(*processor, "patch_size", kResource) != out.patch ||
-            require_integer(*processor, "pooling_kernel_size", kResource) != out.pooling) {
-            throw std::invalid_argument(
-                "processor_config.json does not match the compiled Gemma 4 patch geometry");
-        }
-        if (processor->contains("resample") && (!(*processor)["resample"].is_number_integer() ||
-                                                (*processor)["resample"].get<int>() != 3)) {
-            throw std::invalid_argument(
-                "processor_config.json resample must select bicubic interpolation");
-        }
-        if (number_or_default(*processor, "rescale_factor", kResource, 1.0 / 255.0) !=
-            1.0 / 255.0) {
-            throw std::invalid_argument(
-                "processor_config.json rescale_factor does not match the compiled pixels");
-        }
-        for (const char* field : {"image_mean", "image_std"}) {
-            if (!processor->contains(field)) { continue; }
-            const Json& values = processor->at(field);
-            const double expected = std::string_view(field) == "image_mean" ? 0.0 : 1.0;
-            if (!values.is_array() || values.size() != 3 ||
-                std::any_of(values.begin(), values.end(), [&](const Json& value) {
-                    return !value.is_number() || value.get<double>() != expected;
-                })) {
-                throw std::invalid_argument(
-                    "processor_config.json normalization does not match the compiled pixels");
-            }
-        }
-    }
-    out.image_tokens = fi::gemma_budget_at_most(static_cast<std::uint64_t>(
-        positive_u64(require_integer(image, "max_soft_tokens", kResource), "max_soft_tokens")));
-    out.video_tokens = fi::gemma_budget_at_most(static_cast<std::uint64_t>(
-        positive_u64(require_integer(video, "max_soft_tokens", kResource), "max_soft_tokens")));
-    out.frames = static_cast<int>(
-        positive_u64(integer_or_default(video, "num_frames", kResource, 32), "num_frames"));
-    return out;
-}
-
-// DeepSeek-V4.1's processor_config.json (the converter's transcription of the release's
-// image_processor.py): patches of 14 merged 3 x 3, the minimum pixels and the token budget of an
-// image, no aspect cap, the bicubic resize onto gray 127, values (x / 255 - 0.5) / 0.5.
-fi::DeepSeekMediaOptions deepseek_media_options(const FrontendResources& resources) {
-    constexpr std::string_view kResource = "processor_config.json";
-    const Json config = parse_resource_json(resources.processor_config_json, kResource);
-    const Json& image = require_object(config, "image_processor", kResource);
-    fi::DeepSeekMediaOptions out;
-    const auto values = [&](const char* field, double expected) {
-        const Json& v = image.contains(field) ? image.at(field) : Json();
-        return v.is_array() && v.size() == 3 &&
-               std::all_of(v.begin(), v.end(), [&](const Json& x) {
-                   return x.is_number() && x.get<double>() == expected;
-               });
-    };
-    if (require_integer(image, "patch_size", kResource) != out.patch ||
-        require_integer(image, "downsample_ratio", kResource) != out.merge ||
-        !image.contains("max_wh_ratio") || !image.at("max_wh_ratio").is_null() ||
-        require_integer(image, "resample", kResource) != 3 || !values("pad_color", 127.0) ||
-        !values("image_mean", 0.5) || !values("image_std", 0.5) ||
-        image.value("image_token", std::string()) != fi::kDeepSeekMediaPads.image) {
-        throw std::invalid_argument(
-            "processor_config.json does not match the compiled DeepSeek-V4.1 image processing");
-    }
-    out.min_pixels = positive_u64(require_integer(image, "min_pixels", kResource), "min_pixels");
-    const std::uint64_t tokens =
-        positive_u64(require_integer(image, "max_image_tokens", kResource), "max_image_tokens");
-    if (tokens < 4 || tokens > std::numeric_limits<std::uint32_t>::max()) {
-        throw std::invalid_argument("processor_config.json max_image_tokens is out of range");
-    }
-    out.max_tokens = static_cast<std::uint32_t>(tokens);
-    return out;
-}
-
 void validate_tokenizer_config(const FrontendResources& resources) {
     const Json tokenizer_config =
         parse_resource_json(resources.tokenizer_config_json, "tokenizer_config.json");
@@ -289,9 +201,8 @@ void validate_tokenizer_config(const FrontendResources& resources) {
 }
 
 fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources,
-                                               const std::filesystem::path& override_path,
-                                               bool qwen = true) {
-    if (qwen) { validate_tokenizer_config(resources); }
+                                               const std::filesystem::path& override_path) {
+    validate_tokenizer_config(resources);
     nlohmann::ordered_json tokens = nlohmann::ordered_json::object();
     const auto config             = nlohmann::ordered_json::parse(resources.tokenizer_config_json);
     for (const char* key : {"bos_token", "eos_token", "pad_token", "unk_token", "sep_token",
@@ -894,44 +805,6 @@ PreparedTapHints prepare_tap_hints(const ContextCacheHints& hints,
 
 ModelSamplingDefaults default_sampling(Architecture architecture) {
     ModelSamplingDefaults sampling;
-    if (architecture == Architecture::Flint) {
-        // Flint's generation_config.json, whether or not it reasons (it decides that itself).
-        sampling.thinking      = {.temperature       = 1.0F,
-                                  .top_k             = 20,
-                                  .top_p             = 0.95F,
-                                  .min_p             = 0.0F,
-                                  .presence_penalty  = 0.0F,
-                                  .frequency_penalty = 0.0F};
-        sampling.non_thinking  = sampling.thinking;
-        sampling.post_thinking = sampling.thinking;
-        return sampling;
-    }
-    if (architecture == Architecture::DeepSeekV41) {
-        // DeepSeek-V4.1's recommended sampling (temperature 1.0, top_p 1.0), thinking or not,
-        // with top_k held at the 20 candidates the sampler keeps.
-        sampling.thinking      = {.temperature       = 1.0F,
-                                  .top_k             = 20,
-                                  .top_p             = 1.0F,
-                                  .min_p             = 0.0F,
-                                  .presence_penalty  = 0.0F,
-                                  .frequency_penalty = 0.0F};
-        sampling.non_thinking  = sampling.thinking;
-        sampling.post_thinking = sampling.thinking;
-        return sampling;
-    }
-    if (architecture == Architecture::Gemma4) {
-        // generation_config.json of the Gemma 4 releases (top_k 64), thinking or not, with
-        // top_k held at the 20 candidates the sampler keeps.
-        sampling.thinking      = {.temperature       = 1.0F,
-                                  .top_k             = 20,
-                                  .top_p             = 0.95F,
-                                  .min_p             = 0.0F,
-                                  .presence_penalty  = 0.0F,
-                                  .frequency_penalty = 0.0F};
-        sampling.non_thinking  = sampling.thinking;
-        sampling.post_thinking = sampling.thinking;
-        return sampling;
-    }
     sampling.thinking     = {.temperature      = 1.0F,
                              .top_k            = 20,
                              .top_p            = 0.95F,
@@ -952,16 +825,10 @@ ModelSamplingDefaults default_sampling(Architecture architecture) {
 class Frontend::Impl {
 public:
     Impl(const FrontendResources& resources, FrontendOptions options)
-        : chat_template(
-              compile_chat_template(resources, options.chat_template_path,
-                                    options.architecture != Architecture::Gemma4 &&
-                                        options.architecture != Architecture::Flint &&
-                                        options.architecture != Architecture::DeepSeekV41)),
+        : chat_template(compile_chat_template(resources, options.chat_template_path)),
           tokenizer(resources.tokenizer),
-          processor(!options.vision_enabled                             ? fi::ProcessorOptions{}
-                    : options.architecture == Architecture::Gemma4      ? fi::ProcessorOptions{}
-                    : options.architecture == Architecture::DeepSeekV41 ? fi::ProcessorOptions{}
-                                                                        : processor_options(resources)),
+          processor(!options.vision_enabled ? fi::ProcessorOptions{}
+                                            : processor_options(resources)),
           vision_enabled(options.vision_enabled), max_context(options.max_context),
           automatic_long_anchors(options.automatic_long_anchors),
           long_anchor_min_spacing_tokens(options.long_anchor_min_spacing_tokens),
@@ -971,41 +838,16 @@ public:
             throw std::invalid_argument("progress anchors need a stride of at least " +
                                         std::to_string(kMinimumProgressAnchorTokens) + " tokens");
         }
-        const bool gemma_media = options.architecture == Architecture::Gemma4 && vision_enabled;
-        const bool deepseek_media =
-            options.architecture == Architecture::DeepSeekV41 && vision_enabled;
-        if (deepseek_media) {
-            fi::DeepSeekMediaOptions& d = processor.deepseek.emplace(deepseek_media_options(resources));
-            if (options.vision_max_merged_tokens != 0) {
-                d.max_tokens = std::min(d.max_tokens, options.vision_max_merged_tokens);
-            }
-            if (d.max_tokens < 4) {
-                throw std::invalid_argument("--vision-max-merged: a DeepSeek-V4.1 image takes at "
-                                            "least 4 prompt positions");
-            }
-        } else if (gemma_media) {
-            fi::GemmaMediaOptions& g = processor.gemma.emplace(gemma_media_options(resources));
-            g.max_tokens   = fi::gemma_budget_at_most(options.vision_max_merged_tokens);
-            g.image_tokens = std::min(g.image_tokens, g.max_tokens);
-            g.video_tokens = std::min(g.video_tokens, g.max_tokens);
-        } else {
-            fi::bound_merged_tokens(processor, options.vision_max_merged_tokens);
-        }
+        fi::bound_merged_tokens(processor, options.vision_max_merged_tokens);
         if (options.max_context == 0) {
             throw std::invalid_argument("frontend max_context must be nonzero");
         }
         const std::uint64_t vision_tokens =
             std::min<std::uint64_t>(options.max_context, kMaximumPromptVisionTokens);
-        // Raw patches per soft token and values per patch: Gemma 4 pools 3 x 3 patches of
-        // 3 x 16 x 16, DeepSeek-V4.1 merges 3 x 3 of 3 x 14 x 14, Qwen 2 x 2 of 2 x 3 x 16 x 16.
-        const std::uint64_t patches_per_token =
-            deepseek_media ? std::uint64_t(processor.deepseek->merge) * processor.deepseek->merge
-            : gemma_media  ? std::uint64_t(processor.gemma->pooling) * processor.gemma->pooling
-                           : kRawPatchesPerVisionToken;
-        const std::uint64_t patch_features =
-            deepseek_media ? std::uint64_t(3) * processor.deepseek->patch * processor.deepseek->patch
-            : gemma_media  ? std::uint64_t(3) * processor.gemma->patch * processor.gemma->patch
-                           : kPreparedVisionPatchFeatures;
+        // Raw patches per soft token and values per patch: Qwen pools 2 x 2 patches of
+        // 2 x 3 x 16 x 16.
+        const std::uint64_t patches_per_token = kRawPatchesPerVisionToken;
+        const std::uint64_t patch_features  = kPreparedVisionPatchFeatures;
         processor.max_vision_tokens = vision_tokens;
         processor.max_raw_patches   = vision_tokens * patches_per_token;
         if (vision_enabled) {
@@ -1041,50 +883,6 @@ public:
                     "generation_config.json contains a stop token outside the vocabulary");
             }
             defaults.token_ids.push_back(token);
-        }
-        if (options.architecture == Architecture::Gemma4) {
-            // Gemma's reasoning channel has no early-close control: thinking budgets do not apply.
-            gemma = std::make_shared<const fi::GemmaMarkers>(fi::GemmaMarkers::from(*tokenizer));
-            return;
-        }
-        if (options.architecture == Architecture::Flint) {
-            // Flint opens its reasoning when it decides to, with no early-close control: thinking
-            // budgets do not apply either.
-            flint = std::make_shared<const fi::FlintMarkers>(fi::FlintMarkers::from(*tokenizer));
-            if (flint->think_open < 0 || flint->think_close < 0) {
-                throw std::invalid_argument("Flint's tokenizer lacks its <think> markers");
-            }
-            return;
-        }
-        if (options.architecture == Architecture::DeepSeekV41) {
-            // DeepSeek-V4.1's prompt opens its reasoning as Qwen's does, and its tool calls are
-            // DSML. A reached thinking budget closes the reasoning with Qwen's guidance (or
-            // --thinking-budget-message) and DeepSeek's </think> token, and the model answers.
-            deepseek =
-                std::make_shared<const fi::DeepSeekMarkers>(fi::DeepSeekMarkers::from(*tokenizer));
-            if (deepseek->think_close < 0) {
-                throw std::invalid_argument("DeepSeek-V4.1's tokenizer lacks its </think> marker");
-            }
-            std::string guidance(kDeepSeekThinkingGuidance);
-            if (!options.thinking_budget_message.empty()) {
-                guidance = options.thinking_budget_message;
-                // The close is the token appended below, not the message's own spelling of it.
-                if (const auto close = guidance.find(kThinkClose); close != std::string::npos) {
-                    guidance.erase(close);
-                }
-            }
-            std::vector<TokenId> encoded = tokenizer->encode(guidance);
-            encoded.push_back(deepseek->think_close);
-            for (const TokenId token : encoded) {
-                if (std::find(defaults.token_ids.begin(), defaults.token_ids.end(), token) !=
-                    defaults.token_ids.end()) {
-                    throw std::invalid_argument("thinking budget message contains a default "
-                                                "terminal token");
-                }
-            }
-            thinking_control_tokens =
-                std::make_shared<const std::vector<TokenId>>(std::move(encoded));
-            return;
         }
         std::string control_suffix(kThinkingControl);
         const char* control_name = "canonical thinking control suffix";
@@ -1133,10 +931,7 @@ public:
 
     // The syntax the model writes its calls in, which a forced call's opener has to match.
     [[nodiscard]] fi::ToolCallSyntax tool_call_syntax() const noexcept {
-        return gemma      ? fi::ToolCallSyntax::Gemma
-               : flint    ? fi::ToolCallSyntax::Flint
-               : deepseek ? fi::ToolCallSyntax::DeepSeek
-                          : fi::ToolCallSyntax::Qwen;
+        return fi::ToolCallSyntax::Qwen;
     }
 
     // The graft a request names, or null for none.
@@ -1157,9 +952,6 @@ public:
     StopPolicy defaults;
     ModelSamplingDefaults sampling;
     std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens;
-    std::shared_ptr<const fi::GemmaMarkers> gemma; // the Gemma 4 dialect, null for Qwen
-    std::shared_ptr<const fi::FlintMarkers> flint; // the Flint dialect, null for Qwen
-    std::shared_ptr<const fi::DeepSeekMarkers> deepseek; // the DeepSeek dialect, null for Qwen
     bool ngram_sources_enabled = false;
     bool ngram_archive_enabled = false;
     std::vector<TokenId> ngram_think_open, ngram_think_close;
@@ -1734,16 +1526,6 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
     text::validate_structured_output(structured);
     const auto& tools       = prompt.data_->tool_call_output;
     const bool strict_tools = tools && fi::has_strict_tools(*tools);
-    if (strict_tools && (impl_->gemma || impl_->flint)) {
-        throw std::invalid_argument("strict tool arguments need Qwen's or DeepSeek's tool-call "
-                                    "syntax, which " +
-                                    std::string(impl_->gemma ? "Gemma 4" : "Flint") +
-                                    " does not use");
-    }
-    if (structured.kind != StructuredOutputKind::None && tools && impl_->flint) {
-        throw std::invalid_argument("structured output beside tool calls needs Qwen's or "
-                                    "DeepSeek's tool-call syntax, which Flint does not use");
-    }
     if (structured.kind != StructuredOutputKind::None || strict_tools) {
         if (structured.kind != StructuredOutputKind::None &&
             (!caller_stop.token_ids.empty() || !caller_stop.strings.empty() ||
@@ -1755,9 +1537,7 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
         text::StructuredOutputEnvelope envelope;
         if (prompt.data_->starts_in_reasoning) { envelope.reasoning_close = "</think>"; }
         if (structured.kind != StructuredOutputKind::None && tools) {
-            envelope.alternative_format = impl_->deepseek
-                                              ? fi::deepseek_structured_tool_call_format(*tools)
-                                              : fi::structured_tool_call_format(*tools);
+            envelope.alternative_format = fi::structured_tool_call_format(*tools);
         }
         std::lock_guard lock(impl_->grammar_mutex);
         if (!impl_->grammar_compiler) {
@@ -1775,15 +1555,13 @@ OutputSession Frontend::make_output_session(const PreparedPrompt& prompt,
         grammar = structured.kind != StructuredOutputKind::None
                       ? impl_->grammar_compiler->compile(structured, envelope)
                       : impl_->grammar_compiler->compile_format(
-                            impl_->deepseek ? fi::deepseek_tool_call_text_format(*tools)
-                                            : fi::tool_call_text_format(*tools),
-                            envelope);
+                            fi::tool_call_text_format(*tools), envelope);
     }
     if (output.raw) { policy.publish_stop_token = true; }
     return OutputSession(impl_->tokenizer, std::move(policy), output,
                          prompt.data_->starts_in_reasoning, thinking,
                          impl_->thinking_control_tokens, prompt.data_->tool_call_output,
-                         std::move(grammar), impl_->gemma, impl_->flint, impl_->deepseek);
+                         std::move(grammar));
 }
 
 const StopPolicy& Frontend::default_stop_policy() const noexcept { return impl_->defaults; }

@@ -17,9 +17,6 @@ namespace ninfer::models::qwen3_5 {
 namespace frontend {
 class Tokenizer;
 struct ToolCallOutputContract;
-struct GemmaMarkers;
-struct FlintMarkers;
-struct DeepSeekMarkers;
 } // namespace frontend
 class Frontend;
 
@@ -101,10 +98,7 @@ private:
                   OutputOptions output, bool starts_in_reasoning, ThinkingControlOptions thinking,
                   std::shared_ptr<const std::vector<TokenId>> thinking_control_tokens,
                   std::shared_ptr<const frontend::ToolCallOutputContract> tool_call_output,
-                  std::shared_ptr<text::GrammarState> grammar               = {},
-                  std::shared_ptr<const frontend::GemmaMarkers> gemma       = {},
-                  std::shared_ptr<const frontend::FlintMarkers> flint       = {},
-                  std::shared_ptr<const frontend::DeepSeekMarkers> deepseek = {});
+                  std::shared_ptr<text::GrammarState> grammar = {});
     std::unique_ptr<Impl> impl_;
 
     friend class Frontend;

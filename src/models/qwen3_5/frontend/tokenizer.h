@@ -132,10 +132,6 @@ struct BoundaryEncodedText {
 
 class OrdinaryRunCache;
 
-// The pre-tokenizer of a byte-level tokenizer: Qwen's one split, or Flint's or DeepSeek's three
-// (digits in groups of up to three, CJK runs, then o200k's words or DeepSeek's).
-enum class ByteLevelSplit : std::uint8_t { Qwen, Flint, DeepSeek };
-
 class Tokenizer {
 public:
     explicit Tokenizer(TokenizerResources resources);
@@ -161,19 +157,9 @@ public:
     [[nodiscard]] bool is_valid_token(int id) const noexcept;
     [[nodiscard]] bool has_exact_token_domain(std::size_t size) const noexcept;
 
-    // SentencePiece-style BPE (Gemma 4): spaces become U+2581, the whole text between added tokens
-    // is one BPE word over code points, and a code point outside the vocabulary falls back to its
-    // <0xXX> byte tokens. False for the byte-level Qwen tokenizer.
-    [[nodiscard]] bool sentencepiece() const noexcept { return sentencepiece_; }
-
 private:
-    void load_sentencepiece(const nlohmann::json& root, const nlohmann::json& config,
-                            const nlohmann::json& model, TokenizerResources resources);
-
-    bool sentencepiece_ = false;
-    // Byte-level: whether ordinary text is NFC-normalized first, and how it splits into words.
-    bool nfc_              = true;
-    ByteLevelSplit split_ = ByteLevelSplit::Qwen;
+    // Byte-level: whether ordinary text is NFC-normalized first.
+    bool nfc_ = true;
     std::vector<std::string> decoded_token_bytes_;
     std::vector<bool> valid_token_ids_;
     std::vector<bool> special_token_ids_;
@@ -184,8 +170,7 @@ private:
     std::array<std::vector<std::size_t>, 256> added_token_candidates_;
     std::vector<int> default_stop_token_ids_;
     // The byte-level tokenizer's last long runs of text between added tokens: a later run that
-    // starts with the same text encodes only from where the two can differ (null for
-    // SentencePiece, whose runs are one BPE word each).
+    // starts with the same text encodes only from where the two can differ.
     std::shared_ptr<OrdinaryRunCache> run_cache_;
 };
 

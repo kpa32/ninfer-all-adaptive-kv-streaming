@@ -258,7 +258,7 @@ public:
     // Every slot is re-addressed, so the pages that change sides migrate once - a page leaving the
     // window is written back to its host record first, a page entering it is read back from there -
     // and the block tables are republished. Rare by design: the controller rate-limits it.
-    void repartition(const KVStreamSplit& next, RankStreams streams);
+    void repartition(const KVStreamSplit& next, RankStreams streams, std::uint32_t frontier = 0);
 
     // Reads every timing pair the device has finished, closes the round in flight and returns the
     // series. Safe to call repeatedly: a pair is counted once.

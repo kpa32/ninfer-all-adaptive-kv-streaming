@@ -297,11 +297,26 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     const int phase = decode_phase ? 1 : 0;
     if (phase_ == phase) { return false; }
     phase_ = phase;
-    // The pool is planned for the shape a request starts in - its prompt (startup.cpp) - so entering
-    // a prompt phase costs nothing. Only the decode round has a shape to enter, and it can only be
-    // entered once the frontier holds its window: `repartition` refuses a window larger than the
-    // active context, which is exactly the state a first prompt chunk is in.
-    if (!decode_phase) { return false; }
+    // The pool is planned for the shape a request starts in - its prompt (startup.cpp) - but a served
+    // warmup or an earlier request can leave a shorter shape behind, and a cached shape whose window is
+    // smaller than this prompt's frontier sends `advance` into a page that no ring can hold. The prompt
+    // phase therefore plans its own shape, from the whole prompt's pages. Its window may legitimately
+    // exceed the pages written so far (a first chunk holds one), which is why the partition is
+    // installed against the page count it was planned for rather than the frontier in force.
+    if (!decode_phase) {
+        const std::uint32_t prompt = pages != 0 ? pages : pages_per_layer_;
+        if (prompt == 0) { return false; }
+        std::optional<KVStreamSplit> target =
+            plan_kv_stream_split(slot_count_, prompt, layers_, split_.run_pages,
+                                 kv_stream_ring_ratio());
+        if (!target) { return false; }
+        if (target->layer_resident == split_.layer_resident &&
+            target->ring_pages == split_.ring_pages) {
+            return false;
+        }
+        repartition(*target, streams, prompt);
+        return true;
+    }
     // The diagnostic that reaches a boundary no product path reaches: a forced window per layer. Zero
     // makes every page stream (one whole-context extent per layer per round), which the planner allows
     // but a ratio never lands on exactly - an infeasible ratio falls back to the ring's floor. It is
@@ -579,7 +594,13 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     return true;
 }
 
-void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams) {
+void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams,
+                                  std::uint32_t frontier) {
+    // The window may not exceed the pages the plan was made for: a page the layout names has to exist
+    // for the ring to bring it back, and the write path needs a resident slot for the token being
+    // appended. A caller planning a whole prompt passes that prompt's page count; everyone else means
+    // the frontier in force.
+    const std::uint32_t limit = frontier != 0 ? frontier : active_;
     if (next.run_pages == 0 || next.layers() != layers_) {
         throw std::invalid_argument("A streamed KV partition does not match the cache's layers");
     }
@@ -593,7 +614,7 @@ void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams
                 "A streamed KV partition needs at least one resident page per layer: the token being "
                 "written lands in it");
         }
-        if (next.resident_of(layer) > pages_per_layer_ || next.resident_of(layer) > active_) {
+        if (next.resident_of(layer) > pages_per_layer_ || next.resident_of(layer) > limit) {
             throw std::invalid_argument("A streamed KV partition window is out of range");
         }
     }
@@ -929,27 +950,13 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
         throw std::invalid_argument("A streamed KV frontier exceeds the cache's context");
     }
     if (ring_runs_ == 0 && active_pages > split_.resident_of(0)) {
-        // An all-resident split with no ring has nowhere to put a page its window drops, so its window
-        // is the frontier itself. Widening it moves every layer's slot base, so the whole table is
-        // republished once per chunk; nothing is downloaded because nothing leaves the device.
-        for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-            split_.layer_resident[layer] = active_pages;
-        }
-        for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-            for (std::uint32_t page = 0; page < active_pages; ++page) {
-                stream_slots_[page] =
-                    static_cast<std::int32_t>(kv_stream_window_slot(layer, page, split_));
-            }
-            cache_->execution_tables().publish_slots_at(
-                static_cast<std::int32_t>(layer), 0,
-                std::span<const std::int32_t>(stream_slots_.data(), active_pages),
-                RankStreams(streams[0]));
-        }
-        active_ = active_pages;
-        for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-            CUDA_CHECK(cudaEventRecord(dropped_[layer], streams[0]));
-        }
-        return;
+        // An all-resident split has no ring to hold a page its window drops, so its window must cover
+        // the whole frontier. Widening it here would move every layer's slot base without moving the
+        // bytes under it, which reads the wrong page (measured as a repetition loop); `repartition`
+        // owns that move, so the frontier is planned before the pages are written instead
+        // (enter_layout in the prompt phase). Reaching here means a split contradicted its frontier.
+        throw std::logic_error(
+            "An all-resident streamed KV split has a frontier past its window");
     }
     for (std::uint32_t page = active_; page < active_pages; ++page) {
         // The page appears in its layer's window, where this round's append writes it.

@@ -179,6 +179,7 @@ SPEC 的六条是交付契约。每条的现有证据都指向 `bench/results/kv
 |---|---|---|
 | R11 图内调度 / 图内换页 | 流式布局下不可捕获（捕获行无页，380 µs 失败）；即便可捕获，graph 只值 0.65 ms/轮（1.75%@183 K，≈1.3%@251 K） | 维持关图，measurements 表 5 |
 | R10 写路径脏行/镜像 | 本实现的页只在写满后离窗（design §4.6），回写时整页都是脏的，不存在“回写未写过的行” | 不需要移植，已在本节记录理由 |
+| **serve + 流式 + 草稿** | **时序依赖的挂起**：同一二进制、同一请求，带 `NINFER_STREAM_DEBUG=1` 时 175 ms 返回（decode 75.8 tok/s、MTP 接受 4/7），不带时 `Engine` 的 wait 永不返回且无日志。已排除的假设：headroom 不足、warmup 窗口越界、warmup draft 推进 frontier、warmup 非单 token。四个都已修（它们是真实缺陷），但都不是这一条的完整原因 | **serve 在 `--kv-stream` + 非 `none` 的 `--spec` 下拒绝启动**，`NINFER_ALLOW_STREAMED_MTP=1` 复现；`--spec none` 的流式服务已验证（198 ms、TTFT 61.7 ms、decode 51.4 tok/s） |
 | 跨轮预取 | 多留一个 extent 的实测代价（+5.6% 字节）大于收益（≤3 ms） | 已否决，ledger “跨轮重叠” |
 | span 合并（更细发射） | 更细的发射在本卡上更慢（1 run/帧 166.7 ms vs 整层 54.7 ms） | 不作默认，C10 |
 | 跨架构构建（K4） | 本机只有 `sm_89` | 依赖 CI 的四套构建，PR 里点名 |

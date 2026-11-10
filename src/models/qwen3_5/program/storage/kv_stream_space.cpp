@@ -531,11 +531,6 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     if (!(ratio >= 1.0)) { ratio = 1.0; }
     const auto next = resize_kv_stream_split(split_, slot_count_, active_, ratio);
     if (!next) { return false; }
-    // A plan cut down to the frontier can come out all-resident when the pages written so far happen to
-    // fit the pool (`16 x active <= slots`). Its ring is zero, and the request has not reached the end of
-    // the context the pool serves, so the next page it appends would have nowhere to be read from. The
-    // controller may not drop a ring before the frontier reaches the context.
-    if (next->ring_pages == 0 && active_ < pages_per_layer_) { return false; }
     if (next->layer_resident == split_.layer_resident && next->ring_pages == split_.ring_pages) {
         return false;
     }

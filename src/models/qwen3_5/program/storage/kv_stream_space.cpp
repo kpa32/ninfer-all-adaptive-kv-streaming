@@ -335,7 +335,7 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
                                                : 0U;
             forced.ring_pages = detail::kv_stream_ceil_to_run(streamed, forced.run_pages);
             if (kv_stream_pool_pages(forced) <= slot_count_) {
-                repartition(forced, streams);
+                repartition(forced, streams, pages_per_layer_);
                 return true;
             }
         }
@@ -350,9 +350,8 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
         plan_kv_stream_split(slot_count_, context, layers_, split_.run_pages,
                              kv_stream_ring_ratio());
     // A context shorter than the planned window is all-resident by definition: warming up with a
-    // one-page prefix must not install a window the frontier cannot reach (`repartition` refuses a
-    // window larger than the active context, which is what a server warmup hit). The capacity's
-    // shape is for the contexts that need it; this one has nothing to stream.
+    // one-page prefix must not install a window the frontier cannot reach. The capacity's shape is for
+    // the contexts that need it; this one has nothing to stream.
     if (target && target->min_resident() > active_) {
         target = plan_kv_stream_uniform(slot_count_, active_, layers_, split_.run_pages, 1.0);
     }
@@ -361,7 +360,10 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
         target->ring_pages == split_.ring_pages) {
         return false;
     }
-    repartition(*target, streams);
+    // The decode shape is planned over the pool's context, so its window is legal up to that context
+    // and not merely up to the pages this request has written: a round that appends a page would
+    // otherwise cross a window the split was allowed to install.
+    repartition(*target, streams, pages_per_layer_);
     return true;
 }
 

@@ -529,11 +529,7 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     const std::uint32_t streamed = std::max(max_streamed_pages(), 1U);
     double ratio = static_cast<double>(decision.ring_pages) / static_cast<double>(streamed);
     if (!(ratio >= 1.0)) { ratio = 1.0; }
-    // The context the split must serve is the pool's, not the frontier in force: sized to the
-    // frontier, a request whose pages happen to fit the pool at that moment is planned all-resident -
-    // zero ring - and the next page it appends has nowhere to live. The frontier only says how far the
-    // request has reached (kv-streaming-strategy.md, P1: the ring is planned over the pool's context).
-    const auto next = resize_kv_stream_split(split_, slot_count_, pages_per_layer_, ratio);
+    const auto next = resize_kv_stream_split(split_, slot_count_, active_, ratio);
     if (!next) { return false; }
     if (next->layer_resident == split_.layer_resident && next->ring_pages == split_.ring_pages) {
         return false;

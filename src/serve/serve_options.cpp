@@ -644,6 +644,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
     bool device_explicit              = false;
     bool context_capacity_explicit    = false;
     bool host_state_slots_explicit    = false;
+    bool device_state_slots_explicit  = false;
     bool host_kv_mib_explicit         = false;
     bool host_cache_budget_explicit   = false;
     bool host_cache_reserve_explicit  = false;
@@ -916,6 +917,7 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.context_cache.device_state_slots = static_cast<std::uint32_t>(
                 parse_nonnegative_int(require_value("--device-state-slots"), "device-state-slots"));
             context_capacity_explicit = true;
+            device_state_slots_explicit = true;
             continue;
         }
         if (arg == "--host-state-slots") {
@@ -1863,7 +1865,15 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             // The streamed run keeps ninfer's prefix reuse: the finished request's context stays in
             // the pinned host authority, its endpoint costs one host StateImage, and the next prompt
             // that continues the prefix prefills only the increment. --no-prefix-reuse asks for the
-            // release-at-the-end behaviour instead.
+            // release-at-the-end behaviour instead. The endpoint's shelf is not a knob: an explicit
+            // slot flag that contradicts it is refused rather than quietly overridden.
+            if ((device_state_slots_explicit &&
+                 options.context_cache.device_state_slots.value_or(0) != 0) ||
+                (host_state_slots_explicit && options.context_cache.host_state_slots == 0)) {
+                throw std::invalid_argument(
+                    "--kv-stream retains its endpoint on the host shelf: pass "
+                    "--device-state-slots 0 and --host-state-slots 1");
+            }
             options.context_cache.enabled                           = true;
             options.context_cache.mode                              = ContextCacheMode::Legacy;
             options.context_cache.host_state_slots                  = 1;

@@ -405,6 +405,9 @@ Options parse_options(int argc, char** argv) {
     bool device_explicit      = false;
     bool ngram_width_explicit       = false;
     bool spec_explicit              = false;
+    bool embedding_explicit         = false;
+    bool draft_tokens_explicit      = false;
+    bool mtp_policy_explicit        = false;
     bool vision_max_merged_explicit = false;
     std::optional<std::size_t> kv_headroom_mib;
 

@@ -1539,8 +1539,13 @@ void TextContext::plan_stream_round(std::int32_t width) {
     if (splits_per_run == 0) { return; }
     stream_bounded_round_  = true;
     stream_splits_per_run_ = static_cast<std::int32_t>(splits_per_run * per_frame);
+    // The frame hook splits a layer's streamed read into frames, so what it needs is the number of keys
+    // held in the window, not the number the frontier has reached: the latter grows with the request and
+    // would make the frame boundaries depend on how far it is, which under invariant reductions is a
+    // different reduction order - measured as a 1e-4 nat shift across layouts with every id unchanged.
     stream_window_tokens_  = static_cast<std::int32_t>(
-        kv_stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize));
+        (kv_stream_space_->active_pages() - kv_stream_space_->window_start(0)) *
+        static_cast<std::uint32_t>(kPagedKVPageSize));
     stream_runs_           = runs;
     stream_runs_per_frame_ = per_frame;
 }

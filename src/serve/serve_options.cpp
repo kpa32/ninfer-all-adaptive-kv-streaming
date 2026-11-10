@@ -1,6 +1,4 @@
 #include "serve/serve_options.h"
-#include "product/kv_resident_options.h"
-#include "product/ngram_table_options.h"
 #include "product/hybrid_expert_options.h"
 #include "product/post_thinking_options.h"
 #include "product/reasoning_loop_options.h"
@@ -123,8 +121,6 @@ std::string serve_usage_text(const char* argv0) {
            "                                a Qwen3.5-core model runs the nearby multiple\n"
            "                                of 128 that best fills the GPU's attention\n"
            "                                waves (up to 256 more)\n" +
-           std::string(ninfer::product::kPrefillTailHelp) +
-           std::string(ninfer::product::kIq1mExpertsHelp) +
            "  --decode-rounds-per-prefill N decode rounds after each prefill chunk while\n"
            "                                others generate (0: chunk / 64; 1 alternates)\n"
            "  --prefill-stall-budget-ms N   cut a prefill step to about N ms while others\n"
@@ -161,7 +157,6 @@ std::string serve_usage_text(const char* argv0) {
            "                                banks only).\n"
            "                                Flash-Next disk requires a nonzero cache\n" +
            std::string(ninfer::product::kHybridExpertHelp) +
-           std::string(ninfer::product::kNgramTableHelp) +
            "  --no-cuda-graph               decode without CUDA Graphs (on by default)\n"
            "  --cuda-graph-allowance-mib N  CUDA Graph driver-state allowance taken from the\n"
            "                                KV sizing budget (default 0: computed per\n"
@@ -259,8 +254,7 @@ std::string serve_usage_text(const char* argv0) {
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            "); alias --vram-headroom-mib\n"
            "  --kv-dtype T                  KV storage: bf16 (default), int8, fp8, rk8v4,\n"
-           "                                rk4v4, rk4v4-e8, rk2v4-e8, nvfp4 or k8v4\n" +
-           std::string(product::kKvResidentHelp) +
+           "                                rk4v4, rk4v4-e8, rk2v4-e8, nvfp4 or k8v4\n"
            "\n"
            "CONTEXT CACHE\n"
            "  The hybrid prefix cache is the default. Pipeline --devices, --no-prefix-reuse,\n"
@@ -1162,14 +1156,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                                                [&] { return require_value(arg.c_str()); })) {
             continue;
         }
-        if (product::parse_ngram_table_option(arg, options.ngram_table,
-                                              [&] { return require_value(arg.c_str()); })) {
-            continue;
-        }
-        if (product::parse_kv_resident_option(arg, options.kv_resident_positions,
-                                              [&] { return require_value(arg.c_str()); })) {
-            continue;
-        }
         if (arg == "--stage-layers") {
             options.stage_layers = parse_stage_layers(require_value("--stage-layers"));
             continue;
@@ -1584,10 +1570,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         if (product::parse_steering_flag(
                 arg, [&]() -> const char* { return require_value(arg.c_str()); },
                 options.steering)) {
-            continue;
-        }
-        if (product::parse_prompt_route_option(arg, options.prompt_routes,
-                                               [&] { return require_value(arg.c_str()); })) {
             continue;
         }
         if (arg == "--default-graft") {

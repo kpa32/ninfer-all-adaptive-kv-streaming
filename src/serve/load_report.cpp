@@ -103,7 +103,7 @@ std::string make_stats_report(const LoadCapacity& capacity, const LoadSample& sa
                               "host_work", "context_cache"}) {
         report[block] = std::move(cumulative.at(block));
     }
-    for (const char* block : {"ngram_table", "experts"}) {
+    for (const char* block : {"experts"}) {
         if (auto found = cumulative.find(block); found != cumulative.end()) {
             report[block] = std::move(*found);
         }

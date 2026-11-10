@@ -110,42 +110,4 @@ enum class TensorParallelPartials : std::uint8_t {
     Int8,
 };
 
-// Qwen3.8-Flash-Next: where the n-gram table's rows come from.
-enum class NgramResidency : std::uint8_t {
-    // The table's file, with a bounded cache of rows read as the hash addresses them.
-    Disk,
-    // RAM: the whole table is read at startup.
-    Ram,
-    // RAM for the rows a hot-row profile ranks most frequent, as many as the RAM budget holds,
-    // read at startup; the other rows come from the file.
-    RamHot,
-};
-
-// Qwen3.8-Flash-Next: how rows are read from the table's file.
-enum class NgramIo : std::uint8_t {
-    // Positioned reads through the OS page cache.
-    Buffered,
-    // Reads that bypass the page cache (O_DIRECT, FILE_FLAG_NO_BUFFERING): the table takes no
-    // RAM beyond what the residency keeps, and every cache miss reaches the drive.
-    Direct,
-    // Copies out of a read-only mapping of the file, faulted in through the page cache.
-    Mapped,
-};
-
-// DeepSeek-V4.1-Flash: the rows of a prompt step that the blocks after its last key-value source
-// block run. Those decoder blocks (21-39 of the release) keep no compressed state: each reads that
-// block's caches and its own ring of the last `window` positions, so only the last decoder blocks x
-// (window - 1) + 1 rows before a position (2,414) decide its logits and the state kept there.
-enum class PrefillTail : std::uint8_t {
-    // Every row.
-    Full,
-    // The exact count of rows before each position whose state the Engine keeps or resumes from
-    // (an anchor, a stored prefix, the prompt's end), from the step's chunk boundary at or below
-    // it: the chunks keep a full run's shapes, and the output is a full run's bit for bit.
-    Exact,
-    // A given count of rows before each such position, from that row on; below the exact count the
-    // decoder blocks' first rows see a shorter window, which changes the output.
-    Rows,
-};
-
 } // namespace ninfer

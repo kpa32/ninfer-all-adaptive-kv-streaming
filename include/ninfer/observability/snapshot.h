@@ -210,7 +210,6 @@ struct RuntimeStats {
     // Host-side failures the worker survived by failing the in-flight requests and clearing the
     // context cache instead of latching the Engine unavailable.
     std::uint64_t engine_recoveries = 0;
-    NgramTableStats ngram_table;
     ExpertResidencyStats experts;
 };
 

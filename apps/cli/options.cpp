@@ -1,6 +1,4 @@
 #include "options.h"
-#include "product/kv_resident_options.h"
-#include "product/ngram_table_options.h"
 #include "product/hybrid_expert_options.h"
 #include "product/post_thinking_options.h"
 #include "product/reasoning_loop_options.h"
@@ -172,8 +170,6 @@ std::string usage_text(const char* argv0) {
            "                                a Qwen3.5-core model runs the nearby multiple\n"
            "                                of 128 that best fills the GPU's attention\n"
            "                                waves (up to 256 more)\n" +
-           std::string(ninfer::product::kPrefillTailHelp) +
-           std::string(ninfer::product::kIq1mExpertsHelp) +
            "  --max-new N                   cap on generated tokens (default 128)\n"
            "  --device N                    CUDA device index (default 0)\n"
            "  --devices A,B,...             one pipeline stage per listed GPU, each owning\n"
@@ -204,7 +200,6 @@ std::string usage_text(const char* argv0) {
            "                                Gemma and Flint allow 0 (layer banks only).\n"
            "                                Flash-Next disk requires a nonzero cache\n" +
            std::string(ninfer::product::kHybridExpertHelp) +
-           std::string(ninfer::product::kNgramTableHelp) +
            "  --no-cuda-graph               decode without CUDA Graphs\n"
            "  --gpu-clock-floor MHZ         hold the GPUs' graphics clock at MHZ or more while\n"
            "                                a request runs, so pipeline stages do not wait at\n"
@@ -218,8 +213,7 @@ std::string usage_text(const char* argv0) {
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            "); alias --vram-headroom-mib\n"
            "  --kv-dtype T                  bf16 (default), int8, fp8, rk8v4, rk4v4,\n"
-           "                                rk4v4-e8, rk2v4-e8, nvfp4 or k8v4\n" +
-           std::string(product::kKvResidentHelp) +
+           "                                rk4v4-e8, rk2v4-e8, nvfp4 or k8v4\n"
            "\n"
            "SPECULATIVE DECODING\n"
            "  --spec none|mtp|dflash|dflash2|dspark\n"
@@ -392,10 +386,6 @@ Options parse_options(int argc, char** argv) {
                 arg, [&]() -> const char* { return value(arg); }, options.steering)) {
             continue;
         }
-        if (ninfer::product::parse_prompt_route_option(arg, options.prompt_routes,
-                                                       [&] { return value(arg); })) {
-            continue;
-        }
         if (arg == "--prompt") {
             options.prompt = value(arg);
         } else if (arg == "--chat-template") {
@@ -469,10 +459,6 @@ Options parse_options(int argc, char** argv) {
             }
         } else if (product::parse_hybrid_expert_option(arg, options.hybrid_experts,
                                                       [&] { return value(arg); })) {
-        } else if (product::parse_ngram_table_option(arg, options.ngram_table,
-                                                     [&] { return value(arg); })) {
-        } else if (product::parse_kv_resident_option(arg, options.kv_resident_positions,
-                                                     [&] { return value(arg); })) {
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_cache(value(arg));
         } else if (arg == "--spec") {

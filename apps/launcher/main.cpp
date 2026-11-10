@@ -138,7 +138,7 @@ Options parse(int argc, char** argv) {
                  arg == "--disk-kv-path" || arg == "--request-log-jsonl" ||
                  arg == "--thinking-budget-message" || arg == "--slot-save-path" ||
                  arg == "--models-dir" || arg == "--models-preset" || arg == "--graft" ||
-                 arg == "--default-graft" || arg == "--ngram-table" || arg == "--ngram-profile" ||
+                 arg == "--default-graft" ||
                  arg == "--corpus" || arg == "--text" || arg == "--output" ||
                  arg == "--weights" || arg == "-m" || arg == "-f" || arg == "--output-file" ||
                  arg == "--out" || arg == "--evaluate") {
@@ -269,8 +269,7 @@ int main(int argc, char** argv) {
         const bool has12 = fs::is_regular_file(runtime(root, 12));
         const bool has13 = fs::is_regular_file(runtime(root, 13));
         int selected = options.requested;
-        if (help || options.devices.empty() || std::string_view(NINFER_COMMAND) == "ninfer-ngram-profile") {
-            // The n-gram profiler is a CPU command. It needs no device selection.
+        if (help || options.devices.empty()) {
             // The packager captures each command's real help before shipping.
             // Linux uses a temporary driver stub for this build-tree operation.
             if (!selected) selected = has13 ? 13 : 12;

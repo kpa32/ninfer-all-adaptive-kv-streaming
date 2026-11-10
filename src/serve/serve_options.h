@@ -6,7 +6,6 @@
 #include "ninfer/model_enums.h"
 #include "ninfer/request.h"
 #include "product/logging/logging.h"
-#include "product/prompt_route_options.h"
 #include "product/steering_options.h"
 #include "serve/request.h"
 
@@ -86,12 +85,10 @@ struct ServeOptions {
     TensorParallelTransport tensor_parallel_transport = TensorParallelTransport::Auto;
     TensorParallelPartials tensor_parallel_prompt_partials = TensorParallelPartials::Fp32;
     bool invariant_attention         = false;
-    // Qwen3.8-Flash-Next: where the expert banks live, and where its n-gram table comes from.
+    // Native Qwen MoE: where the expert banks live.
     ExpertResidency expert_residency = ExpertResidency::Device;
     std::optional<std::uint64_t> expert_cache_bytes;
     HybridExpertOptions hybrid_experts;
-    NgramTableOptions ngram_table;
-    std::optional<std::uint32_t> kv_resident_positions; // Flash-Next: --kv-resident
     KvCacheStorage kv_cache                = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
     bool ngram_native_sessions = false;
@@ -170,8 +167,6 @@ struct ServeOptions {
     // and --control-vector-layer-range: the adapters a request's `lora` names by index, and the
     // control vectors every request runs with.
     product::SteeringFlags steering;
-    // --prefill-tail and --iq1m-experts.
-    product::PromptRouteFlags prompt_routes;
     std::optional<std::uint32_t> default_thinking_budget;
     // --reasoning-loop off|stop|conclude: the reasoning-loop guard for every thinking request,
     // constrained ones included (off by default).

@@ -138,22 +138,6 @@ struct RuntimeHostWorkStats {
     std::uint64_t stats_publication_invocations = 0;
 };
 
-// Qwen3.8-Flash-Next's n-gram table reads, monotonic. A batch is the rows of one pass; its latency
-// runs from the pass's request to its last row, and latency_histogram[b] counts the batches that
-// took [2^(b-1), 2^b) microseconds (b = 0: under one). A stall is a pass whose stage waited for
-// the rows after the layers before the first PLE layer, and stall_seconds is the device time it
-// waited.
-struct NgramTableStats {
-    static constexpr std::size_t kLatencyBuckets = 24;
-    std::uint64_t rows                           = 0; // rows the passes addressed
-    std::uint64_t resident_rows                  = 0; // of them, served from RAM
-    std::uint64_t batches                        = 0;
-    double read_seconds                          = 0.0; // latency summed over the batches
-    std::array<std::uint64_t, kLatencyBuckets> latency_histogram{};
-    std::uint64_t stalls = 0;
-    double stall_seconds = 0.0;
-};
-
 // Routed experts with host or disk residency, monotonic. A route is one
 // (token, expert) pair a pass took; a hit found its expert in a device slot. transferred_bytes
 // counts the expert bytes copied to the devices (misses and cache admissions); cpu_routes the

@@ -292,21 +292,6 @@ void print_generation_summary(const ninfer::GenerationResult& result,
         }
     }
 
-    // Qwen3.8-Flash-Next's n-gram table reads since startup (warm-up included).
-    const ninfer::NgramTableStats& rows = stats.ngram_table;
-    if (rows.rows != 0) {
-        std::ostringstream pass, stall;
-        pass << std::fixed << std::setprecision(1)
-             << 1e6 * rows.read_seconds /
-                    static_cast<double>(std::max<std::uint64_t>(rows.batches, 1))
-             << " us over " << rows.batches << " passes";
-        stall << rows.stalls << " (" << std::fixed << std::setprecision(2)
-              << 1e3 * rows.stall_seconds << " ms)";
-        print_metric("ngram rows read", std::to_string(rows.rows));
-        print_metric("ngram rows from RAM", format_percent(rows.resident_rows, rows.rows));
-        print_metric("ngram read per pass", pass.str());
-        print_metric("ngram stalls", stall.str());
-    }
     const ninfer::ExpertResidencyStats& experts = stats.experts;
     if (experts.routes != 0) {
         std::ostringstream moved;
@@ -384,8 +369,6 @@ int main(int argc, char** argv) {
         engine_options.tensor_parallel_prompt_partials = cli.tensor_parallel_prompt_partials;
         engine_options.invariant_attention      = cli.invariant_attention;
         engine_options.expert_residency              = cli.expert_residency;
-        engine_options.ngram_table                   = cli.ngram_table;
-        engine_options.kv_resident_positions         = cli.kv_resident_positions;
         engine_options.expert_cache_bytes            = cli.expert_cache_bytes;
         engine_options.hybrid_experts                = cli.hybrid_experts;
         engine_options.max_context              = cli.max_context;
@@ -404,7 +387,6 @@ int main(int argc, char** argv) {
         engine_options.embedding_q6             = cli.embedding_q6;
         engine_options.embedding_residency      = cli.embedding_residency;
         cli.steering.apply(engine_options);
-        cli.prompt_routes.apply(engine_options);
         engine_options.mtp_experts_q4           = cli.mtp_experts_q4;
         engine_options.gdn_state_fp16           = cli.gdn_state_fp16;
         engine_options.rope_yarn                = cli.rope_yarn;

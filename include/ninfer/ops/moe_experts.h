@@ -76,8 +76,7 @@ struct GgufMoeWeights {
     // vector products at decode widths.
     std::int32_t shared_width = 640;
     // IQ1_M tables of a wide call over device_resident banks take the matrix kernel too once the
-    // call routes enough rows to each expert; false keeps them on the vector products
-    // (EngineOptions::iq1m_expert_matrix).
+    // call routes enough rows to each expert; false keeps them on the vector products.
     bool iq1m_matrix = true;
 };
 

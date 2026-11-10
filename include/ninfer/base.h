@@ -56,9 +56,6 @@ inline constexpr std::size_t kDefaultHybridHostCacheBytes = 8ULL << 30;
 
 inline constexpr std::size_t kDefaultKvCapacityHeadroomBytes = 1024ULL * 1024ULL * 1024ULL;
 
-// Flash-Next's default for EngineOptions::kv_resident_positions with host or disk experts.
-inline constexpr std::uint32_t kDefaultKvResidentPositions = 32768;
-
 // The most token ids one request may name for the typed readout (ExecutionOptions::readout_tokens).
 inline constexpr std::size_t kMaximumReadoutTokens = 32;
 

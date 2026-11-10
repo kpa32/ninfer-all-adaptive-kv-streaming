@@ -6,7 +6,6 @@
 #include "ninfer/model_enums.h"
 #include "ninfer/request.h"
 #include "product/logging/logging.h"
-#include "product/prompt_route_options.h"
 #include "product/steering_options.h"
 
 #include <cstdint>
@@ -50,8 +49,6 @@ struct Options {
     ninfer::ExpertResidency expert_residency = ninfer::ExpertResidency::Device;
     std::optional<std::uint64_t> expert_cache_bytes;
     ninfer::HybridExpertOptions hybrid_experts;
-    ninfer::NgramTableOptions ngram_table;
-    std::optional<std::uint32_t> kv_resident_positions; // Flash-Next: --kv-resident
 
     KvCacheStorage kv_cache = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
@@ -88,8 +85,6 @@ struct Options {
     std::optional<ReasoningEffort> reasoning_effort;
     // LoRA adapters (at their scales) and control vectors the run steers with.
     ninfer::product::SteeringFlags steering;
-    // --prefill-tail and --iq1m-experts.
-    ninfer::product::PromptRouteFlags prompt_routes;
 
     std::vector<TokenId> stop_token_ids;
     std::vector<StopString> stop_strings;

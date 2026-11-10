@@ -1,7 +1,7 @@
 #include "ninfer/engine.h"
 #include "text/structured_output.h"
 
-#include "artifact/reader.h"
+#include "artifact/framing.h"
 #include "core/device.h"
 #include "core/gpu_clock_floor.h"
 #include "core/nvtx.h"
@@ -13,10 +13,6 @@
 #include "runtime/engine/context_cache/hybrid_resource_manager.h"
 #include "runtime/engine/diagnostics.h"
 #include "runtime/engine/model_instance.h"
-#include "runtime/engine/deepseek_v41_core.h"
-#include "runtime/engine/flint_core.h"
-#include "runtime/engine/gemma4_core.h"
-#include "runtime/engine/qwen4_exp_core.h"
 #include "runtime/engine/slot_spill_guard.h"
 
 #include <algorithm>
@@ -30,7 +26,6 @@
 #include <mutex>
 #include <sstream>
 #include <thread>
-#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -40,113 +35,6 @@
 
 namespace ninfer {
 namespace {
-
-// Gemma 4, Flint, DeepSeek-V4.1 and Flash-Next: families with a core of their own, not the
-// Qwen3.5 load and Program.
-bool own_family_artifact(const std::filesystem::path& path) {
-    return runtime::is_gemma4_artifact(path) || runtime::is_flint_artifact(path) ||
-           runtime::is_deepseek_v41_artifact(path) || runtime::is_qwen4_exp_artifact(path);
-}
-
-// Those families keep context caches of their own, which the checkpoint catalog's options
-// configure; the hybrid prefix cache, the server's default, belongs to the Qwen3.5 Program.
-EngineOptions with_family_context_cache(EngineOptions options) {
-    if (own_family_artifact(options.artifact_path)) {
-        options.context_cache.mode = ContextCacheMode::Legacy;
-    }
-    return options;
-}
-
-// The host token embedding is a Qwen3.5 load placement; the other families bind their own tables.
-EngineOptions with_family_embedding(EngineOptions options) {
-    if (options.embedding_residency != EmbeddingResidency::Device &&
-        own_family_artifact(options.artifact_path)) {
-        throw std::invalid_argument(
-            "--embedding-residency host applies to Qwen3_5ForCausalLM and "
-            "Qwen3_5MoeForCausalLM artifacts");
-    }
-    return options;
-}
-
-// LoRA adapters and control vectors edit the Qwen3.5 text layers' residual.
-EngineOptions with_family_steering(EngineOptions options) {
-    if ((!options.lora_adapters.empty() || !options.control_vectors.empty()) &&
-        own_family_artifact(options.artifact_path)) {
-        throw std::invalid_argument(
-            "--lora and --control-vector apply to Qwen3_5ForCausalLM and Qwen3_5MoeForCausalLM "
-            "artifacts");
-    }
-    return options;
-}
-
-// Position-split and invariant attention are Qwen3.5 Program schedules over its paged cache. The
-// partial-sum exchange is the Qwen3.5 Program's and Flash-Next's; the other families divide only
-// their routed experts and sum them their own way.
-EngineOptions with_family_attention(EngineOptions options) {
-    if ((options.tensor_attention != TensorAttention::Heads || options.invariant_attention) &&
-        own_family_artifact(options.artifact_path)) {
-        throw std::invalid_argument(
-            "--tensor-attention and --invariant-attention apply to Qwen3_5ForCausalLM and "
-            "Qwen3_5MoeForCausalLM artifacts");
-    }
-    if (options.tensor_parallel_transport != TensorParallelTransport::Auto &&
-        own_family_artifact(options.artifact_path) &&
-        !runtime::is_qwen4_exp_artifact(options.artifact_path)) {
-        throw std::invalid_argument(
-            "--tensor-parallel-transport applies to Qwen3_5ForCausalLM, Qwen3_5MoeForCausalLM "
-            "and Qwen4ExpForCausalLM artifacts");
-    }
-    if (options.tensor_parallel_prompt_partials != TensorParallelPartials::Fp32 &&
-        own_family_artifact(options.artifact_path) &&
-        !runtime::is_qwen4_exp_artifact(options.artifact_path)) {
-        throw std::invalid_argument(
-            "--tensor-parallel-prompt-partials applies to Qwen3_5ForCausalLM, "
-            "Qwen3_5MoeForCausalLM and Qwen4ExpForCausalLM artifacts");
-    }
-    return options;
-}
-
-// Without --spec (SpeculativeOptions::automatic), a Flash-Next artifact with host experts, or a
-// Gemma 4 one with host or disk experts, drafts with the drafter it carries: a verification
-// window's routes share the layer's missing experts, which the CPU computes while the cached ones
-// run. Flash-Next's disk experts have no CPU share: a layer reads every expert its cache lacks
-// before it runs, so a verification's drafts multiply the reads. Flash-Next takes its DFlash2
-// drafter where the artifact carries one, which drafted faster than its MTP block, else the block;
-// over pipeline stages, where DFlash2 does not run, the block. Gemma 4 takes its assistant.
-EngineOptions with_family_speculation(EngineOptions options) {
-    SpeculativeOptions& speculative = options.speculative;
-    if (!speculative.automatic || speculative.backend != SpeculativeBackend::None ||
-        options.expert_residency == ExpertResidency::Device ||
-        options.purpose != EnginePurpose::Generation) {
-        return options;
-    }
-    const bool flash_next = runtime::is_qwen4_exp_artifact(options.artifact_path);
-    if (flash_next ? options.expert_residency == ExpertResidency::Disk
-                   : !runtime::is_gemma4_artifact(options.artifact_path)) {
-        return options;
-    }
-    const auto& components = artifact::Reader(options.artifact_path).directory().components;
-    const bool stages = options.devices.size() > 1 && !options.tensor_parallel;
-    if (flash_next && !stages && components.contains("dflash2")) {
-        speculative.backend      = SpeculativeBackend::DFlash2;
-        speculative.draft_tokens = SpeculativeOptions::kAutomaticDFlash2Tokens;
-        // The round verifies through the first draft the selector is unsure of, unless
-        // --draft-min-p sets another floor.
-        if (!speculative.draft_min_p) {
-            speculative.draft_min_p = SpeculativeOptions::kAutomaticDFlash2MinP;
-        }
-        return options;
-    }
-    if (!components.contains("mtp")) { return options; }
-    speculative.backend      = SpeculativeBackend::Mtp;
-    speculative.draft_tokens = SpeculativeOptions::kAutomaticDraftTokens;
-    // Flash-Next's chain stops at an unlikely draft, which the round would likely reject, unless
-    // --draft-min-p sets the floor.
-    if (flash_next && !speculative.draft_min_p) {
-        speculative.draft_min_p = SpeculativeOptions::kAutomaticDraftMinP;
-    }
-    return options;
-}
 
 // One line naming the pairs of devices without peer access: their transfers, a tensor-parallel
 // exchange included, stage through pinned host memory instead of reading each other's memory.
@@ -423,78 +311,15 @@ public:
         runtime::EngineCore<runtime::ModelInstance,
                             runtime::HybridResourceManager<runtime::ModelInstance::ModelContract>>;
     using ScoringCore = runtime::CausalScoreCore<runtime::ModelInstance>;
-    // Qwen3.8-Flash-Next: its own model family and core, which serves generation and scoring.
-    using Qwen4ExpCore = runtime::Qwen4ExpCore;
-    // Gemma 4: its own model family and core, which serves generation and scoring.
-    using Gemma4Core = runtime::Gemma4Core;
-    // Flint: likewise.
-    using FlintCore = runtime::FlintCore;
-    using DeepSeekV41Core = runtime::DeepSeekV41Core;
     using Core = std::variant<std::monostate, std::unique_ptr<GenerationCore>,
-                              std::unique_ptr<HybridGenerationCore>, std::unique_ptr<ScoringCore>,
-                              std::unique_ptr<Qwen4ExpCore>, std::unique_ptr<Gemma4Core>,
-                              std::unique_ptr<FlintCore>, std::unique_ptr<DeepSeekV41Core>>;
+                              std::unique_ptr<HybridGenerationCore>, std::unique_ptr<ScoringCore>>;
 
     explicit Impl(EngineOptions engine_options)
-        : options(runtime::normalize_engine_options(
-              with_family_speculation(with_family_context_cache(with_family_attention(
-                  with_family_steering(with_family_embedding(std::move(engine_options)))))))),
+        : options(runtime::normalize_engine_options(std::move(engine_options))),
           device(initialize_device(options)),
           clock_floor(device.device_ids(), options.gpu_clock_floor_mhz) {
         report_gpu_clock_floor(options, clock_floor);
         nvtx::ScopedRange load_range(nvtx::Name::EngineLoad, nvtx::Category::Runtime);
-        if (runtime::is_gemma4_artifact(options.artifact_path)) {
-            auto constructed    = runtime::construct_gemma4(options, device);
-            gemma               = std::move(constructed.instance);
-            load                = std::move(constructed.load);
-            load.cuda_sync_mode = device.sync_mode();
-            model_metadata      = std::move(constructed.model_metadata);
-            sampling_defaults   = gemma->frontend.sampling_defaults();
-            StartupPhaseScope finalize_phase(options.startup_observer,
-                                             StartupPhase::EngineFinalize);
-            core = std::make_unique<Gemma4Core>(*gemma, device, options);
-            finalize_phase.complete();
-            return;
-        }
-        if (runtime::is_flint_artifact(options.artifact_path)) {
-            auto constructed    = runtime::construct_flint(options, device);
-            flint               = std::move(constructed.instance);
-            load                = std::move(constructed.load);
-            load.cuda_sync_mode = device.sync_mode();
-            model_metadata      = std::move(constructed.model_metadata);
-            sampling_defaults   = flint->frontend.sampling_defaults();
-            StartupPhaseScope finalize_phase(options.startup_observer,
-                                             StartupPhase::EngineFinalize);
-            core = std::make_unique<FlintCore>(*flint, device, options);
-            finalize_phase.complete();
-            return;
-        }
-        if (runtime::is_deepseek_v41_artifact(options.artifact_path)) {
-            auto constructed    = runtime::construct_deepseek_v41(options, device);
-            deepseek            = std::move(constructed.instance);
-            load                = std::move(constructed.load);
-            load.cuda_sync_mode = device.sync_mode();
-            model_metadata      = std::move(constructed.model_metadata);
-            sampling_defaults   = deepseek->frontend.sampling_defaults();
-            StartupPhaseScope finalize_phase(options.startup_observer,
-                                             StartupPhase::EngineFinalize);
-            core = std::make_unique<DeepSeekV41Core>(*deepseek, device, options);
-            finalize_phase.complete();
-            return;
-        }
-        if (runtime::is_qwen4_exp_artifact(options.artifact_path)) {
-            auto constructed    = runtime::construct_qwen4_exp(options, device);
-            flash               = std::move(constructed.instance);
-            load                = std::move(constructed.load);
-            load.cuda_sync_mode = device.sync_mode();
-            model_metadata      = std::move(constructed.model_metadata);
-            sampling_defaults   = flash->frontend.sampling_defaults();
-            StartupPhaseScope finalize_phase(options.startup_observer,
-                                             StartupPhase::EngineFinalize);
-            core = std::make_unique<Qwen4ExpCore>(*flash, device, options);
-            finalize_phase.complete();
-            return;
-        }
         // Native Qwen3.5 MoE host or disk experts: the CPU computes a share of a call's misses,
         // the GPU's products bit for bit. Routing profiles fill and record their cache.
         if (options.hybrid_experts.mapped_misses || options.hybrid_experts.tail_skip_rank != 0 ||
@@ -514,7 +339,7 @@ public:
             throw std::invalid_argument("expert routing profiles require host or disk experts");
         }
         if (options.speculative.draft_min_p.value_or(0.0F) != 0) {
-            throw std::invalid_argument("--draft-min-p requires Qwen3.8-Flash-Next drafts");
+            throw std::invalid_argument("--draft-min-p applies to no supported drafter");
         }
         auto constructed  = runtime::construct_model(options, device);
         // construct_model returns the resolved options for this instance. Anything the model had
@@ -651,32 +476,16 @@ public:
         return generation == nullptr ? nullptr : generation->get();
     }
 
-    // The model's frontend and prompt capacity, whichever family it is.
-    [[nodiscard]] const models::qwen3_5::Frontend& frontend() const {
-        return gemma      ? gemma->frontend
-               : flint    ? flint->frontend
-               : deepseek ? deepseek->frontend
-               : flash    ? flash->frontend
-                          : active->frontend;
-    }
+    // The model's frontend and prompt capacity.
+    [[nodiscard]] const models::qwen3_5::Frontend& frontend() const { return active->frontend; }
 
-    [[nodiscard]] std::uint32_t capacity() const {
-        return gemma      ? gemma->capacity
-               : flint    ? flint->capacity
-               : deepseek ? deepseek->capacity
-               : flash    ? flash->capacity
-                          : active->capacity;
-    }
+    [[nodiscard]] std::uint32_t capacity() const { return active->capacity; }
 
     EngineOptions options;
     DeviceContext device;
     // Held by each generation and scoring call (GpuClockFloor::hold).
     GpuClockFloor clock_floor;
     std::unique_ptr<runtime::ModelInstance> active;
-    std::unique_ptr<runtime::Qwen4ExpInstance> flash;
-    std::unique_ptr<runtime::Gemma4Instance> gemma;
-    std::unique_ptr<runtime::FlintInstance> flint;
-    std::unique_ptr<runtime::DeepSeekV41Instance> deepseek;
     LoadSummary load;
     ModelMetadata model_metadata;
     ModelSamplingDefaults sampling_defaults;
@@ -863,11 +672,7 @@ std::vector<float> Engine::score_tokens(std::vector<TokenId> tokens, std::uint32
     std::vector<float> result  = std::visit(
         [&](auto& core) -> std::vector<float> {
             using CoreState = std::remove_cvref_t<decltype(core)>;
-            if constexpr (std::is_same_v<CoreState, std::unique_ptr<Impl::ScoringCore>> ||
-                          std::is_same_v<CoreState, std::unique_ptr<Impl::Qwen4ExpCore>> ||
-                          std::is_same_v<CoreState, std::unique_ptr<Impl::Gemma4Core>> ||
-                          std::is_same_v<CoreState, std::unique_ptr<Impl::FlintCore>> ||
-                          std::is_same_v<CoreState, std::unique_ptr<Impl::DeepSeekV41Core>>) {
+            if constexpr (std::is_same_v<CoreState, std::unique_ptr<Impl::ScoringCore>>) {
                 return core->score(std::move(prompt.impl_->value), first_target);
             } else {
                 throw std::logic_error("Engine scoring core is unavailable");
@@ -1129,15 +934,11 @@ GenerationHandle Engine::submit_branches(std::vector<GenerationBranch> branches,
 bool Engine::runs_branches() const {
     if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
     if (impl_->options.purpose != EnginePurpose::Generation) { return false; }
-    if (impl_->flash || impl_->gemma || impl_->flint || impl_->deepseek) { return true; }
     return impl_->active->program->runs_branched_reads();
 }
 
 std::uint32_t Engine::branch_token_limit() const {
     if (!runs_branches()) { return 0; }
-    if (impl_->flash || impl_->gemma || impl_->flint || impl_->deepseek) {
-        return std::numeric_limits<std::uint32_t>::max();
-    }
     return impl_->active->program->prefill_batch_capacity();
 }
 
@@ -1170,11 +971,6 @@ std::uint32_t Engine::concurrent_output_budget(const PreparedPrompt& prompt) con
         throw std::logic_error("concurrent_output_budget requires a Generation Engine");
     }
     if (prompt.impl_ == nullptr) { throw std::invalid_argument("PreparedPrompt is empty"); }
-    if (impl_->flash || impl_->gemma || impl_->flint || impl_->deepseek) {
-        // One sequence at a time: the whole window past the prompt.
-        const std::uint32_t prompt_tokens = prompt.impl_->summary.prompt_tokens;
-        return prompt_tokens >= impl_->capacity() ? 0U : impl_->capacity() - prompt_tokens + 1U;
-    }
     return impl_->active->program->concurrent_output_budget(prompt.impl_->summary.prompt_tokens);
 }
 

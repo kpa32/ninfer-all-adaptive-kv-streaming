@@ -294,26 +294,14 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     // is per changed layer, so it is taken when the phase changes and never per chunk; a phase whose
     // planner answer equals the current split costs nothing.
     decode_phase_ = decode_phase;
-    // The prompt plans on every chunk, before the phase gate: its shape covers the whole prompt, so it
-    // must be in force before the frontier reaches a page the shape does not hold, and re-planning it
-    // is idempotent (an equal plan is no work).
+    // The pool is planned for the shape a request starts in - its prompt, over the context the capacity
+    // allows (startup.cpp) - so the prompt phase has nothing to install. Planning it again here would
+    // use a different slot count than the capacity did, and a shape that "fits" the physical pool while
+    // the capacity holds fewer pages comes out all-resident with no ring, which is a frontier with
+    // nowhere to put the page it drops.
     if (!decode_phase) {
         phase_ = 0;
-        // The prompt's shape is planned over the context the pool has to serve, not over this prompt's
-        // own pages: the frontier only says how far the request has reached, and a shape cut down to it
-        // leaves no ring for the page a later chunk drops. A context that the pool holds entirely is
-        // all-resident by the planner's own rule, and then its window is that whole context.
-        const std::uint32_t context = pages_per_layer_;
-        if (context == 0) { return false; }
-        std::optional<KVStreamSplit> target =
-            plan_kv_stream_uniform(slot_count_, context, layers_, split_.run_pages, 1.0);
-        if (!target) { return false; }
-        if (target->layer_resident == split_.layer_resident &&
-            target->ring_pages == split_.ring_pages) {
-            return false;
-        }
-        repartition(*target, streams, context);
-        return true;
+        return false;
     }
     const int phase = 1;
     if (phase_ == phase) { return false; }

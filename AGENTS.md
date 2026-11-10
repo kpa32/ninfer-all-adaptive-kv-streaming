@@ -247,9 +247,14 @@ RTX 4080 SUPER 16,376 MiB, driver 615.71.09). CUDA 13.4: `nvcc` is not on the no
 PATH, use `/usr/local/cuda/bin/nvcc`; cmake 3.31.6; Python 3.13.5.
 
 - **Dedicated directory.** `/home/kpa/ninfer-16` is used exclusively for this fork branch,
-  isolated from the other trees on the host. The repo clone and build tree live under it;
-  `models/` is already in place (`Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer` plus
-  `Qwen-UD-Chat-Templates.jinja`).
+  isolated from the other trees on the host. The repo clone is
+  `/home/kpa/ninfer-16/ninfer-all-adaptive-kv-streaming`; its build tree is `build-sm89`
+  (Release, sm_89, Ninja, ccache). `models/` is already in place
+  (`Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer` plus `Qwen-UD-Chat-Templates.jinja`).
+- **Never touch the other trees' processes.** A model server from another tree may be
+  running on the card (e.g. `~/ninfer/ninfer-all/build-sm89/apps/ninfer-serve`); never
+  kill, restart, or otherwise interfere with it. Compiling needs no GPU; running
+  benchmarks does — check `nvidia-smi --query-compute-apps` first.
 - **Forbidden zone.** `~/ninfer/` on the host: do not read, write, create, or build there;
   the stock binaries inside are executed only by the bench tool.
 - **Old tree.** `~/ninfer-fork/ninfer-all-adaptive-kv-streaming` belongs to the
@@ -259,9 +264,9 @@ Typical commands (sync only after pushing; never edit sources during a build):
 
 ```bash
 # sync the dedicated tree (after local push)
-ssh kpa@192.168.2.13 'cd /home/kpa/ninfer-16/<repo> && git fetch -q origin && git reset --hard -q origin/fork-qwen38-27b-16gb'
-# incremental single target
-ssh kpa@192.168.2.13 'cd /home/kpa/ninfer-16/<repo> && cmake --build <build-dir> --target ninfer -j 16'
+ssh kpa@192.168.2.13 'cd /home/kpa/ninfer-16/ninfer-all-adaptive-kv-streaming && git fetch -q origin && git reset --hard -q origin/fork-qwen38-27b-16gb'
+# configure once, then build incrementally (16 threads; sm_89)
+ssh kpa@192.168.2.13 'cd /home/kpa/ninfer-16/ninfer-all-adaptive-kv-streaming && ./build.sh'
 # single-file syntax check (not a substitute for running)
 g++ -std=c++20 -fsyntax-only -Iinclude -Isrc -I/usr/local/cuda/include <file>.cpp
 ```

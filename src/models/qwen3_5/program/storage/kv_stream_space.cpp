@@ -299,17 +299,20 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     // is idempotent (an equal plan is no work).
     if (!decode_phase) {
         phase_ = 0;
-        const std::uint32_t prompt = pages != 0 ? pages : pages_per_layer_;
-        if (prompt == 0) { return false; }
+        // The prompt's shape is planned over the context the pool has to serve, not over this prompt's
+        // own pages: the frontier only says how far the request has reached, and a shape cut down to it
+        // leaves no ring for the page a later chunk drops. A context that the pool holds entirely is
+        // all-resident by the planner's own rule, and then its window is that whole context.
+        const std::uint32_t context = pages_per_layer_;
+        if (context == 0) { return false; }
         std::optional<KVStreamSplit> target =
-            plan_kv_stream_split(slot_count_, prompt, layers_, split_.run_pages,
-                                 kv_stream_ring_ratio());
+            plan_kv_stream_uniform(slot_count_, context, layers_, split_.run_pages, 1.0);
         if (!target) { return false; }
         if (target->layer_resident == split_.layer_resident &&
             target->ring_pages == split_.ring_pages) {
             return false;
         }
-        repartition(*target, streams, prompt);
+        repartition(*target, streams, context);
         return true;
     }
     const int phase = 1;
@@ -946,15 +949,6 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     }
     if (active_pages > pages_per_layer_) {
         throw std::invalid_argument("A streamed KV frontier exceeds the cache's context");
-    }
-    if (ring_runs_ == 0 && active_pages > split_.resident_of(0)) {
-        // An all-resident split has no ring to hold a page its window drops, so its window must cover
-        // the whole frontier. Widening it here would move every layer's slot base without moving the
-        // bytes under it, which reads the wrong page (measured as a repetition loop); `repartition`
-        // owns that move, so the frontier is planned before the pages are written instead
-        // (enter_layout in the prompt phase). Reaching here means a split contradicted its frontier.
-        throw std::logic_error(
-            "An all-resident streamed KV split has a frontier past its window");
     }
     for (std::uint32_t page = active_; page < active_pages; ++page) {
         // The page appears in its layer's window, where this round's append writes it.

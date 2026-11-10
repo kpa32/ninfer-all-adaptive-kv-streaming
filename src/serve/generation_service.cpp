@@ -925,6 +925,11 @@ void GenerationService::warmup() {
     turn.content.push_back(std::move(content));
     request.messages.push_back(std::move(turn));
     request.max_tokens = 4;
+    // A warmup must not draft. The MTP cache is not reset between requests the way the text pool is
+    // (a request's own MTP state is committed by its own prefix), so a warmup that drafted left the
+    // drafter's frontier ahead of the first real request's - which measured as the process losing
+    // the Engine wait with no line in the log, on a streamed run under `--spec mtp`.
+    request.speculative_drafting = false;
     std::vector<StagedRequest> staged;
     staged.push_back(stage_impl(request, GenerationConsumerMode::Aggregate, {}, {}, {},
                                 CacheParticipation::Disabled, DeadlinePolicy::UnboundedStartup));

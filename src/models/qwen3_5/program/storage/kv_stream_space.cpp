@@ -529,12 +529,12 @@ bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
     const std::uint32_t streamed = std::max(max_streamed_pages(), 1U);
     double ratio = static_cast<double>(decision.ring_pages) / static_cast<double>(streamed);
     if (!(ratio >= 1.0)) { ratio = 1.0; }
-    // The split must serve the pool's context, not the frontier in force: a plan cut down to the
-    // frontier comes out all-resident as soon as the pages written so far fit the pool
-    // (16 x 2231 <= 36567 at 192512), and the next page the request appends then has no ring to be read
-    // from. kv-streaming-strategy.md §5 M2 plans the ring over the context (R = r (P - W)), and §8 P1
-    // keeps it on the pool's context.
-    const auto next = resize_kv_stream_split(split_, slot_count_, pages_per_layer_, ratio);
+    // Sized to the frontier, as it always was: this is the layout the equivalence baseline passes
+    // with, and SPEC completion condition 2 requires streamed and resident logprobs to agree exactly.
+    // A plan cut down to the frontier can come out all-resident once the pages written so far fit the
+    // pool; `advance` widens such a window through `repartition`, so the layout stays all-resident
+    // (= the resident layout) and nothing is dropped.
+    const auto next = resize_kv_stream_split(split_, slot_count_, active_, ratio);
     if (!next) { return false; }
     if (next->layer_resident == split_.layer_resident && next->ring_pages == split_.ring_pages) {
         return false;
@@ -942,6 +942,16 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     }
     if (active_pages > pages_per_layer_) {
         throw std::invalid_argument("A streamed KV frontier exceeds the cache's context");
+    }
+    if (ring_runs_ == 0 && active_pages > split_.resident_of(0)) {
+        // An all-resident split has no ring, so its window is the frontier by definition: a served warmup
+        // or a frontier that keeps growing past the window it was planned with reaches this on a round.
+        // Widening it is a partition change - every layer's slot base is a prefix sum of the windows - and
+        // `repartition` is what may make one: it republishes the tables and leaves the bytes where they
+        // are, because the pages stay inside the widened window. The result is still all-resident, which
+        // is the resident layout, so the equivalence comparison against resident is unchanged.
+        repartition(kv_stream_all_resident(active_pages, layers_, split_.run_pages), streams,
+                    active_pages);
     }
     for (std::uint32_t page = active_; page < active_pages; ++page) {
         // The page appears in its layer's window, where this round's append writes it.

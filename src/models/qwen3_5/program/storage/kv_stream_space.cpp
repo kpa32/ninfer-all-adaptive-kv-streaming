@@ -294,16 +294,11 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     // is per changed layer, so it is taken when the phase changes and never per chunk; a phase whose
     // planner answer equals the current split costs nothing.
     decode_phase_ = decode_phase;
-    const int phase = decode_phase ? 1 : 0;
-    if (phase_ == phase) { return false; }
-    phase_ = phase;
-    // The pool is planned for the shape a request starts in - its prompt (startup.cpp) - but a served
-    // warmup or an earlier request can leave a shorter shape behind, and a cached shape whose window is
-    // smaller than this prompt's frontier sends `advance` into a page that no ring can hold. The prompt
-    // phase therefore plans its own shape, from the whole prompt's pages. Its window may legitimately
-    // exceed the pages written so far (a first chunk holds one), which is why the partition is
-    // installed against the page count it was planned for rather than the frontier in force.
+    // The prompt plans on every chunk, before the phase gate: its shape covers the whole prompt, so it
+    // must be in force before the frontier reaches a page the shape does not hold, and re-planning it
+    // is idempotent (an equal plan is no work).
     if (!decode_phase) {
+        phase_ = 0;
         const std::uint32_t prompt = pages != 0 ? pages : pages_per_layer_;
         if (prompt == 0) { return false; }
         std::optional<KVStreamSplit> target =
@@ -317,6 +312,9 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
         repartition(*target, streams, prompt);
         return true;
     }
+    const int phase = 1;
+    if (phase_ == phase) { return false; }
+    phase_ = phase;
     // The diagnostic that reaches a boundary no product path reaches: a forced window per layer. Zero
     // makes every page stream (one whole-context extent per layer per round), which the planner allows
     // but a ratio never lands on exactly - an infeasible ratio falls back to the ring's floor. It is

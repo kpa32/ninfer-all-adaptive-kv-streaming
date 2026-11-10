@@ -621,34 +621,63 @@ void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams
     if (next.layer_resident == split_.layer_resident && next.ring_pages == split_.ring_pages) {
         return;
     }
-    // A page keeps its bytes where they are and changes only the slot it is named by, except the pages
-    // that cross a window boundary: those are written back to or read from their host record, which is
-    // the one source both sides agree on.
+    // A page's bytes do not follow its name: the slot a page is named by is its layer's base plus its
+    // position in the window, so a partition that moves either the base or the window's depth names the
+    // same page by another slot. A page that stays resident across the change therefore has to move,
+    // and the host authority is current only for pages that have streamed, so its window is written
+    // back first and read again into the slots the new shape names. Renaming a resident page without
+    // moving it (what this did before) pointed the table at whichever page held the slot instead: the
+    // same prompt then produced a different answer, and which one depended on the pool's geometry
+    // (kv-streaming-verification.md C14).
+    const auto renames_slots = [&](std::uint32_t layer) {
+        return split_.layer_offset(layer) != next.layer_offset(layer) ||
+               split_.resident_of(layer) != next.resident_of(layer);
+    };
+    // Every write-back first: a page leaving the window and a page that is only renamed both free the
+    // slots they held, and a restore below may name one of them.
     for (std::uint32_t layer = 0; layer < layers_; ++layer) {
         const std::uint32_t old_start = kv_stream_window_start(active_, split_, layer);
         const std::uint32_t new_start = kv_stream_window_start(active_, next, layer);
+        const bool renamed            = renames_slots(layer);
+        if (!renamed && new_start <= old_start) { continue; }
+        for (std::uint32_t page = old_start; page < active_; ++page) {
+            // A page that leaves the window must reach the host before its slot stops being its own; a
+            // page that stays resident and is renamed reaches it for the same reason: the restore reads
+            // it back into the slot the new shape names.
+            if (page < new_start || renamed) {
+                cache_->page_pool().copy_to_host_pages(
+                    kv_stream_window_slot(layer, page, split_), 1,
+                    host_pages(layer).subview(page, 1), streams);
+            }
+        }
+    }
+    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+        const std::uint32_t old_start = kv_stream_window_start(active_, split_, layer);
+        const std::uint32_t new_start = kv_stream_window_start(active_, next, layer);
+        const bool renamed            = renames_slots(layer);
         for (std::uint32_t page = 0; page < active_; ++page) {
-            const bool was_streamed = page < old_start;
-            const bool now_streamed = page < new_start;
+            const bool was_streamed     = page < old_start;
+            const bool now_streamed     = page < new_start;
             const std::int32_t new_slot = kv_stream_window_slot(layer, page, next);
-            if (was_streamed && !now_streamed) {
+            const std::int32_t old_slot = kv_stream_window_slot(layer, page, split_);
+            if (was_streamed) {
+                if (now_streamed) { continue; }
                 // The page becomes resident: its bytes come back from the authority into the slot its
                 // window position names.
                 cache_->page_pool().copy_from_host_pages(
                     host_pages(layer).subview(page, 1).data(), host_layout_, new_slot, 1, streams);
                 publish_slot(layer, page, new_slot, streams);
-            } else if (!was_streamed && now_streamed) {
-                // The page leaves the window: its bytes must reach the host before the slot it held
-                // stops being its own, exactly as a page the frontier drops does. Its streamed slot is
-                // assigned by the copy that brings it back, this round.
-                cache_->page_pool().copy_to_host_pages(
-                    kv_stream_window_slot(layer, page, split_), 1,
-                    host_pages(layer).subview(page, 1), streams);
-            } else if (!was_streamed && !now_streamed) {
-                // Both partitions keep the page resident, but the window's shape changed, so the slot
-                // it is named by did too.
-                publish_slot(layer, page, new_slot, streams);
+                continue;
             }
+            if (now_streamed) {
+                // Written back above; its streamed slot is assigned by the copy that brings it back.
+                continue;
+            }
+            if (old_slot == new_slot) { continue; }
+            // Resident before and after, renamed: the bytes written back above are this page's.
+            cache_->page_pool().copy_from_host_pages(host_pages(layer).subview(page, 1).data(),
+                                                     host_layout_, new_slot, 1, streams);
+            publish_slot(layer, page, new_slot, streams);
         }
     }
     split_     = next;

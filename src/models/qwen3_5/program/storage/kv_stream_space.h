@@ -276,9 +276,11 @@ public:
     bool evaluate_partition(RankStreams streams);
 
     // Moves the boundary between the resident window and the ring inside this space's fixed pool.
-    // Every slot is re-addressed, so the pages that change sides migrate once - a page leaving the
+    // Every slot is re-addressed, so a page that changes sides migrates once - a page leaving the
     // window is written back to its host record first, a page entering it is read back from there -
-    // and the block tables are republished. Rare by design: the controller rate-limits it.
+    // and a page that stays resident moves to the slot the new shape names it by, because its bytes do
+    // not follow a rename. The block tables are republished afterwards. Rare by design: the controller
+    // rate-limits it.
     void repartition(const KVStreamSplit& next, RankStreams streams, std::uint32_t frontier = 0);
 
     // Reads every timing pair the device has finished, closes the round in flight and returns the

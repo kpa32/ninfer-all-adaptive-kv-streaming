@@ -1844,16 +1844,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         if (options.devices.size() > 1) {
             throw std::invalid_argument("--kv-stream runs on one device");
         }
-        // A streamed run that drafts has not been made to work served yet: the Engine wait is entered
-        // and never returns, with nothing in the log, while the same request through the CLI returns.
-        // Refuse it rather than hang; NINFER_ALLOW_STREAMED_MTP=1 exists so the path can be
-        // reproduced while it is being fixed (kv-streaming-verification.md).
-        if (options.speculative.backend != SpeculativeBackend::None &&
-            std::getenv("NINFER_ALLOW_STREAMED_MTP") == nullptr) {
-            throw std::invalid_argument(
-                "--kv-stream cannot draft when served yet: pass --spec none (or set "
-                "NINFER_ALLOW_STREAMED_MTP=1 to reproduce the hang)");
-        }
         options.allow_prefix_reuse                   = false;
         options.context_cache.enabled                = false;
         options.context_cache.host_state_slots       = 0;

@@ -1386,11 +1386,18 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
             throw std::invalid_argument(
                 "--kv-stream retains one continuation: no shared prefixes and no long anchors");
         }
-        if ((!cache.device_state_slots || *cache.device_state_slots == 0) &&
-            cache.host_state_slots < 1) {
+        // A retained continuation's state image lives on the host shelf, beside the streamed
+        // arena's own authority. A device state slot buys a round-trip saving the streamed run
+        // cannot use, and a third device image beside the window rotates the lane's read/write
+        // pair against the page it is writing: the target then verifies against stale state from
+        // the third round on (measured, handoff.md). The guard table checks both slots.
+        if (cache.device_state_slots.value_or(options.max_concurrency) != 0) {
             throw std::invalid_argument(
-                "--kv-stream retains its endpoint StateImage: give it one device or host state "
-                "slot");
+                kv_stream_rejection_message(KVStreamRejection::RetainedContextDeviceSlot));
+        }
+        if (cache.host_state_slots < 1) {
+            throw std::invalid_argument(
+                kv_stream_rejection_message(KVStreamRejection::RetainedContextNoHostSlot));
         }
     }
     const KVStreamRequest streaming{
@@ -1404,6 +1411,8 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         .streamed_retention = options.context_cache.enabled &&
                               options.context_cache.mode == ContextCacheMode::Legacy &&
                               options.context_cache.host_kv_capacity_bytes == 0,
+        .device_state_slots = options.context_cache.device_state_slots.value_or(0),
+        .host_state_slots   = options.context_cache.host_state_slots,
     };
     if (const KVStreamRejection rejection = kv_stream_rejection(streaming);
         rejection != KVStreamRejection::None) {

@@ -183,10 +183,19 @@ with `--vision-max-merged`) at `auto` and `high`, and a quarter of that at `low`
 `--kv-stream` keeps a context past the device pool by giving each full-attention layer a resident
 window and borrowing one shared ring of slots per round. The ring belongs to one request at a time,
 so the flag fixes the run's shape instead of accepting a general server: `--max-concurrency 1`, one
-device, `--kv-capacity auto`, and prefix reuse dropped (a streamed run keeps no context to reuse). A
-startup that asks for any of the others is rejected with the flag that fixes it. The mode carries
-the CLI's defaults (`--embedding-residency host`, MTP's adaptive width; an explicit flag wins), and
-`--kv-stream-report` adds the per-round copy and wait timings to the request log.
+device, `--kv-capacity auto`, and no paged checkpoint, host KV tier, disk tier, shared prefix or long
+anchor. A startup that asks for any of the others is rejected with the flag that fixes it. The mode
+carries the CLI's defaults (`--embedding-residency host`, MTP's adaptive width; an explicit flag
+wins), and `--kv-stream-report` adds the per-round copy and wait timings to the request log.
+
+Prefix reuse is kept, and it is the streamed arena itself that serves it: a finished request's
+context stays in the pinned host authority, so the retained continuation is the token identity, one
+host StateImage and the space's frontier. A second request whose prompt continues that prefix
+reuses it in place and prefills only the increment — a served second turn reports
+`cache 4,614 (100.0%, private endpoint)` and a 2 ms TTFT — and its output is the token sequence a
+cache-less run of the same prompt produces. Only one continuation is retained (no shared prefixes,
+no long anchors, no turn-closure captures), and `--no-prefix-reuse` releases the context at the end
+of every request instead, which is the cold behaviour the mode had before.
 
 This is what serves a context the card's pool cannot hold: on a 16 GB card a 192 512-token context
 in `rk8v4` needs a 5.0 GiB pool beside 11.9 GiB of weights, which does not fit all-resident. See

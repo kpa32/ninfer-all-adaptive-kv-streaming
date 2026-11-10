@@ -31,6 +31,11 @@ enum class KVStreamRejection : std::uint8_t {
     RetainedContext,
     // The timing report exists to measure the streaming loop.
     ReportWithoutStream,
+    // A retained streamed context is a host StateImage beside the pinned host authority; a device
+    // state slot is a second device image beside the window, which the retain path does not manage.
+    RetainedContextDeviceSlot,
+    // The endpoint has to live somewhere, and for a streamed run that somewhere is the host shelf.
+    RetainedContextNoHostSlot,
 };
 
 // The request as the planner sees it, copied out of the CLI/Engine options so this stays a pure
@@ -47,6 +52,11 @@ struct KVStreamRequest {
     // That cache is the streamed retention: the streamed arena is the host KV tier, so the
     // checkpoint stores identity and state and leaves the pages where they are.
     bool streamed_retention  = false;
+    // Where the retention's endpoint StateImage lives. A streamed retention keeps it on the host
+    // shelf beside the arena; a device state slot would place a third device image beside the
+    // window and rotate the lane's read/write pair against the page it is writing.
+    std::uint32_t device_state_slots = 0;
+    std::uint32_t host_state_slots   = 0;
 };
 
 // Why `request` cannot run with the streaming KV cache, in the order a user meets the conditions.
@@ -59,6 +69,12 @@ struct KVStreamRequest {
     if (request.devices != 1 || request.tensor_parallel) { return KVStreamRejection::ManyDevices; }
     if (request.retained_context && !request.streamed_retention) {
         return KVStreamRejection::RetainedContext;
+    }
+    if (request.retained_context && request.device_state_slots != 0) {
+        return KVStreamRejection::RetainedContextDeviceSlot;
+    }
+    if (request.retained_context && request.host_state_slots == 0) {
+        return KVStreamRejection::RetainedContextNoHostSlot;
     }
     return KVStreamRejection::None;
 }
@@ -77,6 +93,11 @@ struct KVStreamRequest {
         return "--kv-stream keeps the KV cache on one device";
     case KVStreamRejection::RetainedContext:
         return "--kv-stream cannot checkpoint or reuse retained context (--no-prefix-reuse)";
+    case KVStreamRejection::RetainedContextDeviceSlot:
+        return "--kv-stream retains its endpoint on the host shelf: pass --device-state-slots 0";
+    case KVStreamRejection::RetainedContextNoHostSlot:
+        return "--kv-stream retains its endpoint StateImage: give it one host state slot "
+               "(--host-state-slots 1)";
     case KVStreamRejection::ReportWithoutStream:
         return "--kv-stream-report measures --kv-stream: pass --kv-stream";
     }

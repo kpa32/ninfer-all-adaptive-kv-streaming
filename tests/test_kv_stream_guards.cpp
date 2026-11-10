@@ -105,12 +105,25 @@ void test_retained_context_is_rejected() {
 
 void test_a_streamed_retention_is_served() {
     // A streamed run keeps one continuation in the arena the pinned host authority already is, so
-    // retention is not the paged checkpoint the rejection above is about.
-    KVStreamRequest request = shipping_request();
-    request.retained_context  = true;
-    request.streamed_retention = true;
+    // retention is not the paged checkpoint the rejection above is about. Its endpoint state image
+    // lives on the host shelf, one slot, and no device slot sits beside the window.
+    KVStreamRequest request        = shipping_request();
+    request.retained_context       = true;
+    request.streamed_retention     = true;
+    request.device_state_slots     = 0;
+    request.host_state_slots       = 1;
     check_rejection(kv_stream_rejection(request), KVStreamRejection::None,
                     "a streamed retention is servable");
+
+    request.device_state_slots = 1;
+    check_rejection(kv_stream_rejection(request), KVStreamRejection::RetainedContextDeviceSlot,
+                    "a device state slot is rejected beside the streamed window");
+
+    request.device_state_slots = 0;
+    request.host_state_slots   = 0;
+    check_rejection(kv_stream_rejection(request), KVStreamRejection::RetainedContextNoHostSlot,
+                    "a streamed retention without a host state slot has nowhere to keep its "
+                    "endpoint");
 }
 
 void test_the_first_rejection_in_order_is_reported() {

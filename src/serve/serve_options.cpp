@@ -271,10 +271,7 @@ std::string serve_usage_text(const char* argv0) {
            "                                --embedding-residency host and MTP's adaptive\n"
            "                                width\n"
            "  --kv-stream-report            time the streaming loop's copies and the compute\n"
-           "                                their waits exposed, per round\n"
-           "  --kv-stream-retain            keep a streamed request's context for the next one and\n"
-           "                                reuse it when the prompt continues that prefix (opt-in;\n"
-           "                                the mode changes a served run's own token stream today)\n" +
+           "                                their waits exposed, per round\n" +
            std::string(product::kKvResidentHelp) +
            "\n"
            "CONTEXT CACHE\n"
@@ -736,10 +733,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         }
         if (arg == "--kv-stream-report") {
             options.kv_stream_report = true;
-            continue;
-        }
-        if (arg == "--kv-stream-retain") {
-            options.kv_stream_retain = true;
             continue;
         }
         if (arg == "--kv-headroom-mib" || arg == "--vram-headroom-mib") {
@@ -1866,12 +1859,16 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 "--kv-stream keeps its context in the streamed arena: --disk-kv-path is not "
                 "available");
         }
-        if (options.allow_prefix_reuse && options.kv_stream_retain) {
+        if (options.allow_prefix_reuse) {
+            // The streamed run keeps ninfer's prefix reuse: the finished request's context stays in
+            // the pinned host authority, its endpoint costs one host StateImage, and the next prompt
+            // that continues the prefix prefills only the increment. --no-prefix-reuse asks for the
+            // release-at-the-end behaviour instead.
             options.context_cache.enabled                           = true;
             options.context_cache.mode                              = ContextCacheMode::Legacy;
             options.context_cache.host_state_slots                  = 1;
             options.context_cache.host_kv_capacity_bytes            = 0;
-            options.context_cache.device_state_slots                = 1;
+            options.context_cache.device_state_slots                = 0;
             options.context_cache.max_private_continuations         = 1;
             options.context_cache.max_shared_prefixes               = 0;
             options.context_cache.max_long_anchors_per_continuation = 0;

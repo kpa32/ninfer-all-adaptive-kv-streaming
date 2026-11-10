@@ -360,7 +360,7 @@ NInfer 的 attention 通过 **block table（显存数据）** 寻址。于是：
 |---|---|
 | MTP / DFlash2 | 它们有自己的小 KV 池（262 K 时 MTP 约 107 MB）。**不参与流式**，整层常驻。页数独立核算，预算里先扣掉。 |
 | Vision | `--vision` 会再压 ~0.7 GB 预算；流式的 `R` 相应下降（公式不变，`K` 变小）。overlay 模式与流式互不干扰（不同池）。 |
-| prefix cache（Legacy） | Legacy 的 checkpoint 会保存设备页；流式后“设备页”只代表常驻窗口。现在的做法是 **host 侧快照**：pinned host 权威副本已经是全部页，所以 continuation 只存 token 身份、一张 StateImage 和空间的前沿；下一个请求若延续这段前缀就从该前沿继续（`--kv-stream-retain` 开启，`--no-prefix-reuse` 关闭）。 |
+| prefix cache（Legacy） | Legacy 的 checkpoint 会保存设备页；流式后“设备页”只代表常驻窗口。流式 run 的做法是 **host 侧快照**：pinned host 权威副本已经是全部页，所以 continuation 只存 token 身份、一张 **host** StateImage 和空间的前沿；同前缀的下一个请求从该前沿继续（`--no-prefix-reuse` 关闭）。端点必须在 host shelf：并存一个 device StateImage 槽时，lane 的读写镜像与正在写的页对不上，target 从第 3 个 decode 轮起读到旧 state（C13 记录），所以 `device_state_slots` 必须为 0。 |
 | prefix cache（Hybrid） | `--use-alt-prefix-caching` 的 host tier 已有一套块页与往来引擎；流式与之叠加会把“页在 host”变成两套语义。流式 run 明确拒绝（启动报错）。 |
 | 多序列 / 并发 | 表是每序列一行；流式的环是**每执行行**的资源，多序列同时 decode 会争环。M1 限制 `--max-concurrency 1`，M4 再按“序列数”分摊环。 |
 | 多卡（TP/流水） | `PagedKVLayerView` 有 `page_stride/page_residue`（position-split 的 rank 只持有部分页）。流式与 position-split 的交互复杂，M1 明确只支持单设备；TP 下每 rank 独立流式留作后续。 |

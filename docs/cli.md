@@ -472,9 +472,17 @@ about the graph's topology changes.
 
 A streamed round copies bytes that a fully resident cache keeps on the device, so streaming is
 opt-in and never the default: below the capacity a pool can hold, the all-resident path is faster.
-It serves one sequence on one device with a pool sized from measured free memory, and it cannot
-retain or checkpoint context; any other combination is rejected at startup with the flag that fixes
-it (`--max-concurrency 1`, one device, `--kv-capacity auto`, `--no-prefix-reuse`).
+It serves one sequence on one device with a pool sized from measured free memory; a paged
+checkpoint, a host KV tier, a disk tier, shared prefixes and long anchors are rejected at startup
+with the flag that fixes it (`--max-concurrency 1`, one device, `--kv-capacity auto`).
+
+A streamed run keeps ninfer's prefix reuse. The finished request's context stays where it already
+lives — the pinned host authority — so its continuation costs the token identity, one **host**
+StateImage and the space's frontier, not a second copy of the KV. A following prompt that continues
+that prefix reuses it and prefills only the increment (`cache 4,614 (100.0%)` on a served second
+turn), and the tokens it produces are the ones a cache-less run of the same prompt produces.
+`--no-prefix-reuse` releases the context at the end of every request instead. The endpoint lives on
+the host shelf: a device state slot beside the streamed window is rejected (`--device-state-slots 0`).
 
 A streamed pool is divided by the phase a pass runs in: a prompt keeps the ring at one layer's
 extent (its copies are hidden behind its own attention, so a deeper ring would only take window

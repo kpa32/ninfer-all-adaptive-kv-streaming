@@ -910,6 +910,13 @@ std::uint32_t StreamedKVSpace::slot_of_page(std::uint32_t layer, std::uint32_t p
     if (page >= window_start(layer)) {
         return static_cast<std::uint32_t>(kv_stream_window_slot(layer, page, split_));
     }
+    if (ring_runs_ == 0) {
+        // Nothing can hold a page the window dropped: an all-resident split's window is its whole
+        // frontier (`advance` keeps them equal). Reaching here is a split that contradicts its own
+        // frontier, which is a bug to report rather than a modulo by zero to die on.
+        throw std::logic_error(
+            "An all-resident streamed KV split has no ring to hold a page outside its window");
+    }
     const std::uint32_t run = (layer_first_run_[layer] + page / split_.run_pages) % ring_runs_;
     return ring_base_ + run*split_.run_pages + page % split_.run_pages;
 }
@@ -920,6 +927,29 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     }
     if (active_pages > pages_per_layer_) {
         throw std::invalid_argument("A streamed KV frontier exceeds the cache's context");
+    }
+    if (ring_runs_ == 0 && active_pages > split_.resident_of(0)) {
+        // An all-resident split with no ring has nowhere to put a page its window drops, so its window
+        // is the frontier itself. Widening it moves every layer's slot base, so the whole table is
+        // republished once per chunk; nothing is downloaded because nothing leaves the device.
+        for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+            split_.layer_resident[layer] = active_pages;
+        }
+        for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+            for (std::uint32_t page = 0; page < active_pages; ++page) {
+                stream_slots_[page] =
+                    static_cast<std::int32_t>(kv_stream_window_slot(layer, page, split_));
+            }
+            cache_->execution_tables().publish_slots_at(
+                static_cast<std::int32_t>(layer), 0,
+                std::span<const std::int32_t>(stream_slots_.data(), active_pages),
+                RankStreams(streams[0]));
+        }
+        active_ = active_pages;
+        for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+            CUDA_CHECK(cudaEventRecord(dropped_[layer], streams[0]));
+        }
+        return;
     }
     for (std::uint32_t page = active_; page < active_pages; ++page) {
         // The page appears in its layer's window, where this round's append writes it.

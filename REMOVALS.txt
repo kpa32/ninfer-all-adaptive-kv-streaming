@@ -1,0 +1,128 @@
+# 越界代码删除清单 — fork-qwen38-27b-16gb
+#
+# 工作记录文件（未纳入 git），用于改代码时快速判断某段代码是否已删/待删，无需重新审核。
+# 状态图例: ✅ 已删除   🔄 进行中   ⏳ 待删（已定位）   ⚠️ 评估区（不盲删）
+# 全部完成后删除本文件。
+
+════════════════════════════════════════════════════════════
+## ✅ 0. 分支初始裁剪（prune 提交，1211 文件）
+════════════════════════════════════════════════════════════
+flake.nix, flake.lock, .codex/, .thinkrail/, .pi/, CONTRIBUTORS.md,
+build_only.bat, build_merge.bat, .github/, Dockerfile, docker/, compose.yaml,
+.dockerignore, examples/, eval/, .clang-format, .clangd, CONTRIBUTING.md,
+LICENSE, README.md, tests/, docs/, bench/, tools/, scripts/ 内容（留空目录）
+CMake: BUILD_TESTING / NINFER_BUILD_BENCHMARKS / add_subdirectory(tools) 已移除；
+CMakePresets.json 只留 release；cmake/{NinferFFmpeg,MediaSources}.cmake 去掉
+对已删 scripts/fetch-media-sources.sh 的引用。
+
+════════════════════════════════════════════════════════════
+## ✅ A1: 四个越界模型家族（提交: refactor(models): remove the four out-of-scope model families）
+════════════════════════════════════════════════════════════
+整目录/整文件:
+  src/models/qwen4_exp/        (Qwen3.8-Flash-Next)
+  src/models/gemma4/           (Gemma 4)
+  src/models/flint/            (Flint)
+  src/models/deepseek_v41/     (DeepSeek-V4.1-Flash)
+  src/models/divided_head.cpp / .h
+  src/runtime/engine/{qwen4_exp,gemma4,flint,deepseek_v41}_core.cpp/.h
+  apps/ngram_profile/          (Flash-Next 专用工具)
+引用点:
+  src/runtime/engine/engine.cpp  — 4 个 include、is_*_artifact 分派、variant 成员、
+                                   家族 shortcut（runs_branches 等）全部移除
+  src/runtime/CMakeLists.txt     — 4 个 core 源文件
+  apps/CMakeLists.txt            — ninfer-ngram-profile 目标 + NINFER_MULTICALL
+  src/models/CMakeLists.txt      — 4 个 family sources.cmake include + divided_head.cpp
+  src/runtime/contract/rope_scaling.h — kQwen4ExpRopeScaling, kGemma4RopeScaling
+  src/runtime/contract/grammar_masks.h — 注释
+验证: 远端增量构建 39/39 通过。
+
+════════════════════════════════════════════════════════════
+## ✅ A2: qwen3_5/frontend 内嵌家族方言 + registry 枚举值
+(commits: 6e64dc19 refactor(frontend): remove the family dialects from the Qwen3.5 frontend;
+          ec6dab81 fix(frontend): restore the encode_rendered_chat signature)
+════════════════════════════════════════════════════════════
+✅ 已删:
+  src/models/qwen3_5/frontend/flint_output.cpp/.h
+  src/models/qwen3_5/frontend/gemma_output.cpp/.h
+  src/models/qwen3_5/frontend/deepseek_output.cpp/.h
+✅ 已清理:
+  processor.h/.cpp      — Gemma 媒体选项/预算、DeepSeek 图像预处理、MediaPads、
+                          ProcessorOptions 的 gemma/deepseek 字段
+  tokenizer.h/.cpp      — ByteLevelSplit 家族值、Flint/DeepSeek 词端函数、
+                          整个 SentencePiece BPE 段
+  chat_template.h/.cpp  — ToolCallSyntax 只剩 Qwen、forced_call_opener 家族分支
+  prompt_layout.cpp     — 家族 role/marker 常量、inspect_marker_layout
+  output_session.h/.cpp — 家族 markers/decoder/thinking 分支/tool-call 回退
+  frontend.cpp          — 家族媒体选项/sampling/processor 设置/thinking-control/
+                          tool_call_syntax/strict-structured 拒绝/OutputSession 实参
+  tool_call_parser.h    — 家族解析器注释
+  resources.h           — processor_config_json 字段
+  registry.h/.cpp       — 枚举值 Qwen4Exp/Gemma4/Flint/DeepSeekV41
+                          （Qwen3_5Moe 保留，待 Pass B）
+  frontend_sources.cmake — 3 个 *_output.cpp 条目
+验证: grep 家族名 0 残留；远端增量构建 0 错误，4 产物重新链接。
+
+════════════════════════════════════════════════════════════
+## ✅ A3 (T0): 孤儿 ops + 死路由选项（commit: 42074842
+##    refactor(ops,product): remove the orphaned Flash-Next ops and dead routing options）
+════════════════════════════════════════════════════════════
+整目录/整文件:
+  src/ops/hyper_connection/  (hyper_connection.cu, 1022 行)
+  src/ops/ple_inject/         (ple_inject.cu, ngram_rows.cu, 377 行)
+  src/ops/qsa_indexer/        (qsa_indexer.cu, 559 行)
+  src/ops/sparse_attention/   (sparse_attention.cu, 540 行)
+  include/ninfer/ops/{hyper_connection,ple_inject,qsa_indexer,sparse_attention}.h
+  src/product/prompt_route_options.h   (--prefill-tail, --iq1m-experts)
+  src/product/ngram_table_options.h    (--ngram-table 家族)
+  src/product/kv_resident_options.h    (--kv-resident)
+引用点:
+  src/ops/basic_sources.cmake  — 5 个 .cu 条目
+  include/ninfer/model_enums.h — NgramResidency, NgramIo, PrefillTail 枚举
+  include/ninfer/types_fwd.h   — 5 个前置声明
+  include/ninfer/engine_options.h — NgramTableOptions 结构、ngram_table、
+                                    kv_resident_positions、prefill_tail(_rows)、
+                                    iq1m_expert_matrix 字段
+  include/ninfer/ops/moe_experts.h — iq1m_matrix 注释引用
+  include/ninfer/observability/{resources,snapshot}.h — NgramTableStats
+  include/ninfer/base.h — kDefaultKvResidentPositions
+  src/serve/{serve_options.h/.cpp,generation_service.cpp,request_log.cpp,load_report.cpp}
+  apps/cli/{options.h/.cpp,main.cpp}
+  apps/perplexity/main.cpp
+  apps/launcher/main.cpp — --ngram-table/--ngram-profile 透传、ninfer-ngram-profile 分支
+保留（确认过）:
+  src/ops/kv_stream/ + include/ninfer/ops/kv_stream.h — 活跃 KV 流线的机制实现，
+                待用户审核（HANDOFF §5.1）
+  Qwen ngram-copy drafting（ngram_sources/ngram_proposer/draft.cpp）与
+  ngram-archive 会话识别（ngram_native_sessions）
+  ops 层 IQ1_M 内核（gguf/moe_experts）— MoE 属 Pass B
+验证: 本地 grep 残留 0（含 apply()/help 常量二次扫尾）；远端增量构建 0 错误。
+
+════════════════════════════════════════════════════════════
+## ⏳ B: MoE 基础设施（Qwen3.8-27B 是 dense，MoE 全部越界）
+════════════════════════════════════════════════════════════
+用户已确认 MoE 删除。待审核清单（HANDOFF §5）评审完后执行:
+  src/ops/moe_experts/  (3605 行)  src/ops/sparse_moe/  (5595 行)
+  src/ops/moe_route/    (278 行)
+  src/core/expert_delivery.cu/.h  (2491 行)
+  src/core/expert_parallel.cpp/.h (167 行)
+  src/models/expert_profile.cpp/.h + expert_profiles/builtin.inc (3886 行)
+  src/product/hybrid_expert_options.h + --expert-residency/--expert-cache-mib 链
+  src/models/qwen3_5/ 内 MoE 分支（config/ffn/program/mtp）
+  src/models/registry.h/.cpp — Qwen3_5Moe 枚举值 + 分派
+  各 sources.cmake 条目
+
+════════════════════════════════════════════════════════════
+## ⚠️ 评估区 / 待审核（HANDOFF §5 清单，用户慢慢评审，无回复默认删除）
+════════════════════════════════════════════════════════════
+  kv_stream op（活跃 KV 流线机制实现）
+  serve 外围: MCP proxy、typed decisions、llama.cpp API 子集、WebUI、
+              可观测性套件、disk KV tier、LoRA/control vectors、
+              model suspend/多模型路由、prompt grafts
+  多卡/流水线/tensor-parallel/并发 — 深水，用户明确缓后处理
+
+════════════════════════════════════════════════════════════
+## ⏳ 杂项（收尾）
+════════════════════════════════════════════════════════════
+  vcpkg.json (根目录, 作用待定)
+  AGENTS.md 对已删 docs/ tests/ README.md CONTRIBUTING.md 的悬空引用
+  HANDOFF.md / REMOVALS.txt 本身 — 全部完成后删除

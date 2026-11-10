@@ -333,9 +333,16 @@ bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankS
     // here). `pages` overrides it only when the caller knows the context it is planning for.
     const std::uint32_t context = pages != 0 ? pages : pages_per_layer_;
     if (context == 0) { return false; }
-    const std::optional<KVStreamSplit> target =
+    std::optional<KVStreamSplit> target =
         plan_kv_stream_split(slot_count_, context, layers_, split_.run_pages,
                              kv_stream_ring_ratio());
+    // A context shorter than the planned window is all-resident by definition: warming up with a
+    // one-page prefix must not install a window the frontier cannot reach (`repartition` refuses a
+    // window larger than the active context, which is what a server warmup hit). The capacity's
+    // shape is for the contexts that need it; this one has nothing to stream.
+    if (target && target->min_resident() > active_) {
+        target = plan_kv_stream_uniform(slot_count_, active_, layers_, split_.run_pages, 1.0);
+    }
     if (!target) { return false; }
     if (target->layer_resident == split_.layer_resident &&
         target->ring_pages == split_.ring_pages) {

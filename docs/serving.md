@@ -178,15 +178,19 @@ two different images. Any other value is refused with `image_detail_not_supporte
 default). DeepSeek-V4.1 gives an image's span at most the release's 1024 prompt positions (fewer
 with `--vision-max-merged`) at `auto` and `high`, and a quarter of that at `low`.
 
-### Streaming KV is not a server mode
+### Streaming KV is a single-sequence server mode
 
 `--kv-stream` keeps a context past the device pool by giving each full-attention layer a resident
-window and borrowing one shared ring of slots per round. That geometry assumes exactly one sequence
-owns the ring, so the server rejects the flag: `--kv-stream` requires `--max-concurrency 1`, one
-device, `--kv-capacity auto` and `--no-prefix-reuse`, while a served process holds several
-admissible requests and reuses prefixes. A streamed context is therefore a single-request
-CLI/Engine mode ([CLI](cli.md#streaming-kv-past-the-pool)); serving a long context through the
-server uses the all-resident pool the request's reservation has to cover.
+window and borrowing one shared ring of slots per round. The ring belongs to one request at a time,
+so the flag fixes the run's shape instead of accepting a general server: `--max-concurrency 1`, one
+device, `--kv-capacity auto`, and prefix reuse dropped (a streamed run keeps no context to reuse). A
+startup that asks for any of the others is rejected with the flag that fixes it. The mode carries
+the CLI's defaults (`--embedding-residency host`, MTP's adaptive width; an explicit flag wins), and
+`--kv-stream-report` adds the per-round copy and wait timings to the request log.
+
+This is what serves a context the card's pool cannot hold: on a 16 GB card a 192 512-token context
+in `rk8v4` needs a 5.0 GiB pool beside 11.9 GiB of weights, which does not fit all-resident. See
+[the CLI mode](cli.md#streaming-kv-past-the-pool) for the flag's own description.
 
 ## Several models (router)
 

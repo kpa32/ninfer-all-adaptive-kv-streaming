@@ -1083,12 +1083,19 @@ public:
     void deactivate(KVAddressSpaceHandle handle) {
         Address& address = require_active(handle);
         if (stream_space_ != nullptr) {
-            // The sequence's frontier goes with it; the next one republishes as its pages appear.
+            // The sequence's frontier goes with it, but a context the continuation published stays:
+            // its pages are the pinned host authority and the window it ended with is still on the
+            // device, so keeping them copies nothing. A release without a published endpoint
+            // forgets the context, and the next request republishes as its pages appear.
             address.row.reset();
             address.reservation.release();
             address.page_count = 0;
             address.active     = false;
-            stream_space_->reset();
+            if (stream_space_->retained()) {
+                stream_space_->retain();
+            } else {
+                stream_space_->reset();
+            }
             return;
         }
         for (std::uint32_t page = 0; page < address.page_count; ++page) {
@@ -1759,11 +1766,13 @@ public:
     void destructive_truncate(KVAddressSpaceHandle handle, std::uint32_t frontier) {
         Address& address = require_active(handle);
         if (stream_space_ != nullptr) {
-            // The space's frontier only grows within one request, and a streamed request never
-            // truncates below what it wrote: a fresh request resets the space deactivation already.
+            // A streamed context only truncates to the frontier it already reached: a request that
+            // reuses the retained endpoint continues at that frontier, and every other request
+            // starts from an empty space (the space decides from the frontier it holds).
             if (frontier > address.committed_frontier) {
                 throw std::invalid_argument("KV truncate frontier is beyond the sequence");
             }
+            stream_space_->enter_request(frontier);
             address.committed_frontier = frontier;
             return;
         }
@@ -1837,6 +1846,18 @@ public:
     }
 
     void destructive_truncate_inactive(KVAddressSpaceHandle handle, std::uint32_t frontier) {
+        if (stream_space_ != nullptr) {
+            // A streamed address owns no logical page: the space's frontier is what a continuation
+            // restores, and its pages are the pinned host authority, so nothing is released here.
+            Address& address = require(handle);
+            if (frontier > address.committed_frontier) {
+                throw std::invalid_argument("KV truncate frontier is beyond the sequence");
+            }
+            stream_space_->enter_request(frontier);
+            address.committed_frontier  = frontier;
+            address.checkpoint_frontier = 0;
+            return;
+        }
         if (!can_destructive_truncate_inactive(handle, frontier)) {
             throw std::logic_error("inactive KV address space is not destructively truncatable");
         }
@@ -1868,6 +1889,13 @@ public:
         Address& address = require(handle);
         if (protected_frontier > address.committed_frontier) {
             throw std::invalid_argument("KV checkpoint requirement exceeds committed frontier");
+        }
+        if (stream_space_ != nullptr) {
+            // A streamed address owns no logical page to protect, and its window keeps whatever the
+            // continuation needs: the space records the frontier the next request may continue from.
+            // `checkpoint_frontier` stays zero because the protection pass walks logical pages.
+            stream_space_->publish_frontier(protected_frontier);
+            return;
         }
         address.checkpoint_frontier = protected_frontier;
         rebuild_checkpoint_protection();

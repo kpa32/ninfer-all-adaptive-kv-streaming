@@ -11,6 +11,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <span>
@@ -726,6 +728,11 @@ bool ProgramImpl::publish_active_continuation(SequenceState& state, RequestContr
                                                              backend_kv_valid(state));
         }
         populate_continuation_summary(state, summary);
+        if (text_kv_addresses->streaming() && std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+            std::fprintf(stderr,
+                         "[stream] retained endpoint frontier=%u ledger=%zu kv_valid=%u\n",
+                         state.execution_frontier, state.ledger.size(), state.text_kv_valid);
+        }
         summary.active_references = 0;
     } catch (...) { return false; }
     release_active_shared_references(state);

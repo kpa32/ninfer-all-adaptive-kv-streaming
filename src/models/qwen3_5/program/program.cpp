@@ -781,6 +781,8 @@ StreamedKvStats Program::streamed_kv_stats() {
     out.shape = static_cast<std::uint32_t>(
                     kv_stream_shape_of(stats.layer_resident, stats.pages_per_layer)) +
                 1U;
+    out.retained          = stats.retained;
+    out.retained_frontier = stats.retained_frontier;
     // The window is the sum of the per-layer windows: with a concentrated plan the layers hold
     // different numbers of pages, so `resident_pages * layers` under-reports it.
     std::uint64_t resident_pages_total = 0;

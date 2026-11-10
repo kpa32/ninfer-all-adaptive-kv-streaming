@@ -936,6 +936,21 @@ std::uint32_t StreamedKVSpace::slot_of_page(std::uint32_t layer, std::uint32_t p
     return ring_base_ + run*split_.run_pages + page % split_.run_pages;
 }
 
+void StreamedKVSpace::enter_request(std::uint32_t tokens) {
+    const std::uint32_t pages = tokens == 0 ? 0U : page_count(tokens);
+    if (pages > active_) {
+        throw std::logic_error("streamed KV frontier is beyond the space's context");
+    }
+    if (pages < active_) {
+        // Nothing continues: every page the prompt reaches is republished as it is written, and any
+        // page past its frontier is never read again.
+        active_ = 0;
+    }
+    retained_          = false;
+    retained_frontier_ = 0;
+    clear_round_bookkeeping();
+}
+
 void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     if (active_pages < active_) {
         throw std::invalid_argument("A streamed KV frontier only grows; reset before rewinding");
@@ -1006,6 +1021,10 @@ StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
     out.layer_resident      = split_.layer_resident;
     out.active_pages        = active_;
     out.layout_generation   = layout_generation_;
+    // Whether a finished request's context still lives here, and at which token frontier: the next
+    // request either continues it or starts from an empty space.
+    out.retained          = retained_;
+    out.retained_frontier = retained_frontier_;
     out.timing_samples = timing_samples_;
     out.timing_lost    = timing_lost_;
     out.verify_checks     = verify_checks_;

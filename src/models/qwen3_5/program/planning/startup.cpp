@@ -1362,6 +1362,37 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
     // taken from the device, and a capacity chosen by token count rather than measured. The table
     // itself lives in core/kv_stream_guards.h so that tests/test_kv_stream_guards.cpp checks every
     // exclusion instead of the planner owning messages nobody tests.
+    // A streamed run may retain its finished request's context: the pinned host authority already
+    // holds every page, so the endpoint costs one Host StateImage and no device slot, and the
+    // streamed space keeps its frontier and window instead of releasing them. Everything that would
+    // put a second KV tier beside that authority stays out of this mode, and the guard table below
+    // checks the shape once more.
+    if (options.kv_stream && options.context_cache.enabled) {
+        const ContextCacheOptions& cache = options.context_cache;
+        if (cache.mode != ContextCacheMode::Legacy) {
+            throw std::invalid_argument(
+                "--kv-stream retains its own context: the hybrid prefix cache is not available");
+        }
+        if (cache.host_kv_capacity_bytes != 0 || cache.host_cache_budget_bytes ||
+            !cache.disk_kv_path.empty() || cache.disk_kv_restore ||
+            cache.disk_kv_directstorage || cache.disk_kv_capacity_bytes != 0) {
+            throw std::invalid_argument(
+                "--kv-stream keeps every KV page in pinned host memory itself: no host KV tier, "
+                "disk tier or session slot takes part");
+        }
+        if (!cache.max_shared_prefixes || *cache.max_shared_prefixes != 0 ||
+            !cache.max_long_anchors_per_continuation ||
+            *cache.max_long_anchors_per_continuation != 0) {
+            throw std::invalid_argument(
+                "--kv-stream retains one continuation: no shared prefixes and no long anchors");
+        }
+        if ((!cache.device_state_slots || *cache.device_state_slots == 0) &&
+            cache.host_state_slots < 1) {
+            throw std::invalid_argument(
+                "--kv-stream retains its endpoint StateImage: give it one device or host state "
+                "slot");
+        }
+    }
     const KVStreamRequest streaming{
         .enabled            = options.kv_stream,
         .report             = options.kv_stream_report,
@@ -1370,6 +1401,9 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         .devices            = device.size(),
         .tensor_parallel    = parameters.text.tensor_parallel(),
         .retained_context   = options.context_cache.enabled,
+        .streamed_retention = options.context_cache.enabled &&
+                              options.context_cache.mode == ContextCacheMode::Legacy &&
+                              options.context_cache.host_kv_capacity_bytes == 0,
     };
     if (const KVStreamRejection rejection = kv_stream_rejection(streaming);
         rejection != KVStreamRejection::None) {

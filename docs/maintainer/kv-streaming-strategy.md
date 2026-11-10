@@ -56,7 +56,7 @@ references:
 | CUDA Graph | 流式时全关（父分支起） | 251 K 每轮多 ~0.4 ms（M6 上界 0.7%） |
 | 跨轮预取 | 已删，未用生产者依赖替代 | 重叠只有层前视，ring 1.38 就到底 |
 | 脏行/镜像 | 无 | 回写覆盖跌窗页而非脏页 |
-| 多请求/服务端 | 未验证 | 一进程两请求的行为未知；`docs/serving.md` 无边界说明 |
+| 多请求/服务端 | Engine 已通、serve opt-in | 流式 run 在请求间保留一个 continuation（host 权威 + 一张 StateImage + 前沿），同前缀的下一个请求只 prefill 增量；Engine 级两请求逐位通过。serve 侧 `--kv-stream-retain` 已接线（实测 `cache 4,610 (100.0%)`），但开缓存会改变首个请求自己的 token 流（MTP 全拒），默认仍关 |
 | 门禁 | 4 项未过（§10） | 不能按仓库规则合并 |
 
 ### 0.3 比谁快、比谁慢（同主机、同构建、同产物）
@@ -326,7 +326,7 @@ P3 才是重叠与调度器；P4 由图决定；P5 容量；P6 多请求与服�
 | **P3** | **跨轮重叠**（这是 251K 最后一个杠杆，上限已算清）：本轮把下一轮的头几层拷贝在**本轮末**发出，用生产者依赖（拷贝等"写该页的 attention"完成）与槽位所有权保证安全。前置事实：池已是卡上限（启动后剩 53.5 MiB）、拷贝 47.2 ms 已在 24.7 GB/s、重叠已达 33 ms、天花板 47.2 ms（= 86 tok/s） | 引（R5/R11）、C8 | 251 K 每轮中位 ≤ 50 ms（对 54.4 基线 ≥8%）且 `check --case equiv-183k` 与 251 K 逐位 PASS；失败则明确否掉并记录 |
 | **P4** | CUDA Graph：按 P0 的 Y2 决定补图内换页或维持关图（维持必须写清代价） | R11、C7 | 251 K `rk4v4` 不慢于 72.8 tok/s；graph vs eager 512/512 逐位 |
 | **P5**（可选，收益已算过） | 草稿 KV（MTP）搬进同一个池：MTP 现在是"整段驻留、不进池"（`startup.cpp:162-164` 的注释与 `mtp_layers=1`）。262 144 时它占 `rk4v4` 293 MB / `rk8v4` 428 MB；搬进池可让窗口 +256/+257 页每层，但 drafter 每轮要取回自己的整段前缀（1 层 ≈ 226–317 MiB/轮），**净账 ≈ 每轮字节 −5%** | 上游**没做**（`pin_all` 只出现在单测，`plan_make` 运行时零调用者） | 251 K 每轮字节降 ≥3% 且逐位不破；否则明确否掉 |
-| **P6** | **串行提示 / 缓存恢复 / 服务端接线**：一进程两请求（`7dc5fccd5`）、`reset()` 路径逐位、`docs/serving.md` 明确不支持并发与前缀缓存（或接线，`c9484b2e6`）；KV 格式泛化到 `int8`（`50a7de723`） | 9.5、9.6 | 两请求逐位 PASS；`int8` 262 144 启动+稳态；`docs/serving.md` 有明确边界 |
+| **P6** | **串行提示 / 缓存恢复 / 服务端接线**：一进程两请求（`7dc5fccd5`）、`reset()` 路径逐位、服务端接线（`c9484b2e6`）——流式空间在请求之间保留一个 continuation（host 权威 + 一张 StateImage + 前沿），同前缀的下一个请求只 prefill 增量；KV 格式泛化到 `int8`（`50a7de723`） | 9.5、9.6 | 两请求逐位 PASS（cold 与 retained 两条路径）；`int8` 262 144 启动+稳态；`docs/serving.md` 写明单序列与保留边界。**已得**：retained 路径 Engine 级两请求逐位 PASS（4096+8 token），serve 侧实测 100% 复用；**未得**：retained 臂的 CTest 未跑，serve 首个请求仍与关缓存不同（MTP 全拒，待定），`int8` 未跑，`docs/serving.md` 未写 |
 | **P7** | 注意力侧：span 融合（`6a536bfd6`）与相邻流式页合并（`4f2cb3e91`），按实测决定是否采用 | 9.3 | 251 K 每轮进一步下降或明确否掉（带样本） |
 | **P8** | 收官：262 144 prefill+decode × {`rk4v4`,`rk8v4`,`int8`} × resident(≤110 K)/streamed；活体迁移逐位；2000+ 长跑；**交错运行**的 A/B 证据；跨架构构建确认；作者口径曲线 | 全部、`CONTRIBUTING.md:171` | 每格 ids + logprobs；SPEC 完成条件 1–5 逐条对账 |
 
@@ -421,8 +421,8 @@ and never streams`），MTP 层数 1。所以"把 MTP 搬进池"是**我们的�
 
 | 提交 | 内容 | 我方 |
 |---|---|---|
-| `7dc5fccd5` | **支持串行提示与缓存恢复**（`benchmarks/test_kv_stream_serial_server.py` 138 行、`fattn.cu` 重写 265 行） | ❌ 未验证：`KVStore::deactivate` 会 `reset()`（`kv_store.h:1091`），但一进程两请求从未跑过；`--kv-stream` 还禁止 context cache |
-| `c9484b2e6` | **服务端接上实验性 block KV 流式** | ❌ 我们只在 CLI/Engine 路径；`docs/serving.md` 无 `--kv-stream`（0 处） |
+| `7dc5fccd5` | **支持串行提示与缓存恢复**（`benchmarks/test_kv_stream_serial_server.py` 138 行、`fattn.cu` 重写 265 行） | ⚠️ Engine 级已通：流式空间保留前沿，一张 StateImage 作为端点，同前缀的下一个请求复用到前沿（4096+8 token 逐位 PASS）。C7 已改为 cold + retained 两臂，**尚未运行**（测试树全量重编太慢）；serve 侧 opt-in 且首个请求的 token 流未定 |
+| `c9484b2e6` | **服务端接上实验性 block KV 流式** | ⚠️ 已接线但 opt-in：`--kv-stream-retain` 打开保留与复用（实测 `cache 4,610 (100.0%)`、TTFT 2.15 ms），默认仍是冷路径；`docs/serving.md` 仍无流式边界说明（0 处） |
 
 ### 9.6 内存布局 / UVM / 写合并 / 缓存类型
 

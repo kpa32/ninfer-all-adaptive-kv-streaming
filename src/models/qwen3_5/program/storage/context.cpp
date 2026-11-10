@@ -685,6 +685,11 @@ std::uint32_t ProgramImpl::device_kv_prefix_pages(const KVAddressSpaceStore& add
                                                   KVAddressSpaceHandle address,
                                                   std::uint32_t frontier) const {
     const std::uint32_t required = kv_pages_for_frontier(frontier);
+    if (addresses.streaming()) {
+        // A streamed address owns no logical page: every page below the frontier lives in the
+        // pinned host authority, so the whole prefix is restorable.
+        return addresses.valid(address) ? required : 0U;
+    }
     if (required > addresses.mapped_pages(address)) {
         throw std::logic_error("checkpoint KV requirement exceeds address membership");
     }
@@ -701,6 +706,10 @@ std::uint32_t ProgramImpl::shared_kv_prefix_pages(const KVAddressSpaceStore& add
                                                   KVAddressSpaceHandle address,
                                                   std::uint32_t frontier) const {
     const std::uint32_t required = kv_pages_for_frontier(frontier);
+    if (addresses.streaming()) {
+        // A streamed address shares no page: the retained continuation is the arena's only owner.
+        return 0U;
+    }
     if (required > addresses.mapped_pages(address)) {
         throw std::logic_error("checkpoint KV requirement exceeds address membership");
     }
@@ -721,6 +730,7 @@ std::uint32_t ProgramImpl::shared_device_kv_prefix_pages(const KVAddressSpaceSto
                                                          KVAddressSpaceHandle address,
                                                          std::uint32_t frontier) const {
     const std::uint32_t required = kv_pages_for_frontier(frontier);
+    if (addresses.streaming()) { return 0U; }
     if (required > addresses.mapped_pages(address)) {
         throw std::logic_error("checkpoint KV requirement exceeds address membership");
     }
@@ -737,7 +747,8 @@ std::uint32_t ProgramImpl::shared_device_kv_prefix_pages(const KVAddressSpaceSto
 bool ProgramImpl::partial_tail_cow_required(const KVAddressSpaceStore& addresses,
                                             KVAddressSpaceHandle address,
                                             std::uint32_t frontier) const {
-    if (frontier == 0 || frontier % static_cast<std::uint32_t>(kPagedKVPageSize) == 0) {
+    if (frontier == 0 || frontier % static_cast<std::uint32_t>(kPagedKVPageSize) == 0 ||
+        addresses.streaming()) {
         return false;
     }
     const std::uint32_t required = kv_pages_for_frontier(frontier);
@@ -755,6 +766,7 @@ ProgramImpl::missing_shared_device_kv_prefix_pages(const KVAddressSpaceStore& ad
                                                    KVAddressSpaceHandle address,
                                                    std::uint32_t frontier) const {
     const std::uint32_t required = kv_pages_for_frontier(frontier);
+    if (addresses.streaming()) { return 0U; }
     if (required > addresses.mapped_pages(address)) {
         throw std::logic_error("checkpoint KV requirement exceeds address membership");
     }
@@ -773,6 +785,11 @@ std::size_t ProgramImpl::host_kv_prefix_bytes(const KVAddressSpaceStore& address
                                               std::uint32_t frontier) const noexcept {
     if (!host_kv_extents) { return 0; }
     try {
+        if (addresses.streaming()) {
+            // The streamed arena is the host tier itself and its bytes are already counted by the
+            // space, so this paged-Host accounting reports nothing for it.
+            return 0;
+        }
         const LogicalKVPageStore& pages =
             (&addresses == text_kv_addresses.get()) ? *text_kv_pages : *backend_kv_pages;
         const std::uint32_t required_pages = kv_pages_for_frontier(frontier);
@@ -1498,8 +1515,21 @@ std::uint32_t ProgramImpl::backend_kv_valid(const SequenceState& sequence) const
 
 void ProgramImpl::resize_sequence_kv_entitlement(SequenceState& sequence, std::uint32_t text_pages,
                                                  std::uint32_t backend_pages) {
-    if (!sequence.kv || text_pages == 0 ||
-        (sequence.kv->backend.has_value() != (backend_pages != 0))) {
+    if (!sequence.kv) {
+        throw std::invalid_argument("KV resize entitlement does not match the sequence bundle");
+    }
+    if (text_kv_addresses->streaming()) {
+        // A streamed text cache claims no pool page at all: its entitlement is zero by construction
+        // and the space owns every slot, so only the paged backend entitlement is resizable here.
+        if (sequence.kv->backend.has_value() != (backend_pages != 0)) {
+            throw std::invalid_argument("KV resize entitlement does not match the sequence bundle");
+        }
+        if (sequence.kv->backend) {
+            backend_kv_addresses->resize_entitlement(*sequence.kv->backend, backend_pages);
+        }
+        return;
+    }
+    if (text_pages == 0 || (sequence.kv->backend.has_value() != (backend_pages != 0))) {
         throw std::invalid_argument("KV resize entitlement does not match the sequence bundle");
     }
     // Both pools or neither: a backend pool that cannot follow returns the text entitlement it

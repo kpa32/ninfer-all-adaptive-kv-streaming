@@ -64,7 +64,7 @@ detail::PhysicalResources pressure_residual(detail::PhysicalResources deficit,
 std::uint32_t physical_kv_runs(const KVAddressSpaceStore& addresses,
                                const LogicalKVPageStore& pages, KVAddressSpaceHandle address,
                                std::uint32_t begin, std::uint32_t count) {
-    if (count == 0) { return 0; }
+    if (count == 0 || addresses.streaming()) { return 0; }
     if (begin > addresses.mapped_pages(address) ||
         count > addresses.mapped_pages(address) - begin) {
         throw std::logic_error("physical KV run range is outside its address space");
@@ -153,7 +153,7 @@ bool logical_page_matches_prefix(const KVAddressSpaceStore& addresses,
                                  std::uint32_t prefix_pages, std::uint32_t page_offset,
                                  LogicalKVPageHandle page) {
     if (!prefix || page_offset >= prefix_pages || !addresses.valid(*prefix) ||
-        prefix_pages > addresses.mapped_pages(*prefix)) {
+        addresses.streaming() || prefix_pages > addresses.mapped_pages(*prefix)) {
         return false;
     }
     return addresses.logical_page(*prefix, page_offset) == page;
@@ -529,8 +529,11 @@ ProgramImpl::materialization_source_protection(const ResourceCandidateState& adm
         protection.text_transfer_pages =
             admission.reuse_base / static_cast<std::uint32_t>(kPagedKVPageSize);
     }
+    // A streamed text address owns no logical page: the retained endpoint continues from its own
+    // frontier, so there is no paged membership to compare against and no fork to schedule.
+    const bool streamed_text = text_kv_addresses->streaming();
     if (!text_kv_addresses->valid(kv->text) ||
-        protection.text_pages > text_kv_addresses->mapped_pages(kv->text)) {
+        (!streamed_text && protection.text_pages > text_kv_addresses->mapped_pages(kv->text))) {
         return std::nullopt;
     }
     if (protection.consumed_private_source) {
@@ -1346,6 +1349,12 @@ std::optional<detail::PressureTargetProjection> ProgramImpl::evaluate_pressure_t
         shared_pressure_owners.size() != shared_pressure_options.size()) {
         throw std::invalid_argument("combined pressure selection is not row aligned");
     }
+    if (text_kv_addresses->streaming()) {
+        // A streamed text cache owns no logical page and no per-page replica: a source on it has
+        // nothing for this paged projection to move or convert, so its target is the empty
+        // projection. Walking the owners below would ask the store for pages it does not have.
+        return detail::PressureTargetProjection{};
+    }
     begin_pressure_page_scratch();
 
     std::vector<std::uint8_t>& private_owner_state = pressure_private_owner_scratch_;
@@ -1590,6 +1599,11 @@ std::optional<detail::PressureTargetProjection> ProgramImpl::evaluate_pressure_t
         if (!addresses.valid(address) || addresses.active(address)) {
             throw std::logic_error("dropped checkpoint KV suffix is invalid");
         }
+        if (addresses.streaming()) {
+            // A streamed address owns no logical page: dropping a suffix moves nothing, because the
+            // space's own frontier decides what the next request reads.
+            return;
+        }
         const std::uint32_t mapped = addresses.mapped_pages(address);
         if (retained_pages > mapped) {
             throw std::logic_error("dropped checkpoint KV suffix exceeds its address space");
@@ -1753,6 +1767,10 @@ std::optional<detail::PressureTargetProjection> ProgramImpl::evaluate_pressure_t
                                                        std::uint32_t protected_pages,
                                                        std::uint32_t transferable_pages,
                                                        runtime::ContextResourceClass resource) {
+            if (addresses.streaming()) {
+                // The streamed arena owns its pages: no ownership transfer is expressible per page.
+                return false;
+            }
             if (!addresses.valid(address) || protected_pages > addresses.mapped_pages(address) ||
                 transferable_pages > protected_pages) {
                 return false;
@@ -2087,6 +2105,10 @@ bool ProgramImpl::compose_pressure_candidate(
                                           KVAddressSpaceHandle address,
                                           const qwen3_5::detail::PressureKVDecision& action) {
         if (action.kind != qwen3_5::detail::PressureKVDecisionKind::DropHostDuplicate) { return; }
+        if (addresses.streaming()) {
+            // A streamed context keeps no Host KV replica to drop: its Host pages are the authority.
+            return;
+        }
         const std::uint32_t mapped = addresses.mapped_pages(address);
         if (action.begin_page > mapped || action.page_count > mapped - action.begin_page) {
             throw std::logic_error("materialization Host KV release region is invalid");
@@ -2398,19 +2420,38 @@ void ProgramImpl::release_seal_window() noexcept {
 runtime::PreflightStatus
 ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
                                         const PreparedPromptData& prompt) const {
+    const bool cdbg = std::getenv("NINFER_MAT_DEBUG") != nullptr;
+    const auto trace = [cdbg](const char* what) {
+        if (cdbg) { std::fprintf(stderr, "[mat-debug] revalidate: %s\n", what); }
+    };
     if (plan.impl_ == nullptr) { return runtime::PreflightStatus::InvariantFailure; }
     if (has_context_transaction() || pending_transaction_ || has_unsettled_state_fork()) {
+        trace("stale: transaction");
         return runtime::PreflightStatus::StalePolicyState;
     }
 
     const AdmissionCandidateImpl& details = *plan.impl_;
     if (details.blocked_host_allocation_bytes != 0) {
+        trace("stale: blocked host allocation");
         return runtime::PreflightStatus::StalePolicyState;
     }
     const std::optional<MaterializationSourceProtection> protection =
         materialization_source_protection(details);
-    if (!protection) { return runtime::PreflightStatus::StalePolicyState; }
+    if (!protection) {
+        trace("stale: no source protection");
+        return runtime::PreflightStatus::StalePolicyState;
+    }
     if (!physical_peak_fits(details.demand.physical_peak_additional)) {
+        if (cdbg) {
+            std::fprintf(stderr,
+                         "[mat-debug]   peak: lanes=%u states=%u main=%u backend=%u host_kv=%zu\n",
+                         details.demand.physical_peak_additional.device.active_lanes,
+                         details.demand.physical_peak_additional.device.state_slots,
+                         details.demand.physical_peak_additional.device.main_kv_pages,
+                         details.demand.physical_peak_additional.device.backend_kv_pages,
+                         details.demand.physical_peak_additional.host.kv_bytes);
+        }
+        trace("stale: peak does not fit");
         return runtime::PreflightStatus::StalePolicyState;
     }
     const std::size_t victim_count        = details.pressure_options.size();
@@ -2554,7 +2595,10 @@ ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
     const std::optional<detail::PressureTargetProjection> projected_pressure =
         evaluate_pressure_target(&*protection, projected_private_owners, details.pressure_options,
                                  projected_shared_owners, details.shared_pressure_options, nullptr);
-    if (!projected_pressure) { return runtime::PreflightStatus::StalePolicyState; }
+    if (!projected_pressure) {
+        trace("stale: no pressure projection");
+        return runtime::PreflightStatus::StalePolicyState;
+    }
 
     const std::uint32_t prompt_tokens = static_cast<std::uint32_t>(prompt.token_ids.size());
     if (prompt_tokens != details.summary.prompt_tokens ||
@@ -2607,6 +2651,16 @@ ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
         if (details.state_fork_required != projected_fork ||
             details.text_prefix_fork_required != projected_text_fork ||
             details.backend_prefix_fork_required != projected_backend_fork) {
+            if (cdbg) {
+                std::fprintf(stderr,
+                             "[mat-debug]   fork mismatch: detail(state=%d text=%d backend=%d) "
+                             "projected(state=%d text=%d backend=%d)\n",
+                             details.state_fork_required ? 1 : 0,
+                             details.text_prefix_fork_required ? 1 : 0,
+                             details.backend_prefix_fork_required ? 1 : 0, projected_fork ? 1 : 0,
+                             projected_text_fork ? 1 : 0, projected_backend_fork ? 1 : 0);
+            }
+            trace("stale: fork projection");
             return runtime::PreflightStatus::StalePolicyState;
         }
     }

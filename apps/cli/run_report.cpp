@@ -99,6 +99,10 @@ json stream_stats(const StreamedKvStats& stream) {
     if (stream.active_pages != 0) { out["active_pages"] = stream.active_pages; }
     if (stream.shape != 0) { out["shape"] = kv_stream_shape_label(stream.shape); }
     out["layout_generation"] = stream.layout_generation;
+    // A finished request's context still lives in the space; the next request either continues from
+    // this frontier or starts from an empty one.
+    out["retained"]          = stream.retained;
+    if (stream.retained) { out["retained_frontier"] = stream.retained_frontier; }
     out["streamed_pages"]    = stream.streamed_pages;
     out["layers"]            = stream.layers;
     out["ring_runs"]         = stream.ring_runs;

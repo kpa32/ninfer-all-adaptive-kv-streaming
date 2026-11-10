@@ -389,7 +389,7 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                                                          LogicalKVPageStore& pages,
                                                          KVAddressSpaceHandle address,
                                                          std::optional<std::uint32_t> frontier) {
-                if (!frontier ||
+                if (!frontier || addresses.streaming() ||
                     (addresses.committed_frontier(address) == *frontier &&
                      addresses.mapped_pages(address) == kv_pages_for_frontier(*frontier))) {
                     return;
@@ -723,6 +723,20 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
             refresh_state_views(sequence);
         } else {
             throw std::logic_error("request plan has an invalid prefix reuse path");
+        }
+
+        if (text_stream_space != nullptr) {
+            // The streamed arena is the whole context's host authority. A request that reuses the
+            // retained endpoint continues from its frontier; every other request starts from an
+            // empty space. Either way the previous request's ring bookkeeping is dropped here,
+            // before the first chunk claims a run.
+            if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+                std::fprintf(stderr,
+                             "[stream] request starts: reuse=%d base=%u valid=%u space_pages=%u\n",
+                             static_cast<int>(request_plan.reuse), base, sequence.text_kv_valid,
+                             text_stream_space->active_pages());
+            }
+            text_stream_space->enter_request(sequence.text_kv_valid);
         }
 
         sequence.endpoint_valid = false;

@@ -24,7 +24,10 @@ enum class KVStreamRejection : std::uint8_t {
     // Pipeline stages and tensor-parallel ranks split every layer's KV over the devices, while a
     // streaming pool keeps one layer's whole context on one device.
     ManyDevices,
-    // Retained context and checkpoints reason about device pages as whole-context pages.
+    // Retained context and checkpoints reason about device pages as whole-context pages, which a
+    // streamed pool does not have. A streamed run retains its own continuation instead: the pinned
+    // host authority already holds every page, so the checkpoint costs a StateImage, not a second
+    // KV copy (see `streamed_retention`).
     RetainedContext,
     // The timing report exists to measure the streaming loop.
     ReportWithoutStream,
@@ -39,7 +42,11 @@ struct KVStreamRequest {
     std::uint32_t sequences  = 1;
     std::size_t devices      = 1;
     bool tensor_parallel     = false;
+    // The request enables a context cache at all.
     bool retained_context    = false;
+    // That cache is the streamed retention: the streamed arena is the host KV tier, so the
+    // checkpoint stores identity and state and leaves the pages where they are.
+    bool streamed_retention  = false;
 };
 
 // Why `request` cannot run with the streaming KV cache, in the order a user meets the conditions.
@@ -50,7 +57,9 @@ struct KVStreamRequest {
     if (!request.capacity_automatic) { return KVStreamRejection::CapacityNotAutomatic; }
     if (request.sequences != 1) { return KVStreamRejection::ManySequences; }
     if (request.devices != 1 || request.tensor_parallel) { return KVStreamRejection::ManyDevices; }
-    if (request.retained_context) { return KVStreamRejection::RetainedContext; }
+    if (request.retained_context && !request.streamed_retention) {
+        return KVStreamRejection::RetainedContext;
+    }
     return KVStreamRejection::None;
 }
 

@@ -1037,6 +1037,11 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_lane(
                                         const LogicalKVPageStore& pages,
                                         KVAddressSpaceHandle address, std::uint32_t required) {
         std::pair<std::uint32_t, std::uint32_t> out;
+        if (addresses.streaming()) {
+            // A streamed context is the pinned host authority itself: every page a checkpoint needs
+            // is already restorable, so no Host-to-Device staging is priced for it.
+            return out;
+        }
         if (required > addresses.mapped_pages(address)) {
             throw std::logic_error("checkpoint KV requirement exceeds address membership");
         }
@@ -1351,7 +1356,8 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_lane(
             KVAddressSpaceHandle address, std::uint32_t frontier, bool prefix_fork) {
             std::pair<std::uint32_t, std::size_t> out;
             if (!prefix_fork || frontier == 0 ||
-                frontier % static_cast<std::uint32_t>(kPagedKVPageSize) == 0) {
+                frontier % static_cast<std::uint32_t>(kPagedKVPageSize) == 0 ||
+                addresses.streaming()) {
                 return out;
             }
             const std::uint32_t required = kv_pages_for_tokens(frontier);

@@ -40,6 +40,32 @@
 
 ### Done
 
+**流式上下文跨请求保留（机制通过，serve 模式 opt-in，C13 部分）**
+- **已通**：Driver `/tmp/kv_retain_driver.cpp`（4 K token 提示 + 8 token 输出，第二请求 = 原 prompt + 输出 token）：
+  `retained=1 frontier=4103` → `reused=4103`，第二请求的 8 个 token 与冷跑逐位相同（`equal_ids=1`）。
+  即：continuation 发布、空间保留、admission 选路、前沿恢复、KV/state 续接全部正确。
+- **serve 侧**（`--kv-stream-retain`）：`reuse=1 base=4610 valid=4610`、`cache 4,610 (100.0%)`，第二请求只 prefill 增量；
+  但 **首次请求自身的 token 流变了**（同一 prompt、同 temp0：开缓存 4 token 后 EOS，关缓存 8 token 到 limit）。
+  这跟复用无关（复用的逐位证明在上面），且只在 **MTP 草稿开着** 时出现：
+  - 保留臂 `mtp accepted 0/9 (0.0%)`，冷臂 `3/10 (30.0%)`（同一 prompt、同一 `--spec mtp --draft-tokens 3`）；
+  - 草稿全被拒 ⇒ verify 批量形状与冷臂不同 ⇒ 贪心 token 从第 4 个开始漂移（终为 EOS）；
+  - Engine 级 driver 没有开草稿（`speculative_drafting=false`），所以它的首个请求 `first_equal=1`。
+  ⇒ **下一个定位点是 drafter 在保留引擎里的状态**：`request_plan` 的 `mtp` 计划/`tail_hidden`/MTP 池的
+  `set_checkpoint_requirement` 保护，以及 `context_cache.enabled` 改变 StateImage 槽位数量后
+  drafter 读的是哪一槽。
+- 因此在它修好前，serve 模式由 `--kv-stream-retain` opts-in，默认仍是今天的冷路径与今天的行为。
+- **serve 默认仍冷**；hybrid/disk/session/shared 在启动与 `kv_stream_guards.h` 里仍被拒。
+- 报告：`stream.retained` / `stream.retained_frontier`。
+- 测试：`test_kv_stream_guards` 新增“streamed retention 可服务”用例（已过）；
+  `test_engine_kv_stream_serial_real.cpp` 的 **retained** 臂常开（它验证的正是 Engine 级逐位）。
+- 这一轮在 paged 记账里修掉的真缺陷（否则流式保留在 admission/物化阶段直接抛错）：
+  `evaluate_pressure_target`（流式源无 paged 对象可投映）、`prepare_consumed_source`（流式源无页可截）、
+  `prepare_kv_restores`（流式无 replica 可预置）、`resize_sequence_kv_entitlement`（流式 text entitlement 为 0）、
+  `shared_kv_prefix_pages`、`checkpoint_restore_requirements`、`pressure` 三处 owner 扫描、
+  `destructive_truncate_inactive`、`set_checkpoint_requirement` 的保护遍历、`prefill` 陈旧尾部预检、
+  `missing_kv_restore`、`private_tail_restore`、`partial_tail_cow_required`、`device_kv_prefix_pages`、
+  `host_kv_prefix_bytes`。
+
 **P0 报告字段（已落地并提交）**
 - `StreamedKvStats` 增加每层窗口 `layer_resident`、规划容量、分区次数 `layout_generation`、形状 `shape`；
   `window_bytes` 改为**按层求和**（原来 `最窄窗口 × 层数`，集中布局下偏小）；CLI 打印布局行。
@@ -109,6 +135,9 @@
 
 ## Next Steps
 
+0. **流式保留（已实现，待收口）**：Engine 级两请求已逐位（driver）；
+  剩余 = (a) 保留引擎里 MTP 草稿全拒的根因（见 Done 第一条），(b) `test_engine_kv_stream_serial_real` 的
+  两臂在测试树上跑绿，(c) 保留变默认后跑 192 K 多轮对话与 251 K bench。
 1. **`--embedding-residency host` 在 251 K 流式下的 A/B（可感知收益最大项）**
    - 现状：embedding 常驻占 388.4 MiB；流式池每轮 1116.2 MiB、46.1 ms 拷贝地板、暴露 13.5 ms。
    - 预期：释放 388.4 MiB → +355 页/层 → 每轮约 −407 MB（1116 → 709 MiB），拷贝 46 → 28 ms。

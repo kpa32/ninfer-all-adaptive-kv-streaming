@@ -55,6 +55,11 @@ struct ServeOptions {
     // and no prefix reuse.
     bool kv_stream                         = false;
     bool kv_stream_report                  = false;
+    // Keep a streamed request's context for the next request (`--kv-stream-retain`). The streamed
+    // arena IS the host KV tier, so a continuation costs one StateImage, not a second KV copy. Off
+    // by default: a served run that enables the cache changes its own token stream today (the
+    // capture schedule's decomposition, handoff.md), so the mode ships opt-in until that is fixed.
+    bool kv_stream_retain                  = false;
     std::uint32_t max_concurrency      = 1;
     std::uint32_t max_pending_requests = 16;
     // Admission waits behind the active set, so the deadline has to cover the generation

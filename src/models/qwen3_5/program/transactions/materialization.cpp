@@ -566,13 +566,18 @@ void ProgramImpl::prepare_consumed_source(MaterializationTransaction& transactio
 
     std::array<TruncateTarget, 2> targets{};
     std::size_t target_count = 0;
-    targets[target_count++]  = TruncateTarget{
-         .addresses   = text_kv_addresses.get(),
-         .pages       = text_kv_pages.get(),
-         .address     = source.kv->text,
-         .frontier    = details.reuse_base,
-         .prefix_fork = details.text_prefix_fork_required,
-    };
+    // A streamed text address owns no logical page: a consumed source's KV state is its frontier,
+    // and `StreamedKVSpace::enter_request` restores it when the request starts. Only paged
+    // addresses have a suffix to truncate and Host KV tails to release here.
+    if (!text_kv_addresses->streaming()) {
+        targets[target_count++] = TruncateTarget{
+            .addresses   = text_kv_addresses.get(),
+            .pages       = text_kv_pages.get(),
+            .address     = source.kv->text,
+            .frontier    = details.reuse_base,
+            .prefix_fork = details.text_prefix_fork_required,
+        };
+    }
     if (source.kv->backend) {
         targets[target_count++] = TruncateTarget{
             .addresses   = backend_kv_addresses.get(),
@@ -857,6 +862,12 @@ void ProgramImpl::prepare_materialization(MaterializationTransaction& transactio
             const std::uint32_t mapped = activation_frontier
                                              ? kv_pages_for_frontier(*activation_frontier)
                                              : addresses.mapped_pages(address);
+            if (addresses.streaming()) {
+                // A streamed address owns no logical page: its pinned host authority already holds
+                // every page, and `StreamedKVSpace::enter_request` restores the window from it when
+                // the request starts. There is no replica to reserve or copy here.
+                return;
+            }
             if (mapped > addresses.mapped_pages(address)) {
                 throw std::logic_error("KV activation frontier exceeds address membership");
             }

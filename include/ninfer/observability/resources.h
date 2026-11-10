@@ -225,6 +225,10 @@ struct StreamedKvStats {
     // 0 = no round ran yet, 1 = all-resident, 2 = uniform, 3 = concentrated. A scalar rather than a
     // string because this struct crosses the model/runtime boundary by value; the label is derived.
     std::uint32_t shape             = 0;
+    // Whether a finished request's context is still in the space, and the token frontier its
+    // continuation was published at. The next request either continues from it or starts empty.
+    bool retained              = false;
+    std::uint32_t retained_frontier = 0;
     std::uint64_t rounds          = 0;
     std::uint64_t upload_bytes    = 0;
     std::uint64_t download_bytes  = 0;

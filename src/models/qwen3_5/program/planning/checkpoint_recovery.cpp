@@ -123,6 +123,11 @@ ProgramImpl::checkpoint_restore_requirements(const SequenceKVBundle& kv,
                                const LogicalKVPageStore& pages, KVAddressSpaceHandle address,
                                std::uint32_t required, runtime::ContextResourceClass resource) {
         if (required == 0) { return; }
+        if (addresses.streaming()) {
+            // A streamed context's pages are the pinned host authority the space already owns: a
+            // restored frontier needs no staging, because the space serves those pages itself.
+            return;
+        }
         if (required > addresses.mapped_pages(address)) {
             throw std::logic_error("checkpoint KV requirement exceeds its address space");
         }
@@ -379,6 +384,12 @@ bool ProgramImpl::pressure_checkpoint_recovery_impacts(
                                    std::uint32_t required,
                                    runtime::ContextResourceClass resource) -> bool {
             if (required == 0) { return true; }
+            if (addresses.streaming()) {
+                // A streamed context's pages are the pinned host authority the space already owns:
+                // restoring one needs no transfer, so a streamed checkpoint is device-ready as far
+                // as its KV is concerned.
+                return addresses.valid(address);
+            }
             if (!addresses.valid(address) || required > addresses.mapped_pages(address)) {
                 return false;
             }

@@ -264,11 +264,17 @@ std::string serve_usage_text(const char* argv0) {
            "                                on the device and stream the rest from pinned\n"
            "                                host memory every round, so a 16 GB card serves\n"
            "                                a context its pool cannot hold. One sequence at\n"
-           "                                a time and --kv-capacity auto; drops prefix\n"
-           "                                reuse. Defaults --embedding-residency host and\n"
-           "                                MTP's adaptive width\n"
+           "                                a time and --kv-capacity auto; keeps the finished\n"
+           "                                request's context for the next one and reuses it\n"
+           "                                when the prompt continues that prefix\n"
+           "                                (--no-prefix-reuse turns that off). Defaults\n"
+           "                                --embedding-residency host and MTP's adaptive\n"
+           "                                width\n"
            "  --kv-stream-report            time the streaming loop's copies and the compute\n"
-           "                                their waits exposed, per round\n" +
+           "                                their waits exposed, per round\n"
+           "  --kv-stream-retain            keep a streamed request's context for the next one and\n"
+           "                                reuse it when the prompt continues that prefix (opt-in;\n"
+           "                                the mode changes a served run's own token stream today)\n" +
            std::string(product::kKvResidentHelp) +
            "\n"
            "CONTEXT CACHE\n"
@@ -730,6 +736,10 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         }
         if (arg == "--kv-stream-report") {
             options.kv_stream_report = true;
+            continue;
+        }
+        if (arg == "--kv-stream-retain") {
+            options.kv_stream_retain = true;
             continue;
         }
         if (arg == "--kv-headroom-mib" || arg == "--vram-headroom-mib") {
@@ -1829,9 +1839,11 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         options.context_cache.host_kv_capacity_bytes = 0;
     }
     // One sequence owns the streamed ring, so a served run of it is a single-lane run: the queue may
-    // still hold several requests, but the ring is only ever one request's. Prefix reuse keeps
-    // context for another request, which is the same ring's antagonist, so it is dropped here rather
-    // than rejected - a streamed run has nothing to reuse it with.
+    // still hold several requests, but the ring is only ever one request's. The finished request's
+    // context does not have to be thrown away: its pages already live in the pinned host authority,
+    // so a streamed run retains one continuation (identity, one Host StateImage and the space's own
+    // frontier) and reuses it when the next prompt continues that exact prefix. --no-prefix-reuse
+    // keeps the cold behaviour of releasing the context at the end of every request.
     if (options.kv_stream) {
         if (options.max_concurrency != 1) {
             throw std::invalid_argument(
@@ -1844,10 +1856,38 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         if (options.devices.size() > 1) {
             throw std::invalid_argument("--kv-stream runs on one device");
         }
-        options.allow_prefix_reuse                   = false;
-        options.context_cache.enabled                = false;
-        options.context_cache.host_state_slots       = 0;
-        options.context_cache.host_kv_capacity_bytes = 0;
+        if (!options.slot_save_path.empty()) {
+            throw std::invalid_argument(
+                "--kv-stream keeps its context in the streamed arena: --slot-save-path is not "
+                "available");
+        }
+        if (!options.context_cache.disk_kv_path.empty()) {
+            throw std::invalid_argument(
+                "--kv-stream keeps its context in the streamed arena: --disk-kv-path is not "
+                "available");
+        }
+        if (options.allow_prefix_reuse && options.kv_stream_retain) {
+            options.context_cache.enabled                           = true;
+            options.context_cache.mode                              = ContextCacheMode::Legacy;
+            options.context_cache.host_state_slots                  = 1;
+            options.context_cache.host_kv_capacity_bytes            = 0;
+            options.context_cache.device_state_slots                = 1;
+            options.context_cache.max_private_continuations         = 1;
+            options.context_cache.max_shared_prefixes               = 0;
+            options.context_cache.max_long_anchors_per_continuation = 0;
+            // One continuation, published at the request's end. Turn-closure and rewrite captures
+            // would each need their own StateImage slot, and a streamed run has exactly one.
+            options.context_cache.max_cache_markers_per_request     = 0;
+            options.context_cache.host_cache_budget_bytes.reset();
+            options.context_cache.disk_kv_path.clear();
+            options.context_cache.disk_kv_restore       = false;
+            options.context_cache.disk_kv_directstorage = false;
+            options.context_cache.disk_kv_capacity_bytes = 0;
+        } else {
+            options.context_cache.enabled                = false;
+            options.context_cache.host_state_slots       = 0;
+            options.context_cache.host_kv_capacity_bytes = 0;
+        }
         // The same defaults the CLI applies: a streamed run is bounded by its pool, so the embedding
         // table and MTP's adaptive width all move bytes into the window. An explicit flag wins.
         if (!embedding_explicit) {

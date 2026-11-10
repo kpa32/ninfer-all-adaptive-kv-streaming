@@ -120,12 +120,28 @@ public:
     // entry as its pages appear. Nothing is copied, because those pages are written again.
     void reset() noexcept {
         active_ = 0;
-        run_cursor_ = 0;
-        run_used_.assign(run_used_.size(), 0);
-        run_owner_.assign(run_owner_.size(), kNoLayer);
-        run_layer_.assign(run_layer_.size(), kNoLayer);
-        layer_runs_.assign(layer_runs_.size(), 0);
+        clear_round_bookkeeping();
     }
+
+    // Keeps the frontier a published continuation left and drops the round's ring bookkeeping: the
+    // next request either continues from that frontier or starts empty (enter_request).
+    void retain() noexcept { clear_round_bookkeeping(); }
+
+    // Marks `tokens` as the frontier a continuation is published for. A deactivation of the address
+    // space then keeps the space (KVStore::set_checkpoint_requirement): the pinned host authority
+    // already holds every page and the window the request ended with is still on the device, so the
+    // retention copies nothing.
+    void publish_frontier(std::uint32_t tokens) noexcept {
+        retained_frontier_ = tokens;
+        retained_          = true;
+    }
+    [[nodiscard]] bool retained() const noexcept { return retained_; }
+    [[nodiscard]] std::uint32_t retained_frontier() const noexcept { return retained_frontier_; }
+
+    // Starts one request at `tokens`: a request that continues the retained frontier keeps it, every
+    // other request starts from an empty space, and either way the round's ring bookkeeping is
+    // dropped (a run may only be claimed once its previous owner's events are behind it).
+    void enter_request(std::uint32_t tokens);
 
     // Copies layer `layer`'s streamed pages (`[0, window_start)`) from their host pages into the
     // ring, on `copy`, in runs of `run_pages` pages, and republishes that layer's streamed table
@@ -228,6 +244,11 @@ public:
         std::vector<std::uint32_t> layer_resident;
         std::uint32_t active_pages       = 0;
         std::uint32_t layout_generation  = 0;
+        // A finished request's context is still in the space: `retained_frontier` is the token
+        // frontier its continuation was published at, and the next request either continues from it
+        // or resets the space.
+        bool retained                   = false;
+        std::uint32_t retained_frontier = 0;
         std::vector<RoundSample> round_samples;
     };
 
@@ -265,6 +286,15 @@ public:
     [[nodiscard]] TransferStats transfer_stats();
 
 private:
+    // Drops the round's ring bookkeeping without moving the frontier: runs, cursors and owners are
+    // per request, and a new request may only claim a run after its previous owner's events.
+    void clear_round_bookkeeping() noexcept {
+        run_cursor_ = 0;
+        run_used_.assign(run_used_.size(), 0);
+        run_owner_.assign(run_owner_.size(), kNoLayer);
+        run_layer_.assign(run_layer_.size(), kNoLayer);
+        layer_runs_.assign(layer_runs_.size(), 0);
+    }
     void verify_streamed_page(std::uint32_t layer, std::uint32_t streamed);
     void verify_after_attention(std::uint32_t layer);
     void publish_slot(std::uint32_t layer, std::uint32_t page, std::int32_t slot,
@@ -350,6 +380,9 @@ private:
     // the request, so the live value is not what a finished request moved.
     std::uint32_t round_streamed_pages_ = 0;
     std::uint32_t active_ = 0;
+    // The continuation a finished request published, and whether its context is still in the space.
+    std::uint32_t retained_frontier_ = 0;
+    bool retained_                   = false;
     // The deadline flags, the counters and the two window events the controller's inputs come from.
     std::unique_ptr<KVStreamSignal> signal_;
     KVStreamDeadlineCounters signal_base_{};

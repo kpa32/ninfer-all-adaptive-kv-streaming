@@ -103,6 +103,16 @@ void test_retained_context_is_rejected() {
                     "a checkpoint or retained prefix is rejected");
 }
 
+void test_a_streamed_retention_is_served() {
+    // A streamed run keeps one continuation in the arena the pinned host authority already is, so
+    // retention is not the paged checkpoint the rejection above is about.
+    KVStreamRequest request = shipping_request();
+    request.retained_context  = true;
+    request.streamed_retention = true;
+    check_rejection(kv_stream_rejection(request), KVStreamRejection::None,
+                    "a streamed retention is servable");
+}
+
 void test_the_first_rejection_in_order_is_reported() {
     // A request that breaks several rules reports the one a user meets first: the report flag, then the
     // pool's sizing, then the sequence count, then the devices, then the retained context. That order is
@@ -157,6 +167,7 @@ int main() {
     test_a_second_sequence_is_rejected();
     test_a_second_device_is_rejected();
     test_retained_context_is_rejected();
+    test_a_streamed_retention_is_served();
     test_the_first_rejection_in_order_is_reported();
     test_every_rejection_has_a_message();
 

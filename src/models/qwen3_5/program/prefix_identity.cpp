@@ -1,6 +1,8 @@
 #include "models/qwen3_5/program/prefix_identity.h"
 #include <algorithm>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
 #include <iterator>
 #include <limits>
 #include <stdexcept>
@@ -472,11 +474,30 @@ std::array<std::uint64_t, 2> PrefixShortlistDigests::at(std::size_t frontier) co
 
 bool prefix_matches(const PreparedPromptData& prompt, std::span<const TokenId> resident_tokens,
                     const ResidentPrefixIdentity& resident_identity, std::size_t count) {
-    if (count > prompt.token_ids.size() || count > resident_tokens.size()) { return false; }
-    return std::equal(prompt.token_ids.begin(),
-                      prompt.token_ids.begin() + static_cast<std::ptrdiff_t>(count),
-                      resident_tokens.begin()) &&
-           resident_identity.matches(prompt, count);
+    const bool debug = std::getenv("NINFER_STREAM_DEBUG") != nullptr;
+    if (count > prompt.token_ids.size() || count > resident_tokens.size()) {
+        if (debug) {
+            std::fprintf(stderr, "[prefix] no: count=%zu prompt=%zu resident=%zu\n", count,
+                         prompt.token_ids.size(), resident_tokens.size());
+        }
+        return false;
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        if (prompt.token_ids[index] == resident_tokens[index]) { continue; }
+        if (debug) {
+            std::fprintf(stderr, "[prefix] token mismatch at %zu: prompt %d resident %d (count %zu)\n",
+                         index, static_cast<int>(prompt.token_ids[index]),
+                         static_cast<int>(resident_tokens[index]), count);
+        }
+        return false;
+    }
+    if (!resident_identity.matches(prompt, count)) {
+        if (debug) {
+            std::fprintf(stderr, "[prefix] identity mismatch at count %zu\n", count);
+        }
+        return false;
+    }
+    return true;
 }
 
 } // namespace ninfer::models::qwen3_5::detail

@@ -1844,17 +1844,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         if (options.devices.size() > 1) {
             throw std::invalid_argument("--kv-stream runs on one device");
         }
-        // Served, a drafting streamed request has a timing-dependent hang: the same binary and
-        // request return in 175 ms with NINFER_STREAM_DEBUG=1 set and never return without it, so the
-        // Engine wait is entered and no line follows. Refused until that race is found;
-        // NINFER_ALLOW_STREAMED_MTP=1 reproduces it. A streamed serve without drafting is validated
-        // (198 ms, TTFT 61.7 ms, decode 51.4 tok/s). See kv-streaming-verification.md §9.
-        if (options.speculative.backend != SpeculativeBackend::None &&
-            std::getenv("NINFER_ALLOW_STREAMED_MTP") == nullptr) {
-            throw std::invalid_argument(
-                "--kv-stream cannot draft when served yet: pass --spec none (or set "
-                "NINFER_ALLOW_STREAMED_MTP=1 to reproduce the hang)");
-        }
         options.allow_prefix_reuse                   = false;
         options.context_cache.enabled                = false;
         options.context_cache.host_state_slots       = 0;

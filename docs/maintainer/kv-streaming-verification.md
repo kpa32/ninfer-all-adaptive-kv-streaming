@@ -179,7 +179,7 @@ SPEC 的六条是交付契约。每条的现有证据都指向 `bench/results/kv
 |---|---|---|
 | R11 图内调度 / 图内换页 | 流式布局下不可捕获（捕获行无页，380 µs 失败）；即便可捕获，graph 只值 0.65 ms/轮（1.75%@183 K，≈1.3%@251 K） | 维持关图，measurements 表 5 |
 | R10 写路径脏行/镜像 | 本实现的页只在写满后离窗（design §4.6），回写时整页都是脏的，不存在“回写未写过的行” | 不需要移植，已在本节记录理由 |
-| **serve + 流式 + 草稿** | **时序依赖的挂起**：同一二进制、同一请求，带 `NINFER_STREAM_DEBUG=1` 时 175 ms 返回（decode 75.8 tok/s、MTP 接受 4/7），不带时 `Engine` 的 wait 永不返回且无日志。已排除的假设：headroom 不足、warmup 窗口越界、warmup draft 推进 frontier、warmup 非单 token。四个都已修（它们是真实缺陷），但都不是这一条的完整原因 | **serve 在 `--kv-stream` + 非 `none` 的 `--spec` 下拒绝启动**，`NINFER_ALLOW_STREAMED_MTP=1` 复现；`--spec none` 的流式服务已验证（198 ms、TTFT 61.7 ms、decode 51.4 tok/s） |
+| **serve + 流式 + 草稿（曾经的挂起）** | 现象是 `Engine` 的 wait 永不返回、进程随后 `SIGFPE` 消失且无日志。根因不在 serve：`StreamedKVSpace::advance` 对没有环的整段驻留布局也走“页滑出窗口→写回 host”，而 `slot_of_page` 随后去取模一个 0 run 的环。serve 的 warmup（短上下文按整段驻留规划、窗口 1 页）留下这样的布局，第一个真实请求把前沿推过去就必死；CLI 的 prompt 一次规划到位、前沿不再增长，所以长期未暴露。gdb 抓到 `slot_of_page` 帧与 HTTP 线程的 `wait_for_request` 同时在场，才把“挂起”和“崩溃”分开 | 已修（`2fb81289`：整段驻留的窗口跟随前沿，层表随基址重发；`slot_of_page` 以 `std::logic_error` 陈述契约）。三个连续 serve 请求全通过：TTFT 61–78 ms、total 243–350 ms、decode 56.5–86.5 tok/s、MTP 接受 28.6–60.0% |
 | 跨轮预取 | 多留一个 extent 的实测代价（+5.6% 字节）大于收益（≤3 ms） | 已否决，ledger “跨轮重叠” |
 | span 合并（更细发射） | 更细的发射在本卡上更慢（1 run/帧 166.7 ms vs 整层 54.7 ms） | 不作默认，C10 |
 | 跨架构构建（K4） | 本机只有 `sm_89` | 依赖 CI 的四套构建，PR 里点名 |

@@ -63,11 +63,12 @@ inline constexpr std::size_t kDefaultKvCapacityHeadroomBytes = 1024ULL * 1024ULL
 // every round (docs/maintainer/kv-streaming-design.md, 5.5 and 5.10).
 //
 // The margin only has to cover what the plan did not foresee, and the plan's device estimates are
-// accurate to about 10 MiB: a 256 MiB margin still left 245.5 MiB free after startup in every
-// measured configuration. It is also no longer the last line of defence - a Program that cannot get
-// the memory an automatic plan promised is rebuilt with a smaller pool - so this is a floor rather
-// than a reserve, at six times the measured error.
-inline constexpr std::size_t kDefaultKvStreamHeadroomBytes = 64ULL * 1024ULL * 1024ULL;
+// accurate to about 10 MiB, so 16 MiB leaves a 6 MiB margin; it is no longer the last line of
+// defence - a Program that cannot get the memory an automatic plan promised is rebuilt with a
+// smaller pool - so this is a floor rather than a reserve. Every MiB here is a page the window does
+// not hold, which is why a streamed run keeps it small; a card whose free memory moves between
+// launches wants an explicit `--kv-headroom-mib`.
+inline constexpr std::size_t kDefaultKvStreamHeadroomBytes = 16ULL * 1024ULL * 1024ULL;
 
 // Flash-Next's default for EngineOptions::kv_resident_positions with host or disk experts.
 inline constexpr std::uint32_t kDefaultKvResidentPositions = 32768;

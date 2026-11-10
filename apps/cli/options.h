@@ -70,6 +70,11 @@ struct Options {
     bool embedding_q4   = false;
     bool embedding_q6   = false;
     ninfer::EmbeddingResidency embedding_residency = ninfer::EmbeddingResidency::Device;
+    // Whether the flag that names it was given: a streamed run defaults the embedding, the headroom
+    // and MTP to the choices that trade memory for speed, and an explicit flag must still win.
+    bool embedding_explicit    = false;
+    bool draft_tokens_explicit = false;
+    bool mtp_policy_explicit   = false;
     bool mtp_experts_q4 = false;
     bool gdn_state_fp16 = false;
     bool rope_yarn      = false;

@@ -228,7 +228,12 @@ std::string usage_text(const char* argv0) {
            "                                pinned host memory every round, so the context\n"
            "                                far exceeds the device pool; a round copies over\n"
            "                                PCIe, so an all-resident cache is faster. Needs\n"
-           "                                --kv-capacity auto, one sequence, one device\n"
+           "                                --kv-capacity auto, one sequence, one device.\n"
+           "                                Defaults this run to the choices that trade\n"
+           "                                memory for speed: --embedding-residency host,\n"
+           "                                a 16 MiB headroom, and --spec mtp\n"
+           "                                --draft-tokens 5 --adaptive-mtp; an explicit\n"
+           "                                flag still wins\n"
            "  --kv-stream-report             time the streaming loop's copies and the compute\n"
            "                                waits they cause, and report both per round. The\n"
            "                                timing events cost device time, so this is off by\n"
@@ -480,6 +485,7 @@ Options parse_options(int argc, char** argv) {
             }
         } else if (arg == "--embedding-residency") {
             const std::string residency = value(arg);
+            embedding_explicit          = true;
             if (residency == "device") {
                 options.embedding_residency = ninfer::EmbeddingResidency::Device;
             } else if (residency == "host") {
@@ -508,6 +514,12 @@ Options parse_options(int argc, char** argv) {
             spec_explicit               = true;
         } else if (arg == "--draft-tokens") {
             options.speculative.draft_tokens = parse_u32(value(arg), "draft-tokens");
+            draft_tokens_explicit            = true;
+        } else if (arg == "--adaptive-mtp") {
+            // Each MTP round verifies the width the drafts' survival and the round's cost favor.
+            // Lossless: the greedy output is the same as a fixed width's.
+            options.speculative.mtp_policy = ninfer::MtpDraftPolicy::Adaptive;
+            mtp_policy_explicit            = true;
         } else if (arg == "--draft-confidence") {
             options.speculative.draft_confidence =
                 parse_float(value(arg), "draft-confidence", 0.0F, 1.0F);
@@ -720,6 +732,24 @@ Options parse_options(int argc, char** argv) {
         // window over every full-attention layer plus one ring, and every page the window gains
         // is a page no round has to copy.
         options.kv_capacity = KvCapacityPolicy::automatic(ninfer::kDefaultKvStreamHeadroomBytes);
+    }
+    // A streamed run is bounded by its pool, not by its weights, so the choices that trade memory
+    // for speed all point the same way: the embedding table and the headroom move bytes into the
+    // pool, and MTP's adaptive width is lossless (its greedy output is a fixed width's). These are
+    // the defaults of flags the user did not give; an explicit flag still wins.
+    if (options.kv_stream) {
+        if (!embedding_explicit) {
+            options.embedding_residency = ninfer::EmbeddingResidency::Host;
+        }
+        if (!spec_explicit) {
+            options.speculative.backend = ninfer::SpeculativeBackend::Mtp;
+        }
+        if (options.speculative.backend == ninfer::SpeculativeBackend::Mtp) {
+            if (!draft_tokens_explicit) { options.speculative.draft_tokens = 5; }
+            if (!mtp_policy_explicit) {
+                options.speculative.mtp_policy = ninfer::MtpDraftPolicy::Adaptive;
+            }
+        }
     }
 
     const bool has_prompt   = !options.prompt.empty();

@@ -25,115 +25,62 @@ update the affected contracts and implementation together instead of treating th
 as an immutable prohibition. Skills provide task-specific methods, not additional deliverables or
 approval requirements beyond the user's instructions and the actual execution environment.
 
-Every change follows the [engineering rules](CONTRIBUTING.md#engineering-rules): lossless by
-default, every model family, every platform, the best measured default, comparable measurements,
-documentation of the current state, and the test and tooling conventions. When a task cannot meet a
-rule, its report names the rule and the reason.
+Every change follows the [engineering rules](CONTRIBUTING.md#engineering-rules) scoped to this
+fork: lossless by default, the supported model (Qwen3.8-27B) on every supported platform,
+with optimization and defaults tuned for the 16 GB configuration, the best measured default,
+comparable measurements, documentation of the current state, and the test and tooling
+conventions. Where an inherited document (CONTRIBUTING.md's "Every family", the other model
+guides) names families outside the scope below, this document governs until it is updated.
+When a task cannot meet a rule, its report names the rule and the reason.
 
 ## Product and architecture
 
-NInfer is a from-scratch C++/CUDA inference engine for maximum single-GPU performance, with an
-optional layer pipeline across several GPUs on Linux. It implements
-`Qwen3_5ForCausalLM` and `Qwen3_5MoeForCausalLM`; official Qwen3.6/3.8 artifacts and user recipes
-use the same architecture, binding and execution path. Native MoE routed experts may reside
-on the GPU, in pinned host memory, or in the artifact's files, brought into whole-layer device
-banks beside an optional persistent device cache (`--expert-residency host|disk`). Router and
-shared experts remain resident; the GPU runs all model arithmetic, including the MTP MoE, except
-the share of a decode call's host or disk expert misses that CPU threads compute
-(`--expert-dma-share`), bit for bit as the GPU would.
-Qwen3.8-Flash-Next (`Qwen4ExpForCausalLM`,
-`src/models/qwen4_exp`) is a second, explicit family with its own load, executor and Engine core
-(`runtime/engine/qwen4_exp_core`); it shares the Qwen3.5 frontend and Vision tower, runs up to
-eight requests at once (one batched decode step between prompt chunks), and may keep its routed
-experts off the GPU, in pinned host memory with a device cache of the most used
-ones (`--expert-residency host`) or in the artifact's files, read into a device cache as each layer
-routes to them (`--expert-residency disk`). Its n-gram table is stored in the model's artifact or
-in a separate table artifact the model names by digest (`--ngram-table`); it stays in that file,
-read a row at a time, unless `--ngram-residency ram` loads it. A model with PLE requires its table
-unless `--no-ngram-table` overrides that; a qualification layer slice without PLE needs no table.
-Native Qwen MoE, Gemma MoE and Flint also support host/disk expert placements, with whole-layer
-device banks beside the optional persistent cache and the same CPU share of decode misses.
-Gemma 4 26B-A4B (`Gemma4ForCausalLM`, the text component of `Gemma4ForConditionalGeneration`;
-`src/models/gemma4`, `runtime/engine/gemma4_core`) is a third explicit family converted from
-Google's QAT GGUF (or a mixed-format GGUF of the same model) with its ggml blocks kept as stored.
-It shares the Qwen3.5 frontend (tokenizer, chat template, output channels and Gemma's tool-call
-markup), runs one to eight sequences in prompt chunks of 2048 tokens (narrower where memory is
-short) with an F16 KV cache or any
-`--kv-dtype` format, drafts with the release's multi-token-prediction assistant (the artifact's
-`mtp` component, `--spec mtp`),
-encodes images and video with the release's vision tower (the artifact's `vision` component, from
-its llama.cpp mmproj; resident, streamed from pinned memory, or FP32 on CPU threads), and has no
-pipeline stages; several GPUs divide its routed experts (`--tensor-parallel`).
-Flint (`FlintForCausalLM`; `src/models/flint`, `runtime/engine/flint_core`) is a fourth explicit
-family converted from a llama.cpp GGUF of Recursive's release (Unsloth's UD-Q4_K_XL) with its ggml
-blocks kept as stored. It shares the Qwen3.5 frontend in a Flint dialect (its pre-tokenizer, the
-role-marker chat template, reasoning the model opens itself, GLM-4.7 tool calls), runs one to eight
-sequences in prompt chunks of 2048 tokens with an F16 KV cache, drafts by context lookup only
-(`--lookup-ngram`; Recursive publishes no draft model), and has no vision, rotation scaling or
-pipeline stages; several GPUs divide its routed experts (`--tensor-parallel`).
-DeepSeek-V4.1-Flash (`DeepseekV41ForCausalLM`; `src/models/deepseek_v41`,
-`runtime/engine/deepseek_v41_core`) is a fifth explicit family converted from ISTA-DASLab's
-GSQ-RCO GGUF (IQ1_M) and its Engram table GGUF with the ggml blocks kept as stored. It shares the
-Qwen3.5 frontend in a DeepSeek dialect (the converter's transcription of the release's encoder as
-its chat template, DSML tool calls, reasoning opened by the prompt), runs one to eight sequences in
-prompt chunks of 2048 tokens with BF16 caches, keeps the release's FP8/FP4 attention roundings,
-drafts with the release's DSpark drafter (the `dspark` component, from beamster's STQ pack or
-Unsloth's GGUF; `--spec dspark`) or by context lookup, and keeps its routed experts in pinned host
-memory or in the artifact's files (read into bounded buffers, never mapped), CPU threads computing a
-share of a decode call's misses from the stored IQ1/IQ2 blocks while the GPU copies the rest. Its
-Engram table is embedded or a separate table artifact (`--ngram-table`), read a row at a time or
-held in RAM. It encodes images with the release's vision tower (the artifact's `vision` component,
-from the release's mmproj and its routing bias of image positions; resident or streamed from pinned
-memory).
-No video, rotation scaling or pipeline stages; several GPUs divide its host or disk experts
-(`--tensor-parallel`, each device its own banks and copies).
-Flash-Next's dense and attention arithmetic runs on the GPU. Of a decode or verification call's
-routed experts that the device cache lacks, CPU threads may compute a share from the host copy
-while the GPU copies and runs the rest (hybrid execution, `--expert-dma-share`), including a share
-the engine chooses from measured CPU and bus speeds; develop it where measurements show a gain.
-The CPU's GGUF expert products reproduce the GPU's decode products bit for bit
-(`gguf_expert_cpu`); a change to either side keeps them equal.
-Develop the existing GGUF host-RAM and disk-streaming paths;
-reuse published weights and the published IQ4 table when adding MTP. Disk residency uses the OS
-page cache. An additional application-managed RAM cache of experts is excluded from this delivery
-by the user's decision. Keep the bounded transfer buffers and the device expert cache.
-This line builds for **`sm_86`** (the RTX 30 series; that build also runs the RTX 40 series),
-`sm_89`, `120a` (the RTX 50 series and RTX PRO 6000 Blackwell, CUDA 13.1 or newer except 13.2.0 and 13.2.1) and `sm_75`
-(Turing: the TITAN RTX and RTX 20 series, Turing forms of the sm_80 instructions and Turing shapes
-of the kernels past its 64 KiB of shared memory, `docs/maintainer/build-system.md`), with `sm_80`
-(A100 class: device profiles calibrated, not benchmarked) and `sm_70` (Tesla V100, CUDA 12.x only, its own small-T,
-attention and prompt routes over emulated Ampere warp primitives). The Docker pipeline packages
-the native Debian 13 archives as `cuda12.9` (`70;75;80;86;89`) and `cuda13.4`
-(`75;80;86;89;120a`), with all targets in each shared backend. Portable native packages also combine both CUDA backends
-behind Toolkit-independent launchers, selecting one backend per process. It was tuned on the **NVIDIA
-GeForce RTX 3090** (24 GB) first, and each card's kernel routes now come from its measured device
-profile, built in for every card the Profile column of `docs/gpus.md` marks, from the Tesla V100
-to Blackwell. Upstream (`Neroued/ninfer`) targets `sm_120a` on RTX
-5090 with native routes that this line's `120a` build does not compile by default; its schedules,
-route tables and published measurements are not authoritative here -- every route table this fork
-inherited and re-measured on sm_86 turned out to be wrong by 12-41%. Treat an upstream tuning
-constant as a hypothesis until measured on the card in question. Windows builds and their
-toolchain constraints are in `docs/build-windows.md`; this repository has no Windows test host and
-the Native release workflow builds native multi-architecture executables but does not run GPU inference.
+This is a hard fork of NInfer-all (lineage: NInfer → NInfer-3090 → NInfer-all), cut from the
+`kv-stream-27b-16g` branch after the adaptive KV streaming experiment. It maintains one
+model, **Qwen3.8-27B**, on the NVIDIA cards the project supports, and optimizes and tunes
+every feature for the **16 GB configuration**.
 
-Generation uses one resident model on one GPU, or split into pipeline stages over up to eight
-(`--devices`; each stage owns whole layers with their KV and state, and the head,
-round state and sampling stay on the first device; design in
-`docs/maintainer/pipeline-stages.md`). It runs startup-fixed concurrency of one to eight
+- **Model.** The supported model is Qwen3.8-27B (`Qwen3_5ForCausalLM`, the dense 27B of the
+  Qwen3.5 family) and the artifacts built on it that share its architecture, binding and
+  execution path: the official `groupwise-int` release, the GSQ-RCO IQ3_S release and the
+  fine-tunes (abliterated, Uncensored, Ternary Bonsai 2). It keeps MTP and DFlash2 drafting,
+  Vision, the nine `--kv-dtype` formats, YaRN, up to eight concurrent requests and the full
+  serving surface. No other model family is in scope.
+- **Cards.** Every supported NVIDIA build target stays supported: `70`, `75`, `80`, `86`,
+  `89` and `120a` (CUDA 12.8 or newer; `120a` needs 13.1 or newer except 13.2.0 and 13.2.1).
+  The **16 GB configuration is the optimization target**: new features, kernel routes,
+  schedules, memory budgets and defaults are designed for 16 GB cards and are measured and
+  tuned there. A feature that also runs on 24 GB and larger cards is not maintained or
+  verified there; it inherits the 16 GB behavior and no separate tuning on the bigger cards
+  is owed. The development, reference and only measured card is the **RTX 4080 SUPER 16 GB**
+  (sm_89, 16,376 MiB, PCIe 4.0 x16, on a 64 GB RAM Debian 13 host). The binary carries a
+  built-in device profile for the RTX 4080 SUPER (measured 2026-10-16 at its default 320 W
+  power limit); like every inherited constant it is a hypothesis until verified on your card,
+  and `ninfer-calibrate` measures again after a driver or clock change
+  ([device profiles](docs/device-profiles.md)). Upstream schedules, route tables and published
+  measurements come from other cards (RTX 3090, 4090, 5090, RTX PRO 6000); treat them, and any
+  tuning constant, as a hypothesis until measured on the 4080 SUPER.
+- **Active work line.** Adaptive KV streaming (`--kv-stream`): each full-attention layer keeps
+  its newest pages on the device and streams the rest from pinned host memory every round, so
+  Qwen3.8-27B reaches its 262,144-token context on a 16 GB card. The goal is
+  [SPEC.md](SPEC.md); the single plan authority is
+  [docs/maintainer/kv-streaming-strategy.md](docs/maintainer/kv-streaming-strategy.md) with its
+  design, fidelity, measurements and verification companions.
+- **Out of scope, kept in the tree.** Everything else inherited from upstream — Qwen3.6 dense and
+  MoE, Qwen3.8-Flash-Next, Gemma 4, Flint, DeepSeek-V4.1-Flash, MoE expert residency and the CPU
+  share, pipeline stages (`--devices`), tensor parallelism (`--tensor-parallel`) and the Windows
+  builds — remains in the tree but is not maintained: no new features, no tuning, bug fixes only
+  where they block the in-scope path. It is the fork's pruning target; removing a piece to
+  shrink the tree toward the scope above is in scope work.
+
+Generation uses one resident model on one GPU. It runs startup-fixed concurrency of one to eight
 requests, bounded FIFO ingress (whose one-token reads trade places by remaining work), no
-active-request preemption, and one compact decode batch per
-round. Tensor parallelism (`--tensor-parallel`) divides the GDN heads, the attention's KV heads
-with their cache and the dense FFN rows or routed experts of a Qwen3.5-core model over the devices
-in shares sized to each card (`--tensor-split`, or measured bandwidth and free memory), with the
-head, the shared expert and MTP on the first; Qwen3.8-Flash-Next divides its GDN key heads,
-sparse-attention KV heads and routed experts the same way, every device keeping the
-hyper-connection stack; the other MoE families divide only their routed experts (expert
-parallelism, an exact fixed-point sum of the devices' parts).
+active-request preemption, and one compact decode batch per round.
 Generation and offline CausalScoring use the same public `.ninfer` Engine route. Delivered
 capabilities and commands are documented in `README.md`, the product guides, and executable
 `--help`. New mathematical architectures, execution platforms, large-scale/preemptive continuous
 batching, and priority/QoS require an explicit product change. Another training instance or mixture
-of existing representations does not require a checkpoint-specific execution registration.
+of existing representations does not require checkpoint-specific execution registration.
 
 This is a local, single-owner project with trusted local models, generated artifacts, and
 local workflow. Do not derive requirements from a different deployment or trust model.
@@ -150,7 +97,7 @@ Keep these ownership boundaries visible when selecting a design:
   Program owns mutable state, workspace, context stores and CUDA Graphs. Programs share no mutable
   state or device allocation.
 - Converter recipes choose sources, formats, packing and per-input activation permissions. The
-  loader validates, uploads and binds the stored representation. Native preparation, resource
+  loader validates, uploads, and binds the stored representation. Native preparation, resource
   queries and execution enforce actual Op support; there is no whole-artifact capability registry.
 - Runtime owns common execution contracts and Engine publication policy; product/serving own input
   acquisition and protocol translation. Model code does not acquire media or own transport.
@@ -257,7 +204,8 @@ Read the authority relevant to the current decision; this is not a mandatory rea
 
 | Decision | Entry point |
 |---|---|
-| Engineering rules for every change: lossless, families, platforms, defaults, measurements, docs, tests | `CONTRIBUTING.md` |
+| The fork's scope, and the KV-streaming goal and plan | `SPEC.md`, `docs/maintainer/kv-streaming-strategy.md` |
+| Engineering rules for every change: lossless, families, platforms, defaults, measurements, docs, tests | `CONTRIBUTING.md` (scoped by this file's product section until it is updated) |
 | Product capabilities and exact commands | `README.md`, executable `--help`; `docs/cli.md`, `docs/serving.md`, `docs/perplexity.md` |
 | Execution, model/runtime ownership, scheduling, transactions, graphs | `docs/maintainer/engine-architecture.md` |
 | Context resources, checkpoints, replicas; physical KV | `docs/maintainer/resource-scheduling-and-context-cache.md`; `docs/maintainer/paged-kv-cache.md` |
@@ -282,8 +230,10 @@ Select model artifacts by explicit path, never glob order, modification time, or
 “latest”. Source checkpoints and large artifacts are prerequisites; download or regenerate them
 only when that work is in scope. Install or upgrade dependencies only when the task needs it.
 
-Compilation needs no GPU. Executing CUDA tests, benchmarks or perplexity runs needs a free GPU; the
-[pods harness](scripts/pods/README.md) runs them on rented hosts.
+Compilation needs no GPU. Executing CUDA tests, benchmarks or perplexity runs needs the local card
+free: the test host is the RTX 4080 SUPER 16 GB with 64 GB of RAM on Debian 13, and this fork has
+no rented hosts or pods path. Run there when the card is idle, and say so in the report when a
+check could not run because it was not free.
 
 ## Commits
 

@@ -8,6 +8,10 @@
 # (cmake/MediaSources.cmake pins their URLs and digests); the build never downloads them.
 set -euo pipefail
 cd "$(dirname "$0")"
+# The host's nvcc is not on the non-login PATH (handoff record); point CMake at it.
+if [[ -z "${CUDACXX:-}" && -x /usr/local/cuda/bin/nvcc ]]; then
+  export CUDACXX=/usr/local/cuda/bin/nvcc
+fi
 ARCHES=${1:-${CMAKE_CUDA_ARCHITECTURES:-89}}
 BUILD_DIR=${NINFER_BUILD_DIR:-build-sm89}
 JOBS=${NINFER_BUILD_JOBS:-16}

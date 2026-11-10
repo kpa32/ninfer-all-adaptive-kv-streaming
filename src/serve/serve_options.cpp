@@ -1797,6 +1797,9 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             throw std::invalid_argument("--kv-headroom-mib requires --kv-capacity auto");
         }
         options.kv_capacity = KvCapacityPolicy::automatic(*kv_headroom_mib << 20);
+    } else if (options.kv_stream && options.kv_capacity.mode == KvCapacityMode::Automatic) {
+        // A streamed run trades the idle gigabyte for window depth, as the CLI does.
+        options.kv_capacity = KvCapacityPolicy::automatic(kDefaultKvStreamHeadroomBytes);
     }
     if (long_anchor_spacing_explicit && !options.context_cache.automatic_long_anchors) {
         throw std::invalid_argument("--long-anchor-spacing requires --auto-long-anchors");

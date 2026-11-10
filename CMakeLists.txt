@@ -167,8 +167,6 @@ endif()
 
 # --- Global settings ---------------------------------------------------------
 option(NINFER_BUILD_APPS "Build the NInfer CLI, server and perplexity evaluator" ON)
-option(BUILD_TESTING "Build NInfer tests" OFF)
-option(NINFER_BUILD_BENCHMARKS "Build NInfer benchmarks" OFF)
 option(NINFER_SFU_SIGMOID_SILU
        "Evaluate sigmoid and SiLU on the SFU instead of with expf and a divide" OFF)
 if(NINFER_SFU_SIGMOID_SILU)
@@ -318,11 +316,7 @@ if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.8)
     "${CMAKE_CUDA_COMPILER_VERSION}")
 endif()
 
-# Tests also exercise product input, logging and protocol adapters.
-set(NINFER_BUILD_PRODUCT_SUPPORT OFF)
-if(NINFER_BUILD_APPS OR BUILD_TESTING)
-  set(NINFER_BUILD_PRODUCT_SUPPORT ON)
-endif()
+set(NINFER_BUILD_PRODUCT_SUPPORT ${NINFER_BUILD_APPS})
 
 option(NINFER_SHARED_RUNTIME "Build portable launchers and a private CUDA runtime library" OFF)
 if(NINFER_SHARED_RUNTIME)
@@ -370,14 +364,6 @@ endfunction()
 add_subdirectory(src)
 if(NINFER_BUILD_APPS)
   add_subdirectory(apps)
-  add_subdirectory(tools)
-endif()
-if(BUILD_TESTING)
-  enable_testing()
-  add_subdirectory(tests)
-endif()
-if(NINFER_BUILD_BENCHMARKS)
-  add_subdirectory(bench)
 endif()
 
 if(NINFER_SHARED_RUNTIME)

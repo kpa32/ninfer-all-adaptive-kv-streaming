@@ -1,6 +1,6 @@
 # Source releases of the media decoders that Linux builds link statically (cmake/NinferFFmpeg.cmake).
-# scripts/fetch-media-sources.sh downloads them and checks these digests; the build itself never
-# downloads anything. FFmpeg's archive is verified against the FFmpeg release signing key
+# The build itself never downloads anything; the archives must already sit in
+# third_party/media-sources (or NINFER_MEDIA_SOURCES_DIR). FFmpeg's archive is verified against the FFmpeg release signing key
 # FCF986EA15E6E293A5644F10B4322F04D67658D8 and dav1d's against the VideoLAN release signing key
 # 65F7C6B4206BD057A7EB73787180713BE58D1ADC before a digest is pinned here.
 #

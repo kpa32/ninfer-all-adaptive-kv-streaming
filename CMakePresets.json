@@ -9,30 +9,11 @@
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "NINFER_BUILD_APPS": "ON",
-        "BUILD_TESTING": "OFF",
-        "NINFER_BUILD_BENCHMARKS": "OFF"
-      }
-    },
-    {
-      "name": "dev",
-      "displayName": "Release products, tests and benchmarks",
-      "inherits": "release",
-      "cacheVariables": {
-        "BUILD_TESTING": "ON",
-        "NINFER_BUILD_BENCHMARKS": "ON"
+        "NINFER_BUILD_APPS": "ON"
       }
     }
   ],
   "buildPresets": [
-    { "name": "release", "configurePreset": "release" },
-    { "name": "dev", "configurePreset": "dev" }
-  ],
-  "testPresets": [
-    {
-      "name": "dev",
-      "configurePreset": "dev",
-      "output": { "outputOnFailure": true }
-    }
+    { "name": "release", "configurePreset": "release" }
   ]
 }

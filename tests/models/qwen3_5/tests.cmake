@@ -152,6 +152,15 @@ set_tests_properties(
   ninfer_qwen3_5_kv_stream_eviction_real_test
   PROPERTIES SKIP_RETURN_CODE 77)
 
+# C17/C18: the reuse cases a streamed run meets in use, each against a cache-less run.
+ninfer_add_test(ninfer_qwen3_5_kv_stream_reuse_real_test
+  SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_kv_stream_reuse.cpp"
+  LIBRARIES ninfer_engine)
+
+set_tests_properties(
+  ninfer_qwen3_5_kv_stream_reuse_real_test
+  PROPERTIES SKIP_RETURN_CODE 77)
+
 
 ninfer_add_test(ninfer_qwen3_5_hybrid_prefix_real_test
   SOURCES "${CMAKE_CURRENT_LIST_DIR}/test_engine_hybrid_prefix_real.cpp"

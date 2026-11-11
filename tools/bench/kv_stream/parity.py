@@ -50,7 +50,7 @@ SERVE_FLAGS = [
 #   context cache | 1 active + 0 cached device states | host 1 states, 0 B KV | private 1 | shared 0 | anchors 0
 INVENTORY = re.compile(
     r"context cache \|.*\| host (\d+) states, (\d+) B KV \| private (\d+) \| shared (\d+) \| anchors (\d+)")
-STREAM_START = re.compile(r"\[stream\] request starts: reuse=(\d+) base=(\d+) valid=(\d+)")
+STREAM_START = re.compile(r"\[stream\] request starts:.*?reuse=(\d+) base=(\d+) valid=(\d+)")
 FATAL = re.compile(r"worker crash|FATAL engine|terminate called")
 
 

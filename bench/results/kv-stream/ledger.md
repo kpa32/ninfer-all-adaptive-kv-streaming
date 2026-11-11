@@ -369,3 +369,13 @@ embedding 常驻占 388.4 MiB；换成 host 后这部分显存回到 KV 池（�
   同时把它挤掉）。另：`NINFER_ADMISSION_DEBUG` 是本次新增的诊断口。
 - **过程教训**：serve 的 429 复现第一次是"只重编了 `ninfer`、没重编 `ninfer-serve`"造成的假象；
   以后每次改引擎/运行时库，都要把 serve 与驱动一起重链。
+
+## 复验（同一构建，`2026-11-11 19:2x`）
+
+- 放置检查恢复只读后，15 个放置/缓存/流式用例 **全 PASS**（含 `ninfer_resource_manager_test`、
+  `serial_real` 749 s、`geometry_real` 76 s、`eviction_real`（C15）76 s）。
+- serve `A → B → A`：三条 **HTTP 200**，进程存活（修复前 B 是 429，或 `stale` → abort）。
+- serve `A → A2`（同一会话继续）：`cache 78 (60.5%, turn closure)`、TTFT 126 ms——复用未受影响。
+- 过程失误（记录在案）：第一版把"丢弃"放进只读的放置检查里，功能可过、契约被破坏，
+  由 `resource_manager_test` 的 `retained source protection` 断言抓住；现改为在放置循环里、
+  两次检查之间执行，每请求最多一次。

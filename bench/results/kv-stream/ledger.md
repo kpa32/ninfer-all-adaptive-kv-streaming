@@ -281,3 +281,11 @@ embedding 常驻占 388.4 MiB；换成 host 后这部分显存回到 KV 池（�
   归因需要与保留 tag 做交错 A/B（另一套 build 目录，属 Gate 2 的剩余项）。
 - 正确性：六组几何（resident 1413→40、ring 24→35）答案逐位相同；保留臂与冷跑臂几何不同也逐位相同；
   8 K 流式 `all-resident`、`layout_generation=0`。
+
+## 状态指针（交接用）：`68941676` + 文档 `259b1e26`
+
+- 已修：`repartition` 改名不搬字节（`c8bdb380`）；已移除请求中途换布局（`68941676`，池启动即 decode 形）。
+- 已建：C14 几何不变性（`898fca00`）；缺陷档案 `layout-rename-defect.md`（`4844f2a6`）。
+- 回退点：tag `kv-stream/layout-switch-before-removal` / 分支 `kv-stream/preserved-layout-switch`（`c8bdb380`）。
+- 未完成与复跑命令：见 `handoff.md` §3（U1 交错 A/B 归因、U2 死代码删除、U3 in-repo 驱动未验证编译、
+  U4 自动化、U5 长会话/int8、U6 测试机 8 处临时补丁、U7 文档收尾）。

@@ -1,233 +1,145 @@
-## Goal
+# 交接文档：KV 流式 + 前缀复用（当前状态）
 
-在 16 GB 单卡上把 Qwen3.8-27B 的 262 144 上下文做成可交付的 `--kv-stream` 能力：`rk8v4` 与 `int8`
-都能启动并稳定 decode；同一格式下流式开/关 greedy ids 与 logprobs 逐位一致；关闭即今天行为；
-报告真实速度、显存与搬运字节。当前阶段：**压缩上下文后从 P0 的 CUDA Graph 基线继续**。
+本文件是**接手第一份要读的东西**：现在到哪一步、哪些已验证、哪些没做完、怎么复跑、怎么回退。
+历史决策与作废数字在 `ledger.md`；单个缺陷的证据档案在 `layout-rename-defect.md`。
 
-## Constraints & Preferences
+## 0. 当前状态（一句话）
 
-**用户的工作方式（违反会被叫停）**
-- 每步先说明要做什么，等用户回话，再动手；不要连续自作主张。
-- 动手前先搜：项目里已有 bench、用例、金标、开关、测试，不要造轮子。
-- 动作要审批；清理/回滚也先说明。
-- 不租 pod（测试机一直可用）；不装依赖；不做全量编译，不编 `ninfer_tests`（约 30 分钟）。
-- 只增量构建单目标；测试批次单独排期、后台跑、先获批。
-- 提交后推送并同步测试机；Conventional Commits。
-- 结论要真：没跑写“未跑”，不利结果写在最终回复里，不藏。
+前缀复用在流式下**已实现并逐位验证**；一个"布局改名不搬字节"的**正确性缺陷已修复**，并据此**移除了请求中途换布局**
+（唯一收益 0.2%）；**几何不变性（C14）已建立**。剩余工作全是收尾与归因测量，见 §3。
 
-**项目硬规则（`CONTRIBUTING.md`）**
-- 无损优先：优化不得改输出；逐位是判据（ids 不够，logprobs 也要逐位）。
-- 每个模型族、每个平台（`sm_70/75/80/86/89/120a`，CUDA 12.x/13.x）。
-- 默认即最快无损配置；产品模式走 CLI/服务选项，env 只能做诊断/A-B。
-- 可比测量：同主机/同构建/同产物/同 prompt、交错运行、无其它负载。
-- 文档只描述当前状态（无日期日志/尝试过程）；历史放 `bench/results/kv-stream/ledger.md`。
-- 新 kernel：独立 oracle + 一次 `compute-sanitizer` racecheck 与 synccheck；测试注册进 CTest。
+| 项 | 值 |
+|---|---|
+| 分支 | `kv-stream-27b-16g` |
+| HEAD | `259b1e26`（文档）；代码 HEAD `68941676` |
+| 回退点（换形在、已修好） | tag `kv-stream/layout-switch-before-removal`、分支 `kv-stream/preserved-layout-switch`（都指向 `c8bdb380`） |
+| 测试机 | `kpa@192.168.2.13`（debian），仓库 `~/ninfer-fork/ninfer-all-adaptive-kv-streaming` |
+| 模型 | `~/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer` |
+| 构建 | `build-sm89`（Release、sm_89、`BUILD_TESTING=OFF`） |
 
-**SPEC 六条完成条件**
-1. `rk8v4` 与 `int8` 的 262 144 都能启动并稳定 decode；
-2. 同格式 on/off 逐 token、logprob 一致；
-3. 120 K 全驻留不差于 109.1 tok/s / 15 632 MiB；
-4. 关闭即今天行为；
-5. 报告真实 tok/s、峰值显存、搬运字节并解释与上界差距；
-6. 251 K 每轮拷贝/轮时间不退化、报告窗口长度、证明 decode 真搬页。
+## 1. 本轮做了什么（每条都能复验）
 
-不在范围：其它模型族/架构、UVM、降 KV 质量、prefill 分块流式。
+| 提交 | 内容 | 证据 |
+|---|---|---|
+| `03879140` | 流式请求结束保留上下文（frontier + 一张 **host** StateImage，KV 不复制），下一请求按前缀复用 | 第二请求 `reuse=1 base=4614`、`cache 4,614 (100.0%, private endpoint)`、TTFT 2 ms |
+| `8561809e` | `--kv-stream` **默认保留并复用**（去掉开发旗标）；端点固定 host shelf；guard/启动拒绝 device 槽 | `--no-prefix-reuse` 仍可关；两请求 ids 与冷跑一致 |
+| `884cfc66` | serve 不再静默覆盖 `--device-state-slots`，改为带修复 flag 的拒绝 | `--device-state-slots 1` 实测报错退出 |
+| `c8bdb380` | **修正确性**：`repartition` 改名必须搬字节（先回写 host 权威，再读入新槽；所有回写在任何回填之前） | 几何 1413 vs 1372 两臂 `8366 / -0.00117492676` 逐位一致（修复前 `-0.1798` vs `-0.8109`） |
+| `4844f2a6` | 缺陷档案 `layout-rename-defect.md` + ledger 条目 | 含 8 组实测证据、7 条已排除假设、复现配方、回退命令 |
+| `68941676` | **移除请求中途换布局**：池在启动时按 decode 形（深环）一次规划整上下文；`enter_layout`/`evaluate_partition` 恒 false | 六组几何（`resident` 1413→40、`ring` 24→35）答案逐位相同；8 K 仍 `all-resident`、`layout_generation=0` |
+| `898fca00` | `docs/cli.md` 改为"一次规划、请求期内不变"；**新增 C14 几何不变性** | verification C14 |
+| `259b1e26` | 台账：等价套件与 251 K 的测量记录 | 见 §2 数字 |
 
-**禁地**：测试机 `~/ninfer/` 原文“这不是你的目录，禁止任何事项.”——不读不写不建不编；
-其中的原版二进制只由 bench 工具**执行**。
+**等价套件（本项目自带门禁）全 PASS**：`check --suite equiv` — 8 K / 100 K resident、183 K resident 与 streamed
+（streamed `100.3 tok/s`、`39.6 ms/轮`、`upload 356.6 MiB/轮`、`exposed 0.0 ms`）。
+记录 `bench/results/kv-stream/runs/20261111T001855Z-equiv-layout-once-c14-898fca00`。
 
-## Progress
+**251 K**（`bench --case stream-251k`）：`95.0 tok/s`、`41.4 ms/轮`、`acceptance 3.9`、
+`upload 689.1 MiB/轮`、`exposed 1.0 ms`。
+记录 `bench/results/kv-stream/runs/20261111T001056Z-bench-layout-once-step1-898fca00`。
 
-### Done
+## 2. 缺陷档案（必读）
 
-**流式上下文跨请求保留（C13 PASS，serve 默认生效）**
-- **机制**：流式 space 的 pinned host 权威就是整份 KV，所以 continuation 只存 token 身份 + 一张
-  **host** StateImage + 空间前沿；`KVStore::set_checkpoint_requirement` 对流式地址记前沿，
-  `deactivate` 有端点就保留，`prefill` 起点经 `StreamedKVSpace::enter_request(text_kv_valid)` 决定续接或清空。
-- **Engine 级证据**（driver，4 K prompt + 8 token，MTP 开、含 serve 的 warmup）：
-  `first_equal=1`、`retained=1 frontier=4103` → `reused=4103`、`equal_ids=1`、`OK`。
-- **serve 级证据**（默认 flag，无额外开关）：第二请求 `reuse=1 base=4614`、
-  `cache 4,614 (100.0%, private endpoint)`、TTFT 2 ms；两请求 ids 与 `--no-prefix-reuse` 臂逐位相同
-  （`ids1 equal / ids2 equal = True`，MTP 接受率同为 3/10 与 5/5）。
-- **本轮定位掉的真缺陷（重要）**：端点若同时存在一个 **device** StateImage 槽（`device_state_slots=1`
-  + `host_state_slots=1`），target 从第 3 个 decode 轮起读到旧 state——凭据：草稿两臂完全相同
-  （`proposed 271 939 27305`），第 3 轮 retained 的 target argmax 变成 EOS（248044）而冷跑接受 2 个草稿；
-  且 `mtp accepted 0/9` vs `3/10`。去掉 device 槽（端点只落 host shelf）后逐位一致。
-  现在由 `kv_stream_guards.h` 的 `RetainedContextDeviceSlot` / `RetainedContextNoHostSlot` 与启动共同拒绝。
-- 顺带查清并撤回的两条**不成立**猜测（避免下一轮重复走）：raw prompt 的 `anchor_prompt_end` 分裂、
-  `capture` 排程改变 execution 分解——单独验证都不改变 token 流。
-- paged 记账要按 `streaming()` 分支的地方（否则保留请求在 admission/物化期直接抛错）：
-  `evaluate_pressure_target`（流式源无 paged 对象可投映）、`prepare_consumed_source`、`prepare_kv_restores`、
-  `resize_sequence_kv_entitlement`、`shared_kv_prefix_pages`、`checkpoint_restore_requirements`、
-  pressure 三处 owner 扫描、`destructive_truncate_inactive`、`set_checkpoint_requirement` 的保护遍历、
-  `prefill` 陈旧尾部预检、`missing_kv_restore`、`private_tail_restore`、`partial_tail_cow_required`、
-  `device_kv_prefix_pages`、`host_kv_prefix_bytes`。
-- 选项面：`--kv-stream` 现在**默认保留并复用**（与 ninfer 原本的前缀缓存一致）；`--no-prefix-reuse`
-  恢复每请求释放的冷路径；paged checkpoint / host KV tier / disk tier / session slot / shared / anchors
-  仍被拒。serve 侧不需要新旗标（开发期的 `--kv-stream-retain` 已删）。
-- 测试：`test_kv_stream_guards` 新增 device-slot / no-host-slot 两例（已过）；
-  `test_engine_kv_stream_serial_real.cpp` 的 cold + retained 两臂已就绪（**尚未在测试树上跑**）。
-- **未跑**：`test_engine_kv_stream_serial_real`（测试树全量重编太慢）、251 K/192 K 长会话实测、`int8` 262 144。
+`bench/results/kv-stream/layout-rename-defect.md`。三条由此确立的不变量：
 
-**P0 报告字段（已落地并提交）**
-- `StreamedKvStats` 增加每层窗口 `layer_resident`、规划容量、分区次数 `layout_generation`、形状 `shape`；
-  `window_bytes` 改为**按层求和**（原来 `最窄窗口 × 层数`，集中布局下偏小）；CLI 打印布局行。
-- 形状用**标量** 0/1/2/3（未跑/全驻留/均匀/集中），理由见 Key Decisions。
-- 实测 251 K：`shape=uniform`、16 层窗口全为 2905 页（容量 4096）、环 11 run、`layout_generation=0`；
-  54.6 ms/轮、72.5 tok/s、1116.2 MiB/轮（基线 54.4/72.8，±0.5%）。
+1. **改名必须搬字节**：页的槽号若随布局变化，字节必须同时移动；没有"只改表"的第三条路。
+2. **逐位结论必须带几何指纹**：`main_page_groups` / `ring_runs` / `layer_resident` / `layout_generation`
+   进报告与记录，否则"逐位相同"不可复现（本轮所有误判的根）。
+3. **同一 prompt 在两种池几何下必须给出相同 ids 与 logprobs**（C14）。
 
-**C 表（verification 的具名检查）**
-- C1/C2/C3/C11：此前已 PASS。
-- **C4 PASS**：`check --case stream-251k`（`20261109T183207Z`），ids 64/64 与金标相同，
-  logprobs 的 sha256 `8a06a1d4…` 与金标一致；金标 `oracle: self`（原版在 262 K 起不来），属回归口径。
-- **C5 PASS**：`check --case stream-150k-tight`（`20261109T184516Z`），流式臂发生 4 次迁移
-  （`layout_generation=4`，两次 `[partition] trial start` + 两次 `revert`），512 token 逐位相同。
-- **C10 PASS**：`NINFER_STREAM_BOUNDED=0`（`184935Z`：71.3 tok/s、54.7 ms、暴露 15.9 ms）与
-  `=1`（`185335Z`：23.6 tok/s、166.7 ms、暴露 1.7 ms）的 ids 与 logprobs 完全相同。
-- **C12 PASS**：`equiv-183k`（`20261109T183714Z`）两臂接受长度均 4.0、ids 逐位。
-- **C6 半**：`--kv-stream-ring-ratio` 已在 `6a44fc25` 移除，GPU 判据无法复现；用
-  `--kv-headroom-mib 3072` 验证窗口收缩到 761 页/层可跑（`streamed_pages=0`、upload=0）。
-- **C7 测试已写**：`tests/models/qwen3_5/test_engine_kv_stream_serial_real.cpp`（一进程两请求，
-  190 K prompt，`NINFER_TEST_ARTIFACT` 控制跳过），注册进 `tests/models/qwen3_5/tests.cmake`；
-  语法检查通过，**未运行**。
+## 3. 未完成事项（按优先级，含判据与成本）
 
-**P0 graph 结案（已落地并提交）**
-- 诊断：`startup.cpp` 曾加 `NINFER_STREAM_CAPTURE=1` 允许流式捕获，跑一次 `stream-251k`
-  （`20261109T191653Z`）→ **380 µs 内失败**：`KV logical page is outside the address space`。
-- 根因：`graphs.cpp reserve_capture_rows` 为每个捕获行 `create_active(1,…)` 后取第 0 页，
-  而流式地址 `commit_activation` 把 `page_count = 0`（页由 `StreamedKVSpace` 发布）。
-- 收益实测（183 K 全驻留，`equiv-183k` resident）：graph on 37.1 ms vs off 37.7 / 37.8 ms
-  = **0.65 ms/轮（1.75%）**；251 K 稀释到约 1.3%；两次 off 的 512 ids 与 on 逐位相同（C8 PASS）。
-- 上限解释：CPU 提交 1.5–2 ms 被 37 ms 的 GPU 工作掩盖，graph 只消 kernel 间隙（≈500–700 × 1.3 µs）。
-- 结论：维持关图，开关已删（`eae816e9`）；measurements 表 5、verification C8/P9。
+### U1 251 K 的交错 A/B 归因（Gate 2 剩余项）
+- 问题：251 K 现在 `95.0 tok/s`，同配方历史记录 ~96.5 tok/s，差 ~1.5%；记录区**没有相邻基线**可归因。
+- 做法：与保留 tag `kv-stream/layout-switch-before-removal` 做**交错** A/B（同一提示、交替 reps），
+  需要**第二套 build 目录 = 一次全量编译（约 25–30 分钟）**，须先获批。
+- 判据：轮时间中位差 ≤ +1%、prefill tok/s ≥ −1%；否则回到 §5 的 C 方案（分配式槽位）。
 
-**提交（本地与测试机一致，HEAD `eae816e9`）**
-`ef00948d` 报告字段 · `e524df8a` 表格修复 · `4c511b31` C4 · `24be7202` C5 ·
-`f3561664` C7 测试 · `211183d1` C10/C12 · `28c758d5` C6 · `f408528b` 交接文档 ·
-`7a49bde1` 格式 · `823c361a` 捕获诊断 · `25173bf0` bench `--extra` · `eae816e9` graph 结案。
+### U2 Step 2：删除死代码（纯简化，性能中性，可延后）
+- 删除：`StreamedKVSpace::repartition` 的窗口迁移分支（`advance` 的全驻留加宽已不可达）、
+  `kv_stream_partition.{h,cpp}`、`test_kv_stream_partition.cpp`、`NINFER_STREAM_WINDOW_PAGES`
+  （改为启动期规划生效）、`layout_generation` 的递增语义。
+- 风险：`kv_stream_feedback` 被 span tuner 复用，删除前先核对引用。
+- 判据：编译通过；`test_kv_stream_layout`/`feedback`/`span_tuner` 绿；两个驱动仍通过；251 K 不变。
 
-### In Progress
+### U3 in-repo 驱动尚未验证编译（**上次命令被中止**）
+- 新加：`tools/bench/kv_stream/{geometry_driver,reuse_driver}.cpp` + `README.md`。
+- 未做：从仓库路径编译并各跑一次。**这是接手第一件小事**（命令见 README 与 §4）。
+- 注意：改动后必须**重新链接**驱动（链接在修复前的旧驱动会给出错误的"仍发散"读数，本轮因此误判过一次）。
 
-- 无。下一步是 `--embedding-residency host` 在 251 K 流式下的 A/B（见 Next Steps），尚未开始。
+### U4 自动化（C14 目前只有人工驱动）
+- C14 应成为自动化用例：两臂几何不同 ⇒ ids/logprobs 逐位（可用 `LP_RESERVE` 手法或显式 pool 页数）。
+- `test_engine_kv_stream_serial_real` 的 cold + retained 两臂仍未在测试树上跑（需 `BUILD_TESTING=ON`，约 30 分钟，须获批）。
+- `test_kv_stream_span_tuner.cpp` 至今未在 `tests/cmake/CoreTests.cmake` 注册。
 
-### Blocked
+### U5 端到端长会话与格式覆盖（产品面）
+- `--kv-stream` 下 192 K / 251 K 的**多轮对话**实测（看 `cache N (x%)`、TTFT、`stream.retained`）未做。
+- `int8` 262 144 启动 + 稳态未跑（P6 的另一条验收）。
+- serve 的 `--kv-stream` 与 4 个模型族（Qwen3.5-core / Flash-Next / Gemma 4 / Flint / DeepSeek-V4.1）交叉冒烟未做。
 
-- **C7/C9/G5**：需要一次 `BUILD_TESTING=ON` 的测试树构建（约 30 分钟），须单独获批并后台跑。
-- **K4 跨架构**：本地只有 `sm_89`，未做。
+### U6 测试机上的临时改动（**必须先清理**）
+`debian:~/ninfer-fork/ninfer-all-adaptive-kv-streaming` 有 **8 处未提交**的诊断/放开守卫补丁：
+`src/core/arena.cu`（`NINFER_ZERO_ARENA`）、`src/models/qwen3_5/program/decode.cpp`、`prefill.cpp`、
+`storage/context.cpp`、`transactions/capture.cpp`（`NINFER_STATE_DEBUG` 打印）、
+`planning/startup.cpp`（放开 device/host 槽位守卫 + 强制聚合值）、
+`src/ops/softmax_attention/.../causal_softmax_attention.cpp`（打印上限 32→4096）、
+`src/serve/serve_options.cpp`（`device_state_slots = 1` TEMP）。
+- 回滚：`git checkout -- <file>`；诊断脚本与手法见缺陷档案 §7，需要时重加，不要留在树里。
+- 另：`/tmp` 下的驱动对象文件/二进制可丢，源码已在仓库。
 
-## Key Decisions
+### U7 文档收尾
+- `docs/maintainer/kv-streaming-strategy.md` 的 P1 行与 §0.2 仍描述"首轮进入 decode 形"，需按"启动即 decode 形"改写。
+- `docs/maintainer/kv-streaming-design.md` 若提到双布局/阶段切换，同样改写。
+- `docs/maintainer/kv-streaming-measurements.md` 增一行新形状的 251 K/183 K 数字（含几何指纹）。
+- `bench/results/kv-stream/handoff.md`（本文件）在 U1 完成后补 A/B 结论。
 
-- **跨轮重叠否决**：多留一个 extent 换 7 ms 暴露，实测 +5.6% 字节、净 +1.9 ms 更慢（ledger 两条决策记录）。
-- **深环 2.0× 否决**：56.5 vs 54.6 ms，已从出货路径移除（`7734165e`）；`plan_kv_stream_lookahead` 只留给未来。
-- **分帧不作默认**：逐位正确（C10），但每轮 54.7 → 166.7 ms，本机三倍慢；阶梯选整层。
-- **`--kv-stream-ring-ratio` 移除**（`6a44fc25`）：扫描可能规划出错误切分；C6 的 GPU 判据因此写为“半”。
-- **作者三个 prefill 提交不移植**（strategy §9.4）：本机 prefill 只慢 0.3%、暴露 0、staging 已 per-run。
-  **注意：用户看板曾写“移植”，这是唯一未决分歧点**，动手前必须确认。
-- **形状用标量而非 `std::string`**：`StreamedKvStats` 跨模型库/runtime 按值返回，加 `std::string`
-  导致流式启动即 SIGSEGV 且无日志；定位方式是“干净源码同用例 PASS vs 改动版崩”。
-- **形状按规划容量判定**：请求结束会 reset 前沿（`active_pages` 归 0），按瞬时前沿判形状会把
-  uniform 读成 all-resident；字段为 0 时不输出。
-- **C4/C5 用 `oracle: self` 金标**：原版无 `--kv-stream`、在 262 K 起不来；文档已注明是回归口径，
-  不是与原版的等价。
-- **不做图内换页**：graph 在这条路径上只值 0.65 ms/轮（1.75%@183 K，1.3%@251 K），上限就是
-  kernel 间隙；要让它覆盖流式，图内必须含每层 copy issue + `consumed` record + 每次 replay
-  更新 memcpy 源（251 K 的环 11 run < 一层 46 run ⇒ `ahead=0`，图外 issue 全部层会死锁）。
-- **用户可感知价值排序**（据实）：减字节（embedding-residency 388 MiB → 每轮约 −407 MB，未量）
-  > P5 MTP 池（−5% 字节）> P0 graph（251 K 上界 0.7%/轮）> P1 双布局/P2 脏页（今天被计算掩盖）。
-- **不租 pod**：`kpa@192.168.2.13` 一直可用，租机是错误建议（已撤回）。
+## 4. 环境与常用命令
 
-## Next Steps
+**机器**：`kpa@192.168.2.13`，RTX 4080 SUPER 16 376 MiB，CUDA 13.4.92（`nvcc` 在 `/usr/local/cuda/bin`），
+cmake 3.31.6，`python3` 3.13.5（本项目要求 Python 3.11+，脚本用系统 3.13 可跑）。
 
-0. **流式保留收口（机制已 PASS）**：剩余 = (a) `test_engine_kv_stream_serial_real` 的 cold + retained
-   两臂在测试树上跑绿（本机未跑），(b) 192 K/251 K 多轮对话实测（报告 `stream.retained`、
-   `cache N (x%)`、TTFT），(c) `int8` 262 144 启动与稳态（P6 另一条验收）。
-1. **`--embedding-residency host` 在 251 K 流式下的 A/B（可感知收益最大项）**
-   - 现状：embedding 常驻占 388.4 MiB；流式池每轮 1116.2 MiB、46.1 ms 拷贝地板、暴露 13.5 ms。
-   - 预期：释放 388.4 MiB → +355 页/层 → 每轮约 −407 MB（1116 → 709 MiB），拷贝 46 → 28 ms。
-   - 做法：先确认该选项在流式下的守卫与交互（`kv_stream_guards.h`、CLI 帮助、`serve_options`），
-     再用 bench 两臂 A/B（默认 vs `--embedding-residency host`），`--extra` 透传；
-     判据：ids 逐位（C4 口径）+ 每轮字节/时间/暴露 + 池容量变化。
-2. **C 表收尾**（发布前，非产品能力）：C9（VERIFY 逐页计数进 `StreamedKvStats`）、G5/C7 的
-   测试树批次（`BUILD_TESTING=ON`，约 30 分钟，需单独获批）。
-3. 之后按可感知收益：P5 MTP KV 进池（约 −5% 字节）→ P1 双布局 / ubatch 适配。
-
-## Critical Context
-
-**环境**
-- 测试机 `kpa@192.168.2.13`（debian，16 核/62 GB），RTX 4080 SUPER 16 376 MiB，驱动 615.71.09。
-- CUDA 13.4.92（`nvcc` 不在非登录 PATH，用 `/usr/local/cuda/bin/nvcc`），cmake 3.31.6，`python3` 3.13.5。
-- 仓库 `~/ninfer-fork/ninfer-all-adaptive-kv-streaming`，分支 `kv-stream-27b-16g`。
-- 构建 `build-sm89`（Release、sm_89、`BUILD_TESTING=OFF`）；二进制 `untagged+eae816e9`（与源码一致）。
-- 模型 `~/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer`；
-  oracle `~/ninfer/ninfer-all/build-sm89/apps/ninfer`（原版 master `f6928e00`，只执行）。
-
-**关键数字（引用前核口径）**
-- 251 K `rk4v4`：54.4 ms/轮、72.8 tok/s、1116.2 MiB/轮、暴露 13.5 ms；窗口 2905 页/层、环 11 run。
-- 251 K `rk8v4`：147.9 ms、26.8 tok/s、3366.9 MiB/轮；`int8`：236.1 ms、16.8、5483.3、暴露 203 ms。
-- 183 K：流式 85.4 tok/s / 46.6 ms / 779.9 MiB；全驻留 106.8 / 37.1；prefill 1476 vs 1481（−0.3%）。
-- 150 K 紧池 96.5 tok/s / 38.8 ms；150 K 全装下 107.0、0 字节/轮；100 K 全驻留 118.9。
-- 带宽标定 25.4 GB/s；1116.2 MiB → 46.1 ms 拷贝地板；54.4 − 46.1 = 8.3 ms 未藏住。
-- 池启动后剩 53.5 MiB；流式默认 headroom 64 MiB。
-- graph（183 K 全驻留）：on 37.1 ms / off 37.75 ms = 0.65 ms/轮（1.75%）；251 K 推算 1.3%。
-
-**命令**
 ```bash
-# 同步（本地 push 后；构建期间不改源码）
-ssh kpa@192.168.2.13 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && git fetch -q origin && git reset --hard -q origin/kv-stream-27b-16g'
-# 增量单目标
-ssh kpa@192.168.2.13 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && cmake --build build-sm89 --target ninfer -j 16'
+# 同步仓库（本地 push 后，构建期间不改源码）
+ssh debian 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && git checkout -- . && \
+  git fetch -q origin kv-stream-27b-16g && git merge --ff-only FETCH_HEAD -q && git log --oneline -1'
+
+# 增量构建（默认；不要全量）
+ssh debian 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && \
+  CCACHE_DISABLE=1 cmake --build build-sm89 --target ninfer ninfer-serve -j 12'
+
+# 守卫单测（不走测试树，手工编译）
+ssh debian 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && \
+  g++ -std=c++20 -O1 -Iinclude -Isrc tests/test_kv_stream_guards.cpp -o /tmp/tg && /tmp/tg'
+
+# 等价性门禁
+ssh debian 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && \
+  python3 tools/bench/run_kv_stream.py check --suite equiv --tag <tag>'
+
 # 251 K 稳态（约 4 分钟）
-ssh kpa@192.168.2.13 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && python3 tools/bench/run_kv_stream.py \
-  --binary build-sm89/apps/ninfer --oracle ~/ninfer/ninfer-all/build-sm89/apps/ninfer \
-  --model ~/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer \
-  bench --case stream-251k-steady --reps 1 --tag <tag>'
-# 单文件语法检查（不能替代运行）
-g++ -std=c++20 -fsyntax-only -Iinclude -Isrc -Itests -I/usr/local/cuda/include <file>.cpp
+ssh debian 'cd ~/ninfer-fork/ninfer-all-adaptive-kv-streaming && \
+  python3 tools/bench/run_kv_stream.py bench --case stream-251k --reps 2 --tag <tag>'
+
+# 手工驱动（先按 tools/bench/kv_stream/README.md 编译并**重新链接**）
+/tmp/geometry_driver <artifact>              # 同几何对照
+LP_RESERVE2=64 /tmp/geometry_driver <artifact>   # 不同几何，必须仍逐位相同
+LP_ARM2_RETAINED=1 /tmp/geometry_driver <artifact>
+/tmp/reuse_driver <artifact>                 # 两请求复用
 ```
 
-**坑**
-- 跨库结构体不要加 `std::string`（SIGSEGV、无日志）。
-- 请求结束 `active_pages` 归 0；形状按容量判。
-- `pgrep -f` 会自匹配；用 `[r]un_kv_stream[.]py`。
-- Windows/Linux 时钟差 10–25 秒，`tar` 会报“未来时间戳”；改公共头先 `touch` 再编。
-- 中断 SSH 客户端不会终止远端进程；用 pgrep 确认。bench 工具忙卡会拒绝。
-- 全量测试包 30 分钟；不要为单个测试触发。
+## 5. 决策与回退
 
-**C 表现状**：C1/C2/C3/C4/C5/C8/C10/C11/C12 PASS；C6/C9 半；C7 待跑。
-P 表 P1–P9 全 PASS。按 verification 公式：正确性 10/12 ≈ 33.3/40，总分约 81；但正确性 83%
-未达 B 的 90%、G5 未过，所以仍是 **C 线**。跑完 C7 + G5（同一次测试树批次）即 11/12（92%）
-且门禁 100%，那时才是 B。
+- **换形已移除**，理由与数据：`ledger.md`（收益 0.2% × 正确性通道）。
+- **回退**（如需恢复换形）：
+  ```bash
+  git checkout kv-stream/layout-switch-before-removal -- \
+    src/core/kv_stream_layout.h src/core/kv_stream_partition.h src/core/kv_stream_partition.cpp \
+    src/models/qwen3_5/program/storage
+  ```
+- 若 U1 测出 decode 退化 > 2%，改走**分配式槽位**（run 粒度 ID + 发布表）：换形只搬"跨边界"页，
+  比当前"整窗回写 host"更快；这是唯一预留的备选方案。
 
-<read-files>
-SPEC.md
-docs/maintainer/kv-streaming-strategy.md
-docs/maintainer/kv-streaming-verification.md
-docs/maintainer/kv-streaming-measurements.md
-docs/maintainer/kv-streaming-fidelity.md
-bench/results/kv-stream/ledger.md
-bench/results/kv-stream/README.md
-src/models/qwen3_5/program/planning/startup.cpp
-src/models/qwen3_5/program/storage/kv_stream_space.cpp
-src/models/qwen3_5/program/storage/kv_stream_space.h
-src/core/kv_stream_layout.h
-src/models/qwen3_5/execution/text.cpp
-src/models/qwen3_5/program/prefill.cpp
-tools/bench/run_kv_stream.py
-tests/models/qwen3_5/test_engine_kv_stream_serial_real.cpp
-</read-files>
+## 6. 硬性工作约定（沿用）
 
-<modified-files>
-bench/results/kv-stream/handoff.md
-docs/maintainer/kv-streaming-verification.md
-docs/maintainer/kv-streaming-measurements.md
-include/ninfer/observability/resources.h
-src/core/kv_stream_layout.h
-src/models/qwen3_5/program/storage/kv_stream_space.h
-src/models/qwen3_5/program/storage/kv_stream_space.cpp
-src/models/qwen3_5/program/program.cpp
-apps/cli/run_report.cpp
-apps/cli/main.cpp
-tests/test_kv_stream_layout.cpp
-tests/models/qwen3_5/test_engine_kv_stream_serial_real.cpp
-tests/models/qwen3_5/tests.cmake
-</modified-files>
+- 动手前先说明；先搜项目已有基建；不租 pod（测试机一直可用）；只做增量构建。
+- 提交/推送后同步测试机；Conventional Commits；结论要真（没跑写"未跑"）。
+- 任何"逐位"结论必须带几何指纹；任何布局变更必须二选一（字节等价，或不存在该旋钮）。

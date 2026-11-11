@@ -66,6 +66,9 @@ EngineOptions engine_options(const char* artifact, bool retain) {
     options.context_cache.max_long_anchors_per_continuation = retain ? 2U : 0U;
     options.context_cache.host_cache_budget_bytes.reset();
     options.context_cache.disk_kv_path.clear();
+    // Progress anchors are the restore points a long single prompt leaves inside itself; without
+    // them a cancelled prefill has nothing to continue from (kv-stream-context-cache.md 19.2).
+    options.context_cache.progress_anchor_tokens = retain ? 16384U : 0U;
     return options;
 }
 
@@ -85,9 +88,9 @@ std::string text(const char* sentence, int repeats) {
 }
 
 struct ColdArms {
-    std::vector<TokenId> repeated;   // the prompt sent twice
-    std::vector<TokenId> unrelated;  // the second conversation
-    std::vector<TokenId> rewrite;    // the prompt sent after a cancel
+    std::vector<TokenId> repeated;    // the prompt sent twice
+    std::vector<TokenId> unrelated;   // the second conversation
+    std::vector<TokenId> long_report; // the prompt cancelled mid-prefill
 };
 
 int run() {
@@ -99,14 +102,14 @@ int run() {
 
     std::vector<TokenId> report;
     std::vector<TokenId> other;
-    std::vector<TokenId> cancel_prompt;
+    std::vector<TokenId> long_report;
     {
         Engine tokenizer(engine_options(artifact, false));
         report        = tokenizer.tokenize_text(text(
             "NInfer keeps every KV page of the context in pinned host memory. ", 60));
         other         = tokenizer.tokenize_text(text("A completely different opening sentence. ", 40));
-        cancel_prompt = tokenizer.tokenize_text(text(
-            "The quarterly report lists every shipped subsystem and its measured latency. ", 160));
+        long_report   = tokenizer.tokenize_text(text(
+            "The quarterly report lists every shipped subsystem and its measured latency. ", 830));
     }
 
     // The same three prompts without any cache: the ids a streamed run must also produce.
@@ -117,8 +120,8 @@ int run() {
             cold.generate(cold.prepare_tokens(report), greedy(false)).generated_token_ids;
         cold_ids.unrelated =
             cold.generate(cold.prepare_tokens(other), greedy(false)).generated_token_ids;
-        cold_ids.rewrite =
-            cold.generate(cold.prepare_tokens(cancel_prompt), greedy(false)).generated_token_ids;
+        cold_ids.long_report =
+            cold.generate(cold.prepare_tokens(long_report), greedy(false)).generated_token_ids;
     }
 
     Engine engine(engine_options(artifact, true));
@@ -136,7 +139,7 @@ int run() {
 
     // 2. Cancelling a prefill: the cancelled work must not poison the next conversation.
     {
-        auto handle = engine.submit(engine.prepare_tokens(cancel_prompt), greedy(true));
+        auto handle = engine.submit(engine.prepare_tokens(long_report), greedy(true));
         std::this_thread::sleep_for(std::chrono::milliseconds(1500));
         handle = {};  // destroying an unconsumed handle cancels its request
     }
@@ -146,15 +149,16 @@ int run() {
     std::fprintf(stderr, "reuse: unrelated after cancel reused %u tokens\n",
                  beside.reused_prompt_tokens);
 
-    // 3. Cancelling and then sending the same prompt again: this is the case where a claim on the
-    // cancelled request's pages would be visible, because the next request shares its prefix.
+    // 3. Cancelling past the progress-anchor grid and then sending the same prompt again: the
+    // cancelled lane's own checkpoint is the only thing that can serve this request, so it is the
+    // case that shows whether a cancel keeps anything at all.
     {
-        auto handle = engine.submit(engine.prepare_tokens(cancel_prompt), greedy(true));
-        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        auto handle = engine.submit(engine.prepare_tokens(long_report), greedy(true));
+        std::this_thread::sleep_for(std::chrono::milliseconds(11000));
         handle = {};
     }
-    const auto rewrite = engine.generate(engine.prepare_tokens(cancel_prompt), greedy(true));
-    require(rewrite.generated_token_ids == cold_ids.rewrite,
+    const auto rewrite = engine.generate(engine.prepare_tokens(long_report), greedy(true));
+    require(rewrite.generated_token_ids == cold_ids.long_report,
             "the request after a cancel emitted different ids");
     std::fprintf(stderr, "reuse: prompt after cancel reused %u tokens\n",
                  rewrite.reused_prompt_tokens);
@@ -174,8 +178,8 @@ int run() {
     const auto shorter = engine.generate(engine.prepare_tokens(other), greedy(true));
     require(shorter.generated_token_ids == cold_ids.unrelated,
             "a shorter request before a longer one emitted different ids");
-    const auto longer = engine.generate(engine.prepare_tokens(cancel_prompt), greedy(true));
-    require(longer.generated_token_ids == cold_ids.rewrite,
+    const auto longer = engine.generate(engine.prepare_tokens(long_report), greedy(true));
+    require(longer.generated_token_ids == cold_ids.long_report,
             "a longer request after a rewind emitted different ids");
 
     const auto stats = engine.runtime_stats().streamed_kv;

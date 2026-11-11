@@ -502,6 +502,14 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
         const bool preserve_rewrite =
             request_plan.rewrite_disposition == RewriteCheckpointDisposition::RetainExisting;
         const auto activate_consumed_state = [&](StateImageHandle selected) {
+            if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+                std::fprintf(stderr,
+                             "[stream] activate: fork_required=%d residency=%d refs=%u valid=%d\n",
+                             request_plan.state_fork_required ? 1 : 0,
+                             static_cast<int>(state_store->residency(selected)),
+                             state_store->checkpoint_references(selected),
+                             state_store->valid(selected) ? 1 : 0);
+            }
             if (!request_plan.state_fork_required) {
                 if (transaction.state_fork_destination ||
                     state_store->checkpoint_references(selected) != 0) {

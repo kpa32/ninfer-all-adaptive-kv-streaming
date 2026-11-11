@@ -749,7 +749,10 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                              static_cast<unsigned long long>(text_stream_space->held_owner()),
                              text_stream_space->retained_frontier());
             }
-            text_stream_space->enter_request(owner, sequence.text_kv_valid);
+            // The space has to keep the bytes the plan is about to restore: a cold request enters at
+            // zero, but one that continues a checkpoint enters at that checkpoint's frontier, which
+            // the sequence itself does not know yet.
+            text_stream_space->enter_request(owner, std::max(sequence.text_kv_valid, base));
         }
 
         sequence.endpoint_valid = false;

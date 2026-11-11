@@ -226,6 +226,33 @@ public:
         return host_->view(*object.host_slot);
     }
 
+    // Diagnostic: whether the Device replica of `device_image` holds the bytes of `host_image`'s Host
+    // replica. A restore that fills a destination from the Host shelf has no other way to say that it
+    // copied the whole image, and a partial copy is exactly the kind of failure that produces a
+    // plausible but different answer.
+    [[nodiscard]] bool device_matches_host(StateImageHandle host_image, StateImageHandle device_image,
+                                           RankStreams streams = {}) {
+        const std::optional<qwen3_5::HostStateImageConstView> want = host_view(host_image);
+        if (!want || host_ == nullptr) { return false; }
+        Object& object = require(device_image);
+        if (!object.device_slot) { return false; }
+        std::optional<qwen3_5::HostStateSlotHandle> slot = host_->allocate();
+        if (!slot) { return false; }
+        bool equal = false;
+        try {
+            device_->copy_to_host(*object.device_slot, host_->writable_view(*slot), streams);
+            for (std::size_t rank = 0; rank < streams.size(); ++rank) {
+                (void)ninfer::wait_for_stream(streams[rank]);
+            }
+            equal = std::memcmp(host_->view(*slot).data, want->data, want->layout->image_bytes) == 0;
+        } catch (...) {
+            (void)host_->release(*slot);
+            throw;
+        }
+        (void)host_->release(*slot);
+        return equal;
+    }
+
     [[nodiscard]] std::uint32_t source_pins(StateImageHandle handle) const {
         return require(handle).source_pins;
     }

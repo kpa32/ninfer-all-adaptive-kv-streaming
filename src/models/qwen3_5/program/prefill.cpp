@@ -529,6 +529,11 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                     throw std::logic_error("restored StateImage Fork destination is unavailable");
                 }
                 sequence.state = ActiveStateBinding{.read = destination, .write = destination};
+                if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+                    const bool same = state_store->device_matches_host(
+                        selected, destination, RankStreams(device.stream));
+                    std::fprintf(stderr, "[stream] restored state matches host: %d\n", same ? 1 : 0);
+                }
             } else {
                 const std::uint32_t references = state_store->checkpoint_references(selected);
                 const std::uint32_t lineage_references =

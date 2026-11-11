@@ -1012,3 +1012,34 @@ reuse: five cases admitted; upload 0 B, download 0 B, verify 0/0
 （随后 `clear_lane_strict` 丢掉整条 lane），表现正是"取消后复用为 0 且不崩"。
 **办法**：在这三个 `return false` 前各加一行 `[retain] refused: <原因>` 的调试输出（只在
 `NINFER_STREAM_DEBUG` 下），跑一次同场景，就能定位是哪一条，再谈修改。
+
+### 19.5 找到根因：身份戳绑在"请求的槽"上，而不是"目录条目"上
+
+在干净的引擎上先跑取消用例，`NINFER_STREAM_DEBUG=1` 的 trace 直接给出了答案：
+
+```
+[stream] request starts: owner=65536  reuse=0 base=0     valid=0     space_pages=0   space_owner=0
+[stream] retained endpoint frontier=19924 ledger=19925 kv_valid=19924      ← 取消的 prefill 确实保留了端点
+[stream] request starts: owner=131072 reuse=0 base=0     valid=0     space_pages=312 space_owner=65536 retained=19924
+```
+
+三件事同时成立：
+
+1. **取消确实保留了上下文**：`retained endpoint frontier=19924`，`space_pages=312` = 19924 token 的页数
+   ⇒ `retain_prefill_progress` 走通了（所以没有 `[retain] refused` 输出）；
+2. 下一条同 prompt 的请求**没有被判为可复用**：`reuse=0`；
+3. **空间的主人（65536）与新请求的身份（131072）不同** ⇒ 是我在 `7adffbe9` 加的身份判据把它挡住了。
+
+原因：`owner_stamp(sequence)` 取的是**请求当前占用槽位**的 stamp。取消后该 lane 的 continuation
+被置为 `Catalogued` 并退役（generation 递增），下一个请求分配到的是另一个槽 ⇒ stamp 不同，
+`can_serve` 正确地拒绝了。**身份语义本身没错（它挡住了缺陷 #15），错在它算在了错误的粒度上**：
+字节属于的是"**目录里那一条 continuation**"，不是"当时正在跑的那条请求"。
+
+修法（一处语义调整，不是打补丁）：把 stamp 附着在**目录条目**上——发布 checkpoint 时把
+`owner_` 设为被发布 continuation 的 `(slot, generation)`，复用时由**源条目**带过来（`request_plan`
+已经在拿 `source`，`owner_stamp(*source)` 就是它），`enter_request` 用这个源 stamp，而不是新请求的槽。
+这样：同一会话续聊（stamp 相同）、取消后续聊（源条目 stamp）、A→B→A（B 进入时换主人、A 回来时源条目
+的 stamp 与空间不符 ⇒ 正确地冷跑）三种情况都落在同一条规则上。
+
+**这是个语义决定，按纪律先停下报告**：它改变了"谁能用这些字节"的判据来源（请求槽 → 目录条目），
+并需要 `request_plan.cpp`/`prefill.cpp`/`kv_store.h` 三处一起改。

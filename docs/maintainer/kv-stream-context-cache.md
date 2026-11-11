@@ -1145,3 +1145,25 @@ reuse: five cases admitted; upload 0 B, download 0 B, verify 0/0
 - `host_pages(layer)` 的 view 被 `verify_streamed_page` 与 `upload` 共用，偏移漏一处就会读到别的 region
   （`NINFER_STREAM_VERIFY=1` 的字节 oracle 是唯一的兜底，必须在该模式下跑一次 G2）；
 - 宿主内存 = R × 4 GiB（192 K），启动检查必须先算账再分配。
+
+### 20.5 第一片已落地（region 视图，R=1 中性，已验证）
+
+`StreamedKVSpace` 现在有 `regions_` / `region_pages_per_layer_` 与 `region_pages(layer)` 视图；
+`upload`、`advance` 的降级拷贝、`verify_streamed_page`、`verify_after_attention` 全部改为读
+**region 视图**而不是整层视图。R=1 时 region 覆盖整层、偏移为 0，所以这是**改名**而不是行为变化：
+`kv_stream_reuse` + `kv_stream_eviction` 2/2 通过（146 s / 92 s）。
+
+### 20.6 下一片的两个已知难点（读代码后的结论，不是猜测）
+
+1. **块表在 owner 切换时必须重发**：`publish_slot` 写的是 `(layer, logical_page)` 的一项，
+   而设备窗口/环由当前 owner 独占。新 owner 的页 `[0, depth)` 里，凡是没有在本次 `advance` 里
+   "长出来"的页，其表项仍指向**上一个 owner 的槽**。⇒ 切换时必须为该 region 重发全部表项。
+2. **窗口要按 region 上传**：`upload()` 只搬"窗口之外的 streamed 页"（`[0, window_start)`），
+   因为同一 owner 的窗口本来就在设备上。新 owner 的窗口**一页都不在**，需要一条
+   `upload_window(layer)` 把 `[window_start, depth)` 搬进窗口槽。
+   代价可算：192 K 时窗口 ≈ 2 905 页/层 × 16 层 × 104 KB ≈ **4.8 GB**，按实测 ~25 GB/s ≈ **190 ms**，
+   发生在请求进入时（TTFT），不是每轮。
+
+⇒ 下一片的实现顺序：先写 `upload_window`（单 owner 下也能用：进入时的"全冷"路径等价于它），
+用 `NINFER_STREAM_VERIFY=1` 验证字节；再让 `enter_request` 在 owner 不同时调用"重发表项 + upload_window"，
+最后才把 `regions_` 从 1 提到 `max_private_continuations`。

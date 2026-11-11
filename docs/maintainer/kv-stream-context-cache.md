@@ -531,3 +531,80 @@ grep -E "\[stream\] request starts|worker crash|FATAL engine" /tmp/kvlogs/serve_
 - 证据标准：**分支文档不作证据**，只用 base 代码（`f6928e00`）、上游原始提交与代码本身。
 - 只有 1–2% 速度收益却带来灾难的优化可以砍，砍前留回退点（tag/分支）+ 缺陷档案。
 - 修复不能让项目"越跑越远"；牵连面过大就退回"只写文档、不删代码"。
+
+---
+
+## 13. 按代码重审（取代 §10.2 的分层与顺序）
+
+§10 仍是在"守卫 = 不可动的范围"这个前提下写的；把代码逐处读完，这个前提本身是错的。
+以下每条都可核对，行号为 `context-cache-tier` @ `7adffbe9` 之后的树。
+
+### 13.1 事实
+
+**F1 流式地址空间不是"没有实现协议"，而是"按单 owner 形状回答协议"**（`context.cpp:692-900`）：
+
+| 协议问题 | 流式回答 | 单 owner 形状下是否正确 |
+|---|---|---|
+| `device_kv_prefix_pages` | `required`（整段可恢复） | **正确**：每个页都在 pinned host |
+| `shared_kv_prefix_pages` | `0` | 正确：没有共享页 |
+| `shared_device_kv_prefix_pages` | `0` | 正确 |
+| `missing_shared_device_kv_prefix_pages` | `0` | 正确 |
+| `partial_tail_cow_required` | `false` | 正确：单 owner 无需 COW |
+| `host_kv_prefix_bytes` | `0`（arena 自记） | 正确 |
+| `mapped_pages` | `page_count` = 0 | **错误**：它是"这份地址空间存在多少页"的答案，流式下应为 arena 深度 |
+
+⇒ 这些常量**是单 owner 形状的正确实现**，不是占位符。真正缺的只有两件事：**(a) 谁拥有这些字节**（缺陷 #15，已在 `7adffbe9` 修）；**(b) `mapped_pages` 撒谎**（返回 0 而不是 arena 深度）。
+
+**F2 有页表，不是恒等映射**（`kv_stream_space.h`：`stream_slots_` + `publish_slot` + `slot_of_page`）：
+每层一张块表，逻辑页 → 窗口槽。所以"第二套存储"的差别**不在寻址**，而在**所有权/共享/设备驻留/磁盘**四项。
+§5.6 里"恒等映射、无页表"的说法**错误，此处更正**。
+
+**F3 基线的宿主层本来就存在**：`HostKVArena`（`src/core/host_kv_arena.h`，280 行）+ `HostKVExtentStore`
+（`host_kv_store.h`，715 行，带逻辑页 membership），被 `host_kv_store`、`disk_tier` **和** `kv_stream_space`
+共同使用。即：流式复用了同样的宿主分配器，只是没复用它上面那层策略。
+
+**F4 取消保留的机制是完整的，而且流式够得着**（`commit.cpp:757` `salvage_continuation`）：
+它在 `Lifecycle::Prefilling` 下用 `request.prefill->cursor` 发布 endpoint，条件是
+`cursor >= kSalvageMinFrontier`、`state.text_kv_valid == cursor`、MTP 需要 `tail_hidden_valid` 且
+`mtp_kv_valid + 1 >= frontier`；不成立才退到 `retain_prefill_progress`（`commit.cpp:829`），
+后者发布**已捕获的 checkpoint**（锚点 / rewrite checkpoint）。
+
+⇒ **流式的"取消后续聊"能力 = 基线同一个函数**。它不需要新机制；它需要 (a) 不再 `reset()`（已做），
+(b) 锚点不被禁（F5），(c) 回退时把更深的 checkpoint 按计划作废（P1）。
+
+**F5 是守卫，不是技术限制**（`startup.cpp:1380-1412`）：`--kv-stream` 主动拒绝
+`--progress-anchor-tokens` 非 0（"retains one continuation: no shared prefixes and no long anchors"）、
+拒绝 host/disk KV tier、拒绝 device state slot。
+
+⇒ 对单 owner 形状，**锚点是可实现的**：锚点 frontier ≤ `active_`，其下所有页都在 host arena；
+复用锚点 = 倒回 `active_` 再往前写（`enter_request` 已经是这个动作）。**唯一的缺口是作废语义**：
+倒回到 F 之后，所有 frontier > F 的 checkpoint 都已失效，必须作为 `ResourcePlan` 的删除集合丢弃（基线 §9.4）。
+
+**F6 `private N` 与 region 无关**：基线在本机驻留模式下也是 `private 1`（serve 日志）。
+所以"多会话"**不是"与 ninfer 一致"的必要条件**；region 化只在所有者要把 `private` 提到 2+ 时才需要。
+
+**F7 流式分支的真实数量是 ~22 处**（`pressure.cpp` 9、`context.cpp` 7、`checkpoint_recovery.cpp` 2、
+`request_plan.cpp` 2、`prefill.cpp` 1、`kv_store.h` 2），不是 §5.0 写的 4 处。
+
+### 13.2 由事实推出的修订计划
+
+| 步 | 内容 | 规模 | 证据 |
+|---|---|---|---|
+| **P0 收尾正确性** | 编译 `7adffbe9`；取消序列不崩；`equiv 4/4`；C13/C15；`mapped_pages` 改为返回 arena 深度（F1b，一处，但需先确认没有调用方依赖 0） | 小 | 取消序列日志、equiv 逐位 |
+| **P1 锚点（真缺口）** | 放开守卫 F5 + 回退时按计划作废更深 checkpoint（F5 的唯一缺口）+ 验证"取消 16 k 后续聊 `reused > 0`" | 中 | C18；`anchors > 0` |
+| **P2 TurnClosure** | 先测：流式 finish 时前端是否提出 rewrite 边界。提了 ⇒ 同一 prompt 重发本就该命中（若仍 miss，看 `[stream] request starts` 的 `reuse/base`）；没提 ⇒ 改的是前端 offer，不是 store | 小/零 | C17 |
+| **P3 磁盘与会话** | arena 导出/导入 + 放开 disk 守卫 | **大** | C19 |
+| **P4 多 owner region** | 仅当 `private N > 1`（F6 说明这不是"对齐 ninfer"所必需） | 大 | A→B→A |
+
+顺序：**P0 → P1 → P2 →（所有者决定）P3/P4**。P1 是唯一"用户能感觉到、且现在做不到"的缺口；
+P2 可能是零成本；P3/P4 是范围问题，不是缺陷修复。
+
+### 13.3 需要所有者决定的两件事
+
+1. **是否放开流式下的锚点（P1）**：放开 = 与基线同能力（取消后续聊），代价是每 owner 多几个
+   host state image（每镜像 ~百 MB 级，需实测）；不放开 = 长 prompt 取消后必须重算（分钟级）。
+2. **磁盘/会话（P3）与多 owner（P4）是否在本交付内**：两者都大，且都不影响"单会话 192 K"这一主场景。
+
+### 13.4 立即可做、不需要决定的
+
+P0（编译 + 取消序列 + equiv + C13/C15）与 P2 的观测（0 代码）。这两件先做完，再回答 13.3。

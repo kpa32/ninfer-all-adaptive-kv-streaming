@@ -731,6 +731,19 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
             // The consumed conversation is rewritten from the anchor: prepare_consumed_source
             // dropped its endpoint, its rewrite checkpoint and the anchors above the base, and the
             // anchor itself stays a checkpoint of the new lineage, so its state is forked.
+            if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+                const StateImageHandle anchor_state =
+                    selected_state(sequence, request_plan.reuse,
+                                   request_plan.selected_checkpoint);
+                std::fprintf(stderr,
+                             "[stream] anchor restore: base=%u valid=%u fork_required=%d state=%u "
+                             "role=%d residency=%d valid=%d\n",
+                             base, sequence.text_kv_valid,
+                             request_plan.state_fork_required ? 1 : 0, anchor_state.index_,
+                             static_cast<int>(state_store->role(anchor_state)),
+                             static_cast<int>(state_store->residency(anchor_state)),
+                             state_store->valid(anchor_state) ? 1 : 0);
+            }
             if (!sequence.kv || sequence.text_kv_valid < base || sequence.endpoint_valid) {
                 throw std::logic_error("consumed long-anchor source is not at its anchor");
             }

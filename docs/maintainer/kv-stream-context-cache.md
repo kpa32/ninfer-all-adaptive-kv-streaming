@@ -960,3 +960,37 @@ reuse: five cases admitted; upload 0 B, download 0 B, verify 0/0
 - `prepare_tokens(anchor_prompt_end=true)` 在流式下必须与基线同样生效 ⇒ 锚点容量 ≥1；
 - 复用命中后 ids 必须逐 token 相同（本测试已强制）；
 - 取消后的请求必须被接纳且与冷跑逐 token 相同（本测试已强制）。
+
+---
+
+## 19. R2 第一刀落地：流式恢复锚点（`startup.cpp` 守卫）
+
+改动：`--kv-stream` 不再拒绝 `max_long_anchors_per_continuation > 0`；共享前缀仍拒绝；宿主状态库存按
+基线的同一公式校验（`2 * private + anchors`），不足在启动期报错而不是让接纳失败。测试相应给
+`host_state_slots = 4`、`anchors = 2`（serve 默认 private=2、anchors=2、host state=8 自动满足）。
+
+### 19.1 实测（同一测试、同一产物）
+
+| 用例 | 改前 | 改后 |
+|---|---|---|
+| 同一 prompt 两次（`anchor_prompt_end=true`） | `reused 0` | **`reused 900`**，ids 仍与冷跑逐 token 相同 |
+| 取消后另一个会话 | 0 | 0 |
+| 取消后同一 prompt | 0 | 0 |
+| A→B→A | 0 | 0 |
+
+⇒ **锚点在流式下本来就能工作**，此前只是被守卫挡住。这也证实 §15.1 B1 的判断：
+需要的不是新机制，而是让库存存在。
+
+### 19.2 仍为 0 的两类，原因不同（写给下一步）
+
+1. **取消后**：锚点来自 prompt 结构（`anchor_prompt_end` 在**提示末尾**）或
+   `progress_anchor_tokens` 的绝对栅格。取消发生在 prefill 中途时，末尾锚点尚未产生，
+   所以需要**进度锚点**（`progress_anchor_tokens`，基线默认 16384）。测试要变成
+   "16 k 提示 + 中途取消 + 再次发送"，才能进入 C18 的真实路径。
+2. **A→B→A**：单 arena 单 owner，与锚点无关；这是 R3（宿主按 owner 分区）的判据。
+
+### 19.3 复用深度的事实
+
+`reused 900`（提示约 1 432 token）——命中的是锚点 frontier，不是提示末尾；
+所以"同一 prompt 重发"省的是锚点之后的 prefill，而不是全部。验收应写成
+`reused == 该锚点 frontier` 且 ids 逐 token 相同，不写成"等于提示长度"。

@@ -1090,3 +1090,58 @@ reuse: five cases admitted; upload 0 B, download 0 B, verify 0/0
 **修法方向（未实施，待判据）**：请求侧的候选键不能只来自"机会栅格"，还要能表达"我的前缀在某处结束"——
 即按**提示前缀**去索引（条目携带其前缀的 shortlist key，请求按自身前缀在所有条目 frontier 处求键）。
 这正是 §2.1"完整 continuation"允许的：条目仍然是带 StateImage 的 checkpoint，变的只是**如何找到它**。
+
+---
+
+## 20. R3（多 owner）实施设计：宿主分区 + 设备池共享
+
+这一步的目标只有一条：**A→B→A 的第二次 A 命中**，同时不改变单会话的任何字节路径。
+已确认的代码事实（`kv_store.h` 与 `kv_stream_layout.h`）：
+
+- 流式地址的页号就是 token 位置，设备槽号由 `kv_stream_window_slot(layer, page, split)` 算出
+  （窗口在前、环在后），宿主页视图是 `host_pages(layer)` 的 `subview(dropped, n)`；
+- 所有几何都从"当前深度"派生（`kv_stream_window_start(active_pages, split, layer)`、
+  `kv_stream_runs_per_layer`），所以**"深度"是唯一需要变成 per-owner 的量**；
+- 设备池的分配在 `StreamedKVSpace` 构造时一次取完；请求之间只改块表内容（`publish_slot`）。
+
+### 20.1 设计决定
+
+1. **设备池不分区**：`--max-concurrency 1` 下同一时刻只有一条 decode，环与窗口只服务当前 owner；
+   空闲 owner 只占宿主页与 StateImage。⇒ 槽号算术、拷贝形状、事件顺序**全部不变**。
+2. **宿主 arena 按 owner 分区**：每层切成 R 段连续页，`region_base(layer, r) = r * region_pages`。
+   页的宿主索引从 `offset` 变成 `region_base + offset`；这是唯一需要改的寻址。
+3. **深度 per owner**：`std::vector<std::uint32_t> region_depth_`；`owner_` 变成"当前 region 的主人"，
+   另加 `stamp → region` 的小表（R≤4，线性查找即可）。
+4. **进入请求**（`enter_request(owner, tokens)`）：
+   - stamp 已知 ⇒ 选中其 region，深度取 `min(tokens, depth)`，只前进不重写（页还在宿主）；
+   - stamp 未知 ⇒ 选一个空/最久不用的 region，深度归零、写入新 stamp；
+   - 设备侧：`advance()` 从 0 到该 region 的深度会按需重发块表（`publish_slot` 已做），
+     **不搬字节**（宿主是权威）；窗口里被顶掉的页本来就有宿主副本。
+5. **作废语义**：region 被新 owner 占用时，该 region 里所有旧 checkpoint 必须作为
+   `ResourcePlan` 的删除集合丢弃（§19.3 的判据），不得静默覆盖。
+
+### 20.2 触点清单（按改动顺序）
+
+| # | 文件 | 改动 |
+|---|---|---|
+| 1 | `kv_stream_space.h/.cpp` | `regions_`、`region_pages_`、`region_depth_`、`stamp→region`；`host_pages` 的页偏移加 region base；`advance` 接受 region |
+| 2 | `kv_store.h` | `enter_request` 传 owner 不变量不变；`mapped_pages`/`entitlement` 返回该 owner 的深度页数 |
+| 3 | `request_plan.cpp` | 复用门用"该 owner 的深度"，不是全局深度（`can_serve` 已按 owner 查） |
+| 4 | `prefill.cpp` | 不变（仍按 owner 进入） |
+| 5 | `startup.cpp` | `host_state_slots` 与宿主 KV 预算按 R 分配；`max_private_continuations` 放开到基线公式 |
+| 6 | `pressure.cpp` | 驱逐某 region 时产出计划化的 checkpoint 删除集合 |
+
+### 20.3 验收（顺序即门）
+
+| 门 | 判据 |
+|---|---|
+| G1 中性 | R=1 时 `equiv 4/4`、`kv_stream_reuse`/`eviction` 全过、251 K `round_ms_median ≤ 41.4×1.01 ms` |
+| G2 两会话 | A→B→A：第三次请求 `reused > 0` 且 ids 与冷跑逐 token 相同 |
+| G3 作业化 | region 被占用时旧 checkpoint 出现在删除集合里（`NINFER_ADMISSION_DEBUG` 可查） |
+| G4 不退化 | `upload_bytes` 变化 ≤1%，`runs_per_layer` 与 R=1 相同 |
+
+### 20.4 风险
+
+- `host_pages(layer)` 的 view 被 `verify_streamed_page` 与 `upload` 共用，偏移漏一处就会读到别的 region
+  （`NINFER_STREAM_VERIFY=1` 的字节 oracle 是唯一的兜底，必须在该模式下跑一次 G2）；
+- 宿主内存 = R × 4 GiB（192 K），启动检查必须先算账再分配。

@@ -754,6 +754,15 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_lane(
         }
     }
 
+    if (text_kv_addresses != nullptr && plan->reuse != ReusePath::Root && plan->reuse_base != 0 &&
+        !text_kv_addresses->stream_can_serve(plan->reuse_base)) {
+        // The streamed space owns the whole context and only one lineage is live at a time: a request
+        // that did not continue it rewound it, so this continuation's pages are gone. Refusing the
+        // candidate here makes the planner fall back to a cold plan; without this the reuse was planned
+        // and prefill threw `streamed KV frontier is beyond the space's context` after admission.
+        return std::nullopt;
+    }
+
     if (speculative_backend == SpeculativeBackend::Mtp) {
         const bool append_ready =
             plan->reuse == ReusePath::PrivateEndpoint && source != nullptr &&

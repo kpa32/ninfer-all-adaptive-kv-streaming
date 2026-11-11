@@ -944,6 +944,16 @@ public:
 
     [[nodiscard]] bool streaming() const noexcept { return stream_space_ != nullptr; }
 
+    // Whether the streamed space still holds the pages a continuation names. There is one space per
+    // store, and any request that does not continue it rewinds it to its own frontier, so a published
+    // continuation's frontier is only real while the space is at least that deep. Planning a reuse the
+    // space cannot materialize used to succeed and then throw from `enter_request` in prefill, taking a
+    // whole served process down.
+    [[nodiscard]] bool stream_can_serve(std::uint32_t tokens) const noexcept {
+        if (stream_space_ == nullptr) { return true; }
+        return pages_for_tokens(tokens) <= stream_space_->active_pages();
+    }
+
     void activate(KVAddressSpaceHandle handle, std::uint32_t entitlement,
                   std::int32_t execution_row, RankStreams streams) {
         Address& address = require(handle);

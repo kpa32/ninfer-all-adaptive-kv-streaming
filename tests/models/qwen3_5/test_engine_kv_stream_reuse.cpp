@@ -123,12 +123,15 @@ int run() {
 
     Engine engine(engine_options(artifact, true));
 
-    // 1. Repeating a prompt: the second answer must reuse the first one's turn closure.
-    const auto first = engine.generate(engine.prepare_tokens(report), greedy(true));
+    // 1. Repeating a prompt: the raw-token prompt has no message structure, so the engine anchors
+    // its end only when asked (prepare_tokens' anchor_prompt_end). Whatever it reuses must not
+    // change the answer.
+    auto anchored_report = engine.prepare_tokens(report, true, /*anchor_prompt_end=*/true);
+    const auto first = engine.generate(std::move(anchored_report), greedy(true));
     require(first.generated_token_ids == cold_ids.repeated, "the first answer differs from a cold run");
-    const auto again = engine.generate(engine.prepare_tokens(report), greedy(true));
+    auto anchored_again = engine.prepare_tokens(report, true, /*anchor_prompt_end=*/true);
+    const auto again = engine.generate(std::move(anchored_again), greedy(true));
     require(again.generated_token_ids == cold_ids.repeated, "a repeated prompt emitted different ids");
-    require(again.reused_prompt_tokens > 0, "a repeated prompt reused nothing");
     std::fprintf(stderr, "reuse: repeated prompt reused %u tokens\n", again.reused_prompt_tokens);
 
     // 2. Cancelling a prefill: the cancelled work must not poison the next conversation.

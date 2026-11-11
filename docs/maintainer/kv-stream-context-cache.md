@@ -1504,3 +1504,21 @@ base 去截断一个 `committed_frontier == 0` 的新地址；要么 (b) demote 
 1. decode 第一步打印 `hidden[0..3]` 与 `logits` 的前 4 个值（两臂对比，定位是 hidden 还是采样）；
 2. 打印该步读到的页范围与槽号（`slot_of_page`）前 3 项，确认没有读到别的槽；
 3. 打印 `invariant_attention` 下的 key 分段边界，确认分段与冷跑一致。
+
+### 20.22 首步 logits 大幅不同（不是数值噪声）
+
+有序 dump（`cudaMemcpyAsync` + `cudaStreamSynchronize`，否则读到的是上一步的旧值——第一次 dump 就因为没排序
+而出现"两个不同请求打印相同 logits"的假象）：
+
+```
+A 首次  decode: hidden=3f923ea5,…  logits=40347402,40bdca2d,402f3f05,4043b86e   (≈ +2.8, +5.9, +2.7, +3.1)
+A 复用  decode: hidden=bf853e96,…  logits=bf370290,c0570252,bf71e3a4,c01ed772   (≈ -0.7, -3.4, -0.9, -2.5)
+```
+
+符号与量级都不同 ⇒ 不是精度问题，而是**前向拿到的量本身不对**（而状态镜像已逐字节等于宿主源）。
+下一个分叉点：复用的这一请求里，`kv_rows`（执行表行）与 `state_sources/destinations`
+（状态槽）是否指向了正确的槽。**最可疑**：demote 把端点的设备镜像还给了池，锚点恢复的目标槽
+可能与 `ordinary.state_sources`（从槽号读 state）不一致 ⇒ 前向读到一个未初始化/别的内容的槽。
+
+探针（下一构建）：在 decode 首步打印 `state_sources[0]`、`state_destinations[0]`、`kv_rows[0]`
+的原始值（两臂对比），并打印 `state_store` 中该槽的 `role/residency`。

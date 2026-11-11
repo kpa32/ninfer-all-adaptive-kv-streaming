@@ -51,7 +51,7 @@ void require(bool condition, const char* message) {
 const char* kFiller =
     "NInfer keeps every KV page of the context in pinned host memory and streams the newest window "
     "onto the device. ";
-constexpr int kSentenceRepeats = 30;
+constexpr int kSentenceRepeats = 200;
 
 // The two pools this test compares are the same engine at two headrooms: `--kv-stream` sizes its KV
 // pool from free memory, so the reserved headroom is what decides how many pages the pool gets, and a

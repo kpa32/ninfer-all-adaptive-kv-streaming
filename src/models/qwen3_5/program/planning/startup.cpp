@@ -1398,7 +1398,7 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
         // admission later.
         const std::uint32_t anchors = cache.max_long_anchors_per_continuation.value_or(0);
         const std::uint32_t required_state_slots =
-            2U * cache.max_private_continuations.value_or(0) + anchors;
+            1U + anchors;
         if (cache.host_state_slots < required_state_slots) {
             throw std::invalid_argument(
                 kv_stream_rejection_message(KVStreamRejection::RetainedContextNoHostSlot));

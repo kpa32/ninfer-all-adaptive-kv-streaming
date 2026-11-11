@@ -792,6 +792,15 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
             text_stream_space->upload_window(compute_streams);
         }
         sequence.endpoint_valid = false;
+        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+            std::fprintf(stderr,
+                         "[stream] setup: reuse=%d base=%u prompt=%u text_kv=%u ledger=%zu "
+                         "tail_hidden=%d rope_delta=%d space=%u\n",
+                         static_cast<int>(request_plan.reuse), base, prompt_tokens,
+                         sequence.text_kv_valid, sequence.ledger.size(),
+                         sequence.tail_hidden_valid ? 1 : 0, sequence.rope_delta,
+                         text_stream_space != nullptr ? text_stream_space->active_pages() : 0U);
+        }
         if (!preserving_source) {
             trim_sequence_kv(sequence, base, backend_kv_valid(sequence), "prefill-tail");
         }

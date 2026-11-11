@@ -1043,3 +1043,24 @@ reuse: five cases admitted; upload 0 B, download 0 B, verify 0/0
 
 **这是个语义决定，按纪律先停下报告**：它改变了"谁能用这些字节"的判据来源（请求槽 → 目录条目），
 并需要 `request_plan.cpp`/`prefill.cpp`/`kv_store.h` 三处一起改。
+
+### 19.6 身份已改到"目录条目"（已提交），取消用例仍未命中：下一处不是身份
+
+改动与验证（`NINFER_STREAM_DEBUG=1`，测试全过，rc=0）：
+
+- 发布 checkpoint 时把空间的 `owner_` 设为**该目录条目的** `(slot, generation)`；复用请求带**源条目**的
+  stamp 进入（`request_plan.has_source` → `continuation_stamp(source_index, source_generation)`）。
+- 证据：同一 prompt 两次的 trace 现在显示 `source=196608 reuse=4 base=900`（此前 `source=0`），说明
+  源条目身份确实传到了空间侧。
+
+但**取消后的请求仍然 `reuse=0 source=0`**：
+
+```
+[stream] retained endpoint frontier=19924 ledger=19925 kv_valid=19924        ← 端点已发布
+[stream] request starts: owner=131072 source=0 reuse=0 base=0 space_pages=312 space_owner=65536 retained=19924
+```
+
+`source=0` 意味着 **规划器根本没有给出候选**（不是身份拒绝——身份拒绝会先选中再 `return std::nullopt`）。
+所以下一处要查的是**候选选择**：salvage 出来的端点被目录记为可复用条目了吗、
+`matched_prefix_tokens`/候选筛选是否把"取消留下的端点"排除在外。
+这条线索比继续改身份更可能命中，下一步就从 `request_plan` 的候选构建读起。

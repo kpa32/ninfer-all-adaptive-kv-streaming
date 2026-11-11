@@ -856,3 +856,51 @@ B1/B2/B3 从"三个项目"变成"三个验证里程碑"。
 2. **允许修改 `text.cpp` 的分发钩子**（拷贝编排与 `src/ops` 不变，行为不变）。
 
 不批准则只剩 §16.3(a)：在 arena 里重造约 15 个协议方法，工作量与风险都更大。
+
+---
+
+## 17. 融入方案（最终形态）：流式是页池的放置策略
+
+> 所有者原话：「不要和ninfer对抗， 好的功能要学会融入ninfer的规范里， 不是在里面胡搅蛮缠。」
+
+### 17.1 目标形态（一句话）
+
+`--kv-stream` 不再替换存储层，而是给**既有页池**换一条放置规则：
+**每页的权威副本在宿主（`host_replica`），设备池只持窗口（`device_replica` 的一个子集）**。
+其余全部由既有代码回答：`mapped_pages`、`entitlement`、fork、snapshot、checkpoint 保护列、
+四种截断、session 快照、spill、`private N`。
+
+### 17.2 代码映射：每个流式概念落到既有机制上
+
+| 流式概念 | 现在（并行存储） | 融入后（既有机制） |
+|---|---|---|
+| 宿主权威副本 | `StreamedKVSpace::arena_`（自己的 `HostKVArena`） | `HostKVExtentStore` 的 host replica（`--host-kv-capacity` 覆盖全部页） |
+| 设备窗口 + 环 | `StreamedKVSpace` 拥有池的**全部**槽 | 地址空间 `entitlement = 窗口页数`；`prepare_activation`/`commit_activation` 批量物化 |
+| 页表 | 每层 `stream_slots_` | `publish_membership`（同一条） |
+| 每层 run 拷贝 | `upload(layer, copy)` + ready/consumed 事件 | 同一套（`src/ops/kv_stream` 不动），只是由 store 的物化结果驱动 |
+| `mapped_pages = 0` | 特例 | 真值：地址空间已映射的页数 |
+| 保留/checkpoint | 一张 host StateImage + 前沿 | 既有 catalog：`TurnClosure`/`LongAnchor`/`endpoint`，保护列生效 |
+| 取消 | `retain()`/`reset()` | 基线 `salvage` / `retain_prefill_progress`（`commit.cpp:966`） |
+| 磁盘/槽文件 | 不可用 | `session_snapshot`（保存/恢复都已按页写） |
+| 22 处 `streaming()` 分支 | 特例 | 全部删除；守卫只保留真实冲突（hybrid 的块级语义、并发环） |
+
+### 17.3 顺序（每步编译通过、可回退、先验收后推进）
+
+| 步 | 内容 | 出口 |
+|---|---|---|
+| **R0** | **一致性验收清单先落地**（不改产品代码）：把"开着也要一样"逐条写成可执行的检查——锚点、TurnClosure 重发、取消续聊、A→B→A、槽会话 save/erase/restore、spill、shared prefix、`mapped_pages`/报告 | 清单存在且**当前会红**（这就是缺口事实） |
+| **R1** | 放置策略：宿主 tier 覆盖全部页 + `entitlement = 窗口` + 窗口物化走 `prepare/commit_activation` + 删除第一批 `streaming()` 分支（`mapped_pages`、`host_kv_prefix_bytes`、`checkpoint_recovery`、`request_plan`） | `equiv 4/4` 逐位；251 K `round_ms_median ≤ 41.4×1.01`；C13/C15 不回归 |
+| **R2** | checkpoint：放开锚点/闭包守卫，验 C17/C18（此时应"自动成立"，因为保护列与 catalog 都在） | C17/C18 |
+| **R3** | 会话与磁盘：save/erase/restore、spill 真实落盘（`session_snapshot` 现成） | C19 |
+| **R4** | 收尾：清空剩余分支与守卫、`private N`、报告字段、`docs/cli.md`/`serving.md`/`--help`、strategy §10 门禁 | 门禁逐条 |
+
+### 17.4 明确保留（不碰）
+
+- `src/ops/kv_stream/*`（内核、环、事件、几何、调优器）**零改动**。
+- `text.cpp` 的 run 分发**形状与事件顺序**不变；它从"空间的窗口"改成"store 的窗口"，行为相同。
+- 性能判据不变：251 K `round_ms_median ≤ 41.4 ms×1.01`、`upload_bytes` 变化 ≤1%、`runs_per_layer` 不碎。
+
+### 17.5 如果 R1 撞上真实冲突
+
+只允许在"功能冲突、无法融入"时保留特例，并且必须写进本文：冲突是什么、基线的哪条语义无法表达、代价。
+不允许以"快一点""简单一点"为理由保留分支。

@@ -379,3 +379,19 @@ embedding 常驻占 388.4 MiB；换成 host 后这部分显存回到 KV 池（�
 - 过程失误（记录在案）：第一版把"丢弃"放进只读的放置检查里，功能可过、契约被破坏，
   由 `resource_manager_test` 的 `retained source protection` 断言抓住；现改为在放置循环里、
   两次检查之间执行，每请求最多一次。
+
+## 缺陷 #13：规划成功、执行才发现不可行（`2026-11-11`，serve 实测）
+
+- **触发**：`worker crash: streamed KV frontier is beyond the space's context` → req#6 500、req#7 503、
+  随后 `FATAL engine unavailable after an engine-wide failure`，进程退出（exit 2）。上下文约 20%。
+- **成因**：`sequence.text_kv_valid = reuse_base` 声称"KV 有效到该前沿"，但**流式空间只有一个活世系**：
+  中间任何"不延续"的请求都会把空间倒回到自己的大小，之后复用旧 continuation 就要求比空间持有的更多页。
+  规划期不校验、`enter_request` 才抛 ⇒ 在 worker 里抛 ⇒ 整个进程被带走。
+- **修复**：`KVAddressSpaceStore::stream_can_serve(tokens)` + 规划期校验（`request_plan.cpp`：
+  任何非 Root 复用若空间装不下，直接返回"无候选" ⇒ 请求走冷路径），并配合准入期的驱逐让陈旧条目消失。
+- **验收**（同一构建）：15 个放置/缓存/流式用例 **14/14 PASS**（`resource_manager_test`、`serial_real` 749 s、
+  `geometry_real` 76 s、`eviction_real`（C15）76 s、`prefix_cache_index`、`context_cache_defaults` 等）；
+  serve `A → B → A` 与 `A → A2` 共 5 条请求 **全 200**、进程存活；日志中 `worker crash` / `terminate` /
+  `FATAL engine` 计数 = **0**；同一会话继续仍 `cache 78 (60.5%, turn closure)`。
+- **纪律**：这一族三个缺陷（#11 保留被当租约、#12 空间倒回后声明仍有效、#13 规划期不校验可行性）都是
+  "声明比字节活得久"。任何"保存的上下文"都必须由**持有跨度的那一层**回答"还装得下吗"。

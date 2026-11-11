@@ -218,6 +218,18 @@ bool ProgramImpl::can_release_continuation_slot_strict(std::uint32_t index) cons
     return true;
 }
 
+void ProgramImpl::demote_catalogued_state(ContinuationHandle& continuation) noexcept {
+    // Only a streamed cache needs this: it reserves one Device state image for the request in flight,
+    // so a catalogued entry that keeps its Device replica makes the next request's peak unfittable.
+    // A resident cache keeps the replica where it is - the publication left it there on purpose.
+    if (text_stream_space == nullptr || !valid_continuation(continuation)) { return; }
+    SequenceState& state = continuation_states[ContractAccess::index(continuation)];
+    if (!state_store->valid(state.state.read)) { return; }
+    try {
+        (void)state_store->demote_checkpoint_to_host(state.state.read, compute_streams);
+    } catch (...) {}
+}
+
 void ProgramImpl::release_continuation_slot_strict(std::uint32_t index,
                                                    bool written_to_disk) noexcept {
     try {

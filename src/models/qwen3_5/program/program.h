@@ -1210,6 +1210,11 @@ public:
     retained_device_kv_pages(const SharedPrefixHandle& shared) const noexcept;
     [[nodiscard]] ReleaseResult release_continuation(ContinuationHandle&& continuation) noexcept;
     [[nodiscard]] ReleaseResult release_shared_prefix(SharedPrefixHandle&& shared) noexcept;
+    // Moves a catalogued continuation's state image onto the Host shelf when the cache streams its
+    // KV. A streamed shape reserves a single Device state image for the request in flight, so an
+    // entry that keeps its Device replica makes the next request's peak unfittable; anywhere else
+    // this does nothing, because a resident cache wants that replica where it is.
+    void demote_catalogued_state(ContinuationHandle& continuation) noexcept;
     // Discards every active and retained owner. When a release fails on state left inconsistent
     // by a thrown invariant, the context stores are rebuilt so no orphaned KV page, StateImage or
     // Host KV extent outlives its owner; the usage that survived the ordinary cleanup is returned

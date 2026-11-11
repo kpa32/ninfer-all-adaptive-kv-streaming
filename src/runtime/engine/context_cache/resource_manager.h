@@ -1475,9 +1475,8 @@ public:
                 publication.session.reset();
             }
         }
+        program.demote_catalogued_state(*publication.handle);
     }
-
-    [[nodiscard]] FinishResult finish(Program& program, LaneId lane, SequenceHandle sequence) {
         require_lane(lane, LogicalLaneState::TerminalPending);
         if (!std::holds_alternative<std::monostate>(transaction_) ||
             program.has_context_transaction()) {
@@ -1557,6 +1556,7 @@ public:
                 publication.retention = RetentionClass::RecentPrivate;
             }
         }
+        program.demote_catalogued_state(*publication.handle);
         reset_active_entry(active);
         lanes_[lane.value] = LogicalLaneState::Free;
         return result;

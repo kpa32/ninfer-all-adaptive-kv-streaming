@@ -608,7 +608,12 @@ void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
     RegionState& held = region_states_[region];
     // Whoever used the device window last may be another context: its slots are pool-relative, so
     // this context's newest pages have to be brought back from its own stretch before attention
-    // reads them.
+    // reads them - and the context that used them last has to put its own copies back first, or the
+    // incoming write is the only thing left of them.
+    if (owner != owner_ && active_ != 0 && current_region_ < regions_) {
+        flush_region_ = current_region_;
+        flush_depth_  = active_;
+    }
     if (owner != owner_ && held.depth != 0) { window_dirty_ = true; }
     if (pages < held.depth) { held.depth = pages; }
     if (pages < active_) { window_dirty_ = active_ != 0; }
@@ -662,6 +667,9 @@ void StreamedKVSpace::upload_window(std::uint32_t layer, RankStreams streams) {
 }
 
 void StreamedKVSpace::upload_window(RankStreams streams) {
+    // Order matters: the outgoing context's newest pages reach its own records before the incoming
+    // one overwrites the same slots, and only then is there something to bring back for it.
+    flush_window(streams);
     if (!window_dirty_) { return; }
     for (std::uint32_t layer = 0; layer < layers_; ++layer) { upload_window(layer, streams); }
     window_dirty_ = false;
@@ -776,6 +784,34 @@ HostKVAllocationView StreamedKVSpace::region_pages(std::uint32_t layer) noexcept
 
 HostKVAllocationConstView StreamedKVSpace::region_pages(std::uint32_t layer) const noexcept {
     return host_pages(layer).subview(region_base_page(), region_pages_per_layer_);
+}
+
+HostKVAllocationView StreamedKVSpace::region_pages_of(std::uint32_t layer,
+                                                     std::uint32_t region) noexcept {
+    return host_pages(layer).subview(region * region_pages_per_layer_, region_pages_per_layer_);
+}
+
+// Moves the outgoing context's window back into its own records. The window's slots are pool-relative,
+// so the bytes an incoming context writes would otherwise be the only thing left of them.
+void StreamedKVSpace::flush_window(RankStreams streams) {
+    if (flush_region_ == kNoRegion) { return; }
+    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
+        const std::uint32_t resident = split_.resident_of(layer);
+        if (resident == 0) { continue; }
+        const std::uint32_t start = flush_depth_ > resident ? flush_depth_ - resident : 0U;
+        for (std::uint32_t page = start; page < flush_depth_; ++page) {
+            cache_->page_pool().copy_to_host_pages(
+                kv_stream_window_slot(layer, page, split_), 1,
+                region_pages_of(layer, flush_region_).subview(page, 1), streams);
+            add_download(layer, page_bytes_);
+        }
+    }
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        std::fprintf(stderr, "[stream] window flush: region=%u depth=%u\n", flush_region_,
+                     flush_depth_);
+    }
+    flush_region_ = kNoRegion;
+    flush_depth_  = 0;
 }
 cudaEvent_t StreamedKVSpace::ready_event(std::uint32_t layer) const {
     if (layer >= ready_.size()) { throw std::out_of_range("Streamed KV layer is out of range"); }

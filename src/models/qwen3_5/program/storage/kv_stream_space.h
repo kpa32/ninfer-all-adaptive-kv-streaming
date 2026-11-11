@@ -110,6 +110,9 @@ public:
     // region - today's shape - the base is zero and every offset is what it always was.
     [[nodiscard]] HostKVAllocationView region_pages(std::uint32_t layer) noexcept;
     [[nodiscard]] HostKVAllocationConstView region_pages(std::uint32_t layer) const noexcept;
+    // The same records for an explicitly chosen stretch, which is what flushing an outgoing
+    // context needs: its window is still on the device while the space already points elsewhere.
+    [[nodiscard]] HostKVAllocationView region_pages_of(std::uint32_t layer, std::uint32_t region) noexcept;
     [[nodiscard]] std::uint32_t regions() const noexcept { return regions_; }
     // Pages one owner may use in a layer.
     [[nodiscard]] std::uint32_t region_page_count() const noexcept { return region_pages_per_layer_; }
@@ -403,6 +406,13 @@ private:
     // Set when the pages in hand no longer describe the device window - an entry that took a region
     // from another owner - and cleared by the upload that republishes it.
     bool window_dirty_ = false;
+    // The stretch whose newest pages were on the device when another context took the window over:
+    // those pages reach the host only here, so a switch that skipped them would lose the outgoing
+    // context's tail the moment the incoming one wrote the same slots.
+    std::uint32_t flush_region_ = kNoRegion;
+    std::uint32_t flush_depth_  = 0;
+    static constexpr std::uint32_t kNoRegion = std::numeric_limits<std::uint32_t>::max();
+    void flush_window(RankStreams streams);
     // The continuation whose ledger these bytes hold. Reused continuation slots never repeat a
     // stamp, so a claim on pages another request rewrote can never be served by accident.
     std::uint64_t owner_ = 0;

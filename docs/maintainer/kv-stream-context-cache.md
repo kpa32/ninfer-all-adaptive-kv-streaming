@@ -1197,3 +1197,25 @@ continuation 槽。说明 Program 的 `continuation_capacity` 实际仍是 1（`
 `continuation_slots` 时用的容量），确认 `ContextCacheOptions::max_private_continuations` 是否只在
 `host_cache_budget` 路径被使用、以及 Engine 侧 `context_cache` 规范化（`model_instance.cpp:443-477`）
 是否把它改回 `2 * concurrency`（本机 concurrency=1 ⇒ 2，本应足够）。region 侧不需要再改。
+
+### 20.8 A→B→A 在"全新目录"上仍是 0：候选没被提出，region 与空间都对
+
+把 A→B→A 挪到引擎的第一个动作（目录空、两个 private continuation、两个 region），trace：
+
+```
+[stream] request starts: owner=65536  ... space_pages=0   space_owner=0       retained=0     (A)
+[stream] retained endpoint frontier=904 ledger=905 kv_valid=904
+[stream] request starts: owner=131072 ... space_pages=15  space_owner=65536  retained=904    (B)
+[stream] retained endpoint frontier=244 ledger=245 kv_valid=244
+[stream] request starts: owner=196608 ... space_pages=15  space_owner=131072 retained=904    (A again)
+        └─ source=0, reuse=0
+```
+
+- **空间侧正确**：A 的区仍在（`space_pages=15`、`space_owner` 是 B 的区），`retained=904` 也还在；
+- **规划器侧 `source=0`**：根本没有提出 A 的条目 ⇒ 不是 region、不是深度、不是身份，而是
+  **候选/目录这一层**（A 的条目在 B 发布后不可见，或 `inspect_admission` 被拒且没打印）。
+
+⇒ 下一步（下一 turn 的第一件事）：在 `resource_manager` 的候选循环里打印
+`catalog_` 全部条目的 `(slot, state, session, endpoint.frontier, handle?)` 与 `prefix_index_` 的
+`(occupied, frontier, slot)`，跑同一场景；这会一次分清"条目被驱逐"与"键没命中"。
+在那之前不再改 region 侧代码——它们已经是对的。

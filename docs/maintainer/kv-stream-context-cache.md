@@ -994,3 +994,21 @@ reuse: five cases admitted; upload 0 B, download 0 B, verify 0/0
 `reused 900`（提示约 1 432 token）——命中的是锚点 frontier，不是提示末尾；
 所以"同一 prompt 重发"省的是锚点之后的 prefill，而不是全部。验收应写成
 `reused == 该锚点 frontier` 且 ids 逐 token 相同，不写成"等于提示长度"。
+
+### 19.4 取消保留仍为 0：已排除与待查
+
+测试改成"约 20 k token 的单一提示、在 16 384 进度锚点之后取消、再发同一提示"后，`reused` 仍是 0。
+按代码逐条核对（`commit.cpp:829-900`）：
+
+**已排除**（这几条对 `--kv-stream` 不成立，不是原因）：
+- `can_deactivate_and_truncate_prefix`（`kv_store.h:1942`）在流式下 `page_count == 0` ⇒ 循环为空，
+  只要 `frontier <= committed_frontier` 就返回真；取消发生在 16 k 之后，锚点 frontier 满足该条件；
+- `retain_prefill_progress` 要求 `state.long_anchors` 非空或 `rewrite_checkpoint.valid` ——
+  进度锚点会填 `long_anchors`（未被锚点容量挡住，因为容量已为 2）。
+
+**待查**（下一枪，未验证，别当结论）：`retain_prefill_progress` 的前置条件里还剩三条只读检查：
+`state.endpoint_valid`、`state.state.fork_pending`、`can_release(state.write)`，以及
+`state.text_kv_valid` 与 `retained.main_frontier` 的关系。这四种任一为真都会让保留直接 `return false`
+（随后 `clear_lane_strict` 丢掉整条 lane），表现正是"取消后复用为 0 且不崩"。
+**办法**：在这三个 `return false` 前各加一行 `[retain] refused: <原因>` 的调试输出（只在
+`NINFER_STREAM_DEBUG` 下），跑一次同场景，就能定位是哪一条，再谈修改。

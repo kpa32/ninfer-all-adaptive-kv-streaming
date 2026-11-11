@@ -616,7 +616,10 @@ void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
             active_               = admitted.depth;
             owner_                = owner;
             retained_frontier_    = 0;
-            window_dirty_         = false;
+            // The device window holds the bytes of whoever used it last - the window's slots are
+            // pool-relative, not stretch-relative - so this context's window has to be brought back
+            // from its own pages before attention reads it.
+            window_dirty_         = admitted.depth != 0;
             clear_round_bookkeeping();
             return;
         }

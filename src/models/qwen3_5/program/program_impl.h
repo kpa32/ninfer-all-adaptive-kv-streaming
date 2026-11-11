@@ -1937,7 +1937,7 @@ private:
     void ensure_sequence_kv_lease(SequenceState& sequence, std::uint32_t main_tokens,
                                   std::uint32_t backend_tokens);
     void trim_sequence_kv(SequenceState& sequence, std::uint32_t main_tokens,
-                          std::uint32_t backend_tokens = 0);
+                          std::uint32_t backend_tokens = 0, const char* why = nullptr);
     void release_sequence_growth_entitlement(SequenceState& sequence) noexcept;
     void release_active_sequence_kv_strict(SequenceState& sequence) noexcept;
     void release_sequence_kv_strict(SequenceState& sequence,

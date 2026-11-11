@@ -632,7 +632,7 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                 throw std::logic_error("resident DFlash context is not at the append frontier");
             }
             bind_sequence_kv(sequence);
-            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));  // prefill:reuse-tail
+            trim_sequence_kv(sequence, base, backend_kv_valid(sequence), "reuse");  // prefill:reuse-tail
             resize_sequence_kv_entitlement(sequence, request_plan.text_kv_page_entitlement,
                                            request_plan.backend_kv_page_entitlement);
             sequence.text_kv_valid = base;
@@ -681,7 +681,7 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                 sequence.dflash_context_frontier = base;
             }
             bind_sequence_kv(sequence);
-            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));  // prefill:reuse-tail
+            trim_sequence_kv(sequence, base, backend_kv_valid(sequence), "reuse");  // prefill:reuse-tail
             resize_sequence_kv_entitlement(sequence, request_plan.text_kv_page_entitlement,
                                            request_plan.backend_kv_page_entitlement);
             sequence.tail_hidden_valid = base == prompt_tokens;
@@ -713,7 +713,7 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                 sequence.dflash_context_frontier = base;
             }
             bind_sequence_kv(sequence);
-            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));  // prefill:reuse-tail
+            trim_sequence_kv(sequence, base, backend_kv_valid(sequence), "reuse");  // prefill:reuse-tail
             resize_sequence_kv_entitlement(sequence, request_plan.text_kv_page_entitlement,
                                            request_plan.backend_kv_page_entitlement);
             sequence.tail_hidden_valid = base == prompt_tokens;
@@ -753,7 +753,9 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
         }
 
         sequence.endpoint_valid = false;
-        if (!preserving_source) { trim_sequence_kv(sequence, base, backend_kv_valid(sequence)); }
+        if (!preserving_source) {
+            trim_sequence_kv(sequence, base, backend_kv_valid(sequence), "prefill-tail");
+        }
         bind_sequence_kv(sequence);
         const std::uint32_t backend_materialized =
             speculative_backend == SpeculativeBackend::Mtp
@@ -1115,7 +1117,7 @@ runtime::ExecutionTiming ProgramImpl::resolve_pending_raw(
             }
 
             commit_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence));
-            trim_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence));
+            trim_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence), "valid-tail");
             if (terminal[row]) {
                 request.lifecycle = Lifecycle::Finishable;
             } else {

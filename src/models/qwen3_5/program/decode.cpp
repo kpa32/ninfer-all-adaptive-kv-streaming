@@ -1323,7 +1323,7 @@ runtime::ExecutionTiming ProgramImpl::resolve_non_speculative_pending(
     } else if (request.pending.kind == PendingKind::Ordinary) {
         settle_state_fork(sequence);
     }
-    trim_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence));
+    trim_sequence_kv(sequence, sequence.text_kv_valid, backend_kv_valid(sequence), "valid-tail");
     if (terminal) { sequence.mtp_draft_count = 0; }
     request.lifecycle = terminal ? Lifecycle::Finishable : Lifecycle::Active;
     request.pending   = {};

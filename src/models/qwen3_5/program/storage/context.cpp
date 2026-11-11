@@ -1830,17 +1830,17 @@ void ProgramImpl::commit_sequence_kv(SequenceState& sequence, std::uint32_t main
 }
 
 void ProgramImpl::trim_sequence_kv(SequenceState& sequence, std::uint32_t main_tokens,
-                                   std::uint32_t backend_tokens) {
+                                   std::uint32_t backend_tokens, const char* why) {
     if (!sequence.kv || main_tokens > capacity || backend_tokens > main_tokens) {
         throw std::logic_error("KV trim request is outside the sequence bundle");
     }
     if (backend_tokens != 0 && !sequence.kv->backend) {
         throw std::logic_error("backend KV trim requested without an allocation");
     }
-    text_kv_addresses->destructive_truncate(sequence.kv->text, main_tokens, "trim_sequence_kv");
+    const char* label = why == nullptr ? "trim_sequence_kv" : why;
+    text_kv_addresses->destructive_truncate(sequence.kv->text, main_tokens, label);
     if (sequence.kv->backend) {
-        backend_kv_addresses->destructive_truncate(*sequence.kv->backend, backend_tokens,
-                                                  "trim_sequence_kv");
+        backend_kv_addresses->destructive_truncate(*sequence.kv->backend, backend_tokens, label);
     }
 }
 

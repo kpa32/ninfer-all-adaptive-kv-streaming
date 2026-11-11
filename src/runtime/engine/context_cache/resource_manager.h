@@ -371,6 +371,14 @@ public:
     [[nodiscard]] Inspection inspect(Program& program, const PreparedPrompt& prompt,
                                      const RequestBasePlan& base, std::uint64_t publication_order,
                                      PlanningAllowance allowance = {}) {
+        const bool entry_trace = std::getenv("NINFER_MAT_DEBUG") != nullptr;
+        if (entry_trace) {
+            std::fprintf(stderr,
+                         "[admission] inspect: enabled=%d catalog=%u index_entries=%zu "
+                         "opportunities=%zu\n",
+                         cache_enabled_ ? 1 : 0, catalog_count_, prefix_index_.size(),
+                         base.context_cache().opportunities.size());
+        }
         if (!std::holds_alternative<std::monostate>(transaction_) ||
             program.has_context_transaction()) {
             if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {

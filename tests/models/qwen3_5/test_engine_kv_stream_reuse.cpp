@@ -126,7 +126,22 @@ int run() {
 
     Engine engine(engine_options(artifact, true));
 
-    // 1. Repeating a prompt: the raw-token prompt has no message structure, so the engine anchors
+    // 1. Cancelling past the progress-anchor grid and then sending the same prompt again: the
+    // cancelled lane's own checkpoint is the only thing that can serve this request, so it runs
+    // first, while the one private continuation slot is still empty. A second engine would need
+    // the weights a second time on the same device.
+    {
+        auto handle = engine.submit(engine.prepare_tokens(long_report), greedy(true));
+        std::this_thread::sleep_for(std::chrono::milliseconds(14000));
+        handle = {};
+        const auto rewrite = engine.generate(engine.prepare_tokens(long_report), greedy(true));
+        require(rewrite.generated_token_ids == cold_ids.long_report,
+                "the request after a cancel emitted different ids");
+        std::fprintf(stderr, "reuse: prompt after cancel reused %u tokens\n",
+                     rewrite.reused_prompt_tokens);
+    }
+
+    // 2. Repeating a prompt: the raw-token prompt has no message structure, so the engine anchors
     // its end only when asked (prepare_tokens' anchor_prompt_end). Whatever it reuses must not
     // change the answer.
     auto anchored_report = engine.prepare_tokens(report, true, /*anchor_prompt_end=*/true);
@@ -137,7 +152,7 @@ int run() {
     require(again.generated_token_ids == cold_ids.repeated, "a repeated prompt emitted different ids");
     std::fprintf(stderr, "reuse: repeated prompt reused %u tokens\n", again.reused_prompt_tokens);
 
-    // 2. Cancelling a prefill: the cancelled work must not poison the next conversation.
+    // 3. Cancelling a prefill: the cancelled work must not poison the next conversation.
     {
         auto handle = engine.submit(engine.prepare_tokens(long_report), greedy(true));
         std::this_thread::sleep_for(std::chrono::milliseconds(1500));
@@ -149,22 +164,6 @@ int run() {
     std::fprintf(stderr, "reuse: unrelated after cancel reused %u tokens\n",
                  beside.reused_prompt_tokens);
 
-    // 3. Cancelling past the progress-anchor grid and then sending the same prompt again: the
-    // cancelled lane's own checkpoint is the only thing that can serve this request, so it is the
-    // case that shows whether a cancel keeps anything at all. It runs on a fresh engine so no
-    // earlier lane's endpoint can occupy the one private slot the check depends on.
-    {
-        Engine cancel_engine(engine_options(artifact, true));
-        auto handle = cancel_engine.submit(cancel_engine.prepare_tokens(long_report), greedy(true));
-        std::this_thread::sleep_for(std::chrono::milliseconds(14000));
-        handle = {};
-        const auto rewrite = cancel_engine.generate(cancel_engine.prepare_tokens(long_report),
-                                                    greedy(true));
-        require(rewrite.generated_token_ids == cold_ids.long_report,
-                "the request after a cancel emitted different ids");
-        std::fprintf(stderr, "reuse: prompt after cancel reused %u tokens\n",
-                     rewrite.reused_prompt_tokens);
-    }
 
     // 4. Two conversations, then the first one again: whichever context the space kept, the answer
     // must match a cold run, and the request must be admitted.

@@ -347,3 +347,53 @@ context cache | 1 active + 0 cached device states | host 1 states, 0 B KV | priv
 4. 把 `stream_can_serve`、`inspect_lane` 的流式分支、截断钳位**降级为断言并删除**；
 5. arena 实现页导出/导入（`save_continuation` / `restore_continuation` / spill）⇒ C19；
 6. 验收：C13–C19 + equiv + serve 两会话 + 251 K 不退化。
+
+---
+
+## 10. 计划重审（读完代码后的修正，取代 §6 与 §9）
+
+§6/§9 是在没有读 `startup.cpp` 的守卫之前写的，**范围判断错了**。以下是按代码事实重写的版本。
+
+### 10.1 事实：`--kv-stream` 是一个被显式限制的形状（`startup.cpp:1380-1412`）
+
+```cpp
+// --kv-stream 拒绝：hybrid prefix cache
+// --kv-stream 拒绝：host KV tier / disk KV tier / session slot（host_kv_capacity_bytes、
+//                   host_cache_budget_bytes、disk_kv_path、disk_kv_restore、disk_kv_directstorage）
+// --kv-stream 拒绝：shared prefixes 与 long anchors（max_long_anchors_per_continuation 必须为 0）
+// --kv-stream 拒绝：device state slots；要求 host_state_slots >= 1
+```
+
+⇒ 结论一：**磁盘 KV（`--disk-kv-path`）不是"漏掉的路径"，而是被显式排除的范围。** 本文 §3.5 之前把
+`save_continuation` 的抛错当成缺陷，方向不完整：真正的第一道墙是这条守卫。
+
+⇒ 结论二：**长锚点被禁止** ⇒ 基线的 `retain_prefill_progress`（取消时保留长 prompt 的进度）
+在流式下**没有 checkpoint 可发布**。所以"取消后能接着聊"在当前范围内**做不到**，不是接线问题。
+
+⇒ 结论三：`TurnClosure`（`install_private_capture` 的 `group.rewrite`）**不受锚点守卫限制**，
+理论上可以在流式下捕获。**是否真的捕获、状态货架是否给得出第二个镜像，尚未验证**——这是当前范围内
+唯一可能让"同一 prompt 再次发送"命中的杠杆。
+
+### 10.2 由此得到的按范围分层的计划
+
+| 层 | 内容 | 需要改的范围 | 验收 |
+|---|---|---|---|
+| **S0 正确性（不动守卫）** | 身份戳（已完成）、规划期按身份拒绝、截断钳位、取消不清空、**不再崩、不再错答** | 只动簿记 | 取消序列不崩；`equiv 4/4` 逐位；C13/C15 |
+| **S0.5 先测现状**（不改代码） | 查流式是否已捕获 TurnClosure：若是，"同一 prompt 再发"本就该命中；若否，看 `[stream] request starts` 的 `reuse/base` | **0 代码** | 同一 prompt 两次的 `reused`；serve 日志 `anchors/rewrite` 计数 |
+| **S1 放宽锚点守卫** | 取消后可续聊（长 prompt 也有 checkpoint 可留） | `startup.cpp` 的守卫 + 状态货架容量 | C18 |
+| **S2 region 化** | 多会话并存（`private N`） | arena region + 窗口基址 | A→B→A 双命中；251 K 不退化 |
+| **S3 流式下的磁盘/会话发布** | 重启后继续 | **要新决定**：是否为流式放宽 §10.1 的 disk 守卫；arena 需导出/导入 | C19 |
+
+**顺序依赖**：S0 → S0.5（先测，避免为不存在的问题做 S1）→ 由所有者选 S1/S2/S3。
+
+### 10.3 关于"丢条目"补丁（§4.3 的说法已作废）
+
+它只在 `engine_core.h:2862` 的**无放置方案**分支里调用，作用是腾出唯一私有槽；删掉它会恢复
+`context cache exhausted`（429）。假未命中的原因是**缺少 prompt 末尾的 checkpoint**，不是它。
+因此：**保留**，并把 §4.3 的判据改为"驱逐合法，缺 checkpoint 才是 miss 的来源"。
+
+### 10.4 已作废的旧表述（保留在此以免被再次引用）
+
+- "流式下磁盘会话保存抛错是一个缺陷" ⇒ 先看守卫（§10.1 结论一）。
+- "F2 最长前缀命中" ⇒ 违反基线 §4.1，早已撤回。
+- "先删驱逐补丁，再补校验" ⇒ 顺序反了，驱逐是合法语义。

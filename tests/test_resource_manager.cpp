@@ -1262,6 +1262,12 @@ public:
         return FakeReleaseResult{.status = ConsumeStatus::Consumed};
     }
 
+    // The manager asks a catalogued entry to move its state image to the Host shelf; the fake keeps
+    // no state images, so it has nothing to do.
+    void demote_catalogued_state(FakeContinuationHandle& continuation) noexcept {
+        (void)continuation;
+    }
+
     [[nodiscard]] FakeReleaseResult
     release_shared_prefix(FakeSharedPrefixHandle&& shared) noexcept {
         released_shared_prefix_keys.push_back(shared.content_key);

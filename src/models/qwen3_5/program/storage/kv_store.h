@@ -1779,6 +1779,13 @@ public:
             // reuses the retained endpoint continues at that frontier, and every other request
             // starts from an empty space (the space decides from the frontier it holds).
             if (frontier > address.committed_frontier) {
+                if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+                    std::fprintf(stderr,
+                                 "[stream] truncate beyond: frontier=%u committed=%u pages=%u "
+                                 "space_pages=%u\n",
+                                 frontier, address.committed_frontier, address.page_count,
+                                 stream_space_->active_pages());
+                }
                 throw std::invalid_argument("KV truncate frontier is beyond the sequence");
             }
             // The space owns the whole context and holds one lineage: a request that did not continue

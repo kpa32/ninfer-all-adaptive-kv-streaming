@@ -842,6 +842,9 @@ public:
     [[nodiscard]] FinishResult finish(SequenceHandle sequence) noexcept;
     [[nodiscard]] AbortResult abort(SequenceHandle sequence) noexcept;
     [[nodiscard]] ReleaseResult release_continuation(ContinuationHandle&& continuation) noexcept;
+    // See Program::demote_catalogued_state: the Host shelf takes a streamed entry's state image so
+    // the one Device state image stays available to the request in flight.
+    void demote_catalogued_state(ContinuationHandle& continuation) noexcept;
 
     [[nodiscard]] qwen3_5::SessionSnapshot
     save_continuation(const ContinuationHandle& continuation, std::string_view model_binding);

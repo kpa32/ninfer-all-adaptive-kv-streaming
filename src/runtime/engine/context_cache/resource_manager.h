@@ -373,6 +373,11 @@ public:
                                           PlanningAllowance allowance, bool* plan_blocked) {
         if (!std::holds_alternative<std::monostate>(transaction_) ||
             program.has_context_transaction()) {
+            if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
+                std::fprintf(stderr, "[admission] blocked: transaction=%d program=%d\n",
+                             std::holds_alternative<std::monostate>(transaction_) ? 0 : 1,
+                             program.has_context_transaction() ? 1 : 0);
+            }
             return {.readiness = Readiness::TemporarilyBlocked};
         }
         if (publication_order == 0) {
@@ -388,7 +393,12 @@ public:
                 break;
             }
         }
-        if (!destination) { return {.readiness = Readiness::TemporarilyBlocked}; }
+        if (!destination) {
+            if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
+                std::fprintf(stderr, "[admission] blocked: no free lane\n");
+            }
+            return {.readiness = Readiness::TemporarilyBlocked};
+        }
 
         const typename Planner::Clock::time_point planning_started = Planner::Clock::now();
         // NINFER_MAT_DEBUG traces how each catalogued checkpoint was or was not turned into a
@@ -427,7 +437,12 @@ public:
             prompt, base, *destination, nullptr, nullptr, std::nullopt, false);
         // Isolated feasibility does not imply that an active Program is at a materialization
         // boundary: an unfinished StateImage fork must settle before admission can be planned.
-        if (!root) { return {.readiness = Readiness::TemporarilyBlocked}; }
+        if (!root) {
+            if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
+                std::fprintf(stderr, "[admission] blocked: no root plan\n");
+            }
+            return {.readiness = Readiness::TemporarilyBlocked};
+        }
         Candidate root_candidate{.plan = std::move(*root)};
         if (const auto graft_slot = root_candidate.plan->graft_shared_slot()) {
             if (*graft_slot < shared_catalog_count_ &&
@@ -646,6 +661,9 @@ public:
                                  planning_started, provisional_demand, allowance);
         if (!selected) {
             if (plan_blocked != nullptr) { *plan_blocked = true; }
+            if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
+                std::fprintf(stderr, "[admission] blocked: no materialization plan\n");
+            }
             return {.readiness = Readiness::TemporarilyBlocked};
         }
         return {

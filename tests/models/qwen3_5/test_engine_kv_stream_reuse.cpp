@@ -126,6 +126,22 @@ int run() {
 
     Engine engine(engine_options(artifact, true));
 
+    // 0. Two conversations on a fresh catalogue, then the first one again. This runs first because
+    // the cases below publish and consume entries, and a catalogue of two slots cannot be expected
+    // to still hold the first conversation after five of them: this is the only arrangement in which
+    // 'return to A' has A's own entry to find.
+    {
+        const auto a1 = engine.generate(engine.prepare_tokens(report), greedy(true));
+        require(a1.generated_token_ids == cold_ids.repeated, "the first A differs from a cold run");
+        const auto b1 = engine.generate(engine.prepare_tokens(other), greedy(true));
+        require(b1.generated_token_ids == cold_ids.unrelated, "B differs from a cold run");
+        const auto a2 = engine.generate(engine.prepare_tokens(report), greedy(true));
+        require(a2.generated_token_ids == cold_ids.repeated,
+                "the second A differs from a cold run");
+        std::fprintf(stderr, "reuse: A -> B -> A on a fresh catalogue reused %u tokens\n",
+                     a2.reused_prompt_tokens);
+    }
+
     // 1. Cancelling past the progress-anchor grid and then sending the same prompt again: the
     // cancelled lane's own checkpoint is the only thing that can serve this request, so it runs
     // first, while the one private continuation slot is still empty. A second engine would need

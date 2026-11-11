@@ -61,7 +61,7 @@ EngineOptions engine_options(const char* artifact, bool retain) {
     options.context_cache.host_state_slots                  = retain ? 4U : 0U;
     options.context_cache.host_kv_capacity_bytes            = 0;
     options.context_cache.device_state_slots                = 0;
-    options.context_cache.max_private_continuations         = retain ? 1U : 1U;
+    options.context_cache.max_private_continuations         = retain ? 2U : 1U;
     options.context_cache.max_shared_prefixes               = 0;
     options.context_cache.max_long_anchors_per_continuation = retain ? 2U : 0U;
     options.context_cache.host_cache_budget_bytes.reset();

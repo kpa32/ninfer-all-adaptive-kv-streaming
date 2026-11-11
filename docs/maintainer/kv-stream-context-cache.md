@@ -1403,3 +1403,23 @@ HostOnly 恢复路径已存在（`checkpoint_recovery.cpp:115` 的 `HostToDevice
    即让设备槽成为一个**按需租约**而不是常驻。
 
 当前树已恢复到最后一个绿色状态（`ddeacbeb`，编译通过、复用/驱逐用例通过）。
+
+### 20.17 失败点的精确读法（下一次带 demote 重跑要打印什么）
+
+两处抛出都是同一条断言（`kv_store.h:1782`）：
+
+```cpp
+if (frontier > address.committed_frontier)
+    throw std::invalid_argument("KV truncate frontier is beyond the sequence");
+```
+
+即"要截断到的前沿超过了该地址已提交的前沿"。demote 本身不碰 `committed_frontier`，所以要么
+(a) **恢复路径**（HostOnly → active）没有把目标地址的前沿推到 reuse base，随后 `trim_sequence_kv` 拿
+base 去截断一个 `committed_frontier == 0` 的新地址；要么 (b) demote 之后 `state.state.read` 的角色/前沿
+在摘要里读到 0，导致下游按 0 记账。
+
+**分辨方法（一次运行即可）**：在该断言前打印
+`frontier`、`address.committed_frontier`、`address.page_count`、`stream_space_->active_pages()`、
+以及调用栈来源（prefill 的 `trim_sequence_kv` 还是 finish 的收尾）。三者一对就能定 (a)/(b)。
+
+在拿到这三个数之前不再改代码——前两次都是"看起来该在这里"的调用点，实际缺的是别处的记账。

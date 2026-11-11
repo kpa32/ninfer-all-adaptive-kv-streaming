@@ -485,6 +485,25 @@ public:
                 } else {
                     cdbg_log("[candgen] OWN slot=ABSENT\n");
                 }
+                // What the catalogue actually holds, and what the index exposes: an entry that is
+                // catalogued but unindexed and an entry that was evicted look identical from the
+                // planner's side otherwise.
+                for (std::uint32_t slot = 0; slot < catalog_count_; ++slot) {
+                    const CatalogEntry& entry = catalog_[slot];
+                    cdbg_log("[candgen] CAT slot=%u state=%d handle=%d endpoint=%u rewrite=%u "
+                             "anchors=%zu id=%llu rev=%llu\n",
+                             slot, static_cast<int>(entry.state), entry.handle ? 1 : 0,
+                             entry.summary.endpoint ? 1U : 0U,
+                             entry.summary.rewrite ? 1U : 0U,
+                             entry.summary.long_anchors.size(),
+                             static_cast<unsigned long long>(entry.id),
+                             static_cast<unsigned long long>(entry.revision));
+                }
+                for (const PrefixIndexEntry& index : prefix_index_) {
+                    if (!index.occupied) { continue; }
+                    cdbg_log("[candgen] IDX shared=%d slot=%u frontier=%u\n",
+                             index.shared ? 1 : 0, index.slot, index.key.frontier);
+                }
             }
             for (const PrefixIndexEntry& index : prefix_index_) {
                 if (!valid_prefix_index_entry(index)) { continue; }

@@ -109,7 +109,7 @@ int run() {
             "NInfer keeps every KV page of the context in pinned host memory. ", 60));
         other         = tokenizer.tokenize_text(text("A completely different opening sentence. ", 40));
         long_report   = tokenizer.tokenize_text(text(
-            "The quarterly report lists every shipped subsystem and its measured latency. ", 1660));
+            "The quarterly report lists every shipped subsystem and its measured latency. ", 3000));
     }
 
     // The same three prompts without any cache: the ids a streamed run must also produce.
@@ -132,7 +132,7 @@ int run() {
     // the weights a second time on the same device.
     {
         auto handle = engine.submit(engine.prepare_tokens(long_report), greedy(true));
-        std::this_thread::sleep_for(std::chrono::milliseconds(14000));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10000));
         handle = {};
         const auto rewrite = engine.generate(engine.prepare_tokens(long_report, true, /*anchor_prompt_end=*/true), greedy(true));
         require(rewrite.generated_token_ids == cold_ids.long_report,

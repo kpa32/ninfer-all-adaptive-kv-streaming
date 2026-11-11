@@ -795,3 +795,64 @@ N=1 时中性可证）；**B3 最后**（需要 B2 的 region 只是方便，不
 - 不重写流式核心：`src/ops` 零改动、`text.cpp` 拷贝编排不变；B2 只改 region 基址与目录判据。
 - 不引入第二套缓存策略：B1/B2 的删除与保留都走 `ResourcePlan`，与基线同一套计划语义。
 - 不用冷启动掩盖缺口：唯一的冷启动条件是"该 owner 没有可用 checkpoint"。
+
+---
+
+## 16. 基线能力的代码清单（取代一切按文档罗列的能力表）
+
+**基线 = `KVAddressSpaceStore` + `LogicalKVPageStore` 现在能做的事**。下面是它们的合同面
+（`kv_store.h`，行号相对文件），流式必须逐条满足，才叫"开着也一样"。
+
+### 16.1 地址空间合同（`KVAddressSpaceStore`）
+
+| 组 | 方法（`kv_store.h`） | 语义 |
+|---|---|---|
+| 生命周期 | `create_active`(901)、`create_inactive`(915)、`activate`(953)、`deactivate`(1095)、`release`(1065)、`release_after_deactivate`(1057)、`can_release*` | owner 的创建/激活/退役 |
+| 页物化与配额 | `prepare_activation`(970)、`commit_activation`(1031)、`page_reservation`(1023)、`materializable_pages`(1012)、`ensure_mapped_to_tokens`(1700)、`can_resize_entitlement`(1666)、`resize_entitlement`(1675)、`release_growth_entitlement`(1692) | 页按需物化成设备槽；配额可增长/收缩 |
+| 前缀 fork | `prepare_prefix_fork`(1127)、`settle_prefix_fork_tail_source`(1209)、`complete_prefix_fork_after_tail_release`(1224)、`commit_prefix_fork`(1240)、`abort_prefix_fork`(1303)、页级 `prepare/commit/abort_page_prefix_fork`(1323/1388/1441) | 共享前缀：页引用计数 + 尾部 COW 源结算 |
+| 活体快照 | `active_snapshot_shape`(1459)、`prepare_active_snapshot`(1511)、`commit_active_snapshot`(1572)、`abort_active_snapshot`(1644) | 把 active 地址的页物化成 checkpoint/移植目标 |
+| 前沿与保护 | `commit_frontier`(1747)、`set_checkpoint_requirement`(1908)、`rebuild_checkpoint_protection`(2110) | checkpoint 保护列：页被 checkpoint 引用则不可回收/覆盖 |
+| 截断族 | `destructive_truncate`(1775)、`destructive_truncate_inactive`(1865)、`can_truncate_inactive_prefix`(1924)、`can_deactivate_and_truncate_prefix`(1942)、`truncate_inactive_prefix`(1956) | 四种回退语义，各自的前置条件 |
+| 查询 | `mapped_pages`(1973)、`entitlement`(1977)、`committed_frontier`(1981)、`physical_page`(2002)、`content_epoch`(2011)、`logical_page`(2020)、`has_active_reference`(2029) | 深度、配额、前沿、物理槽、内容纪元、逻辑页 |
+| 页表发布 | `publish_membership`(2195) | 逻辑页 → 物理槽，一次发布 |
+
+### 16.2 页模型（`LogicalKVPageStore`，同一文件）
+
+一页同时可有：`device_replica`（设备槽副本）、`host_replica`（宿主副本）、`pending_device_replica`、
+`content_epoch`、`committed_columns`/`protected_columns`、`references`/`writer_references`/`source_pins`/
+`destination_pinned`（`kv_store.h:319-460`）。
+
+**关键事实**：`device_resident()` 与 `host_resident()` 是两个独立可选项，`demote` 路径会把
+`device_replica` 清空而保留 `host_replica`（`kv_store.h:417/537/742/809`）。
+⇒ **"页住宿主、设备只留窗口"本来就是这个页模型的一个合法状态**，
+不需要另造存储。design §4.11 说它"假设每个 occupied 逻辑页都有 device replica"——那是对
+`materialize` 的**按需语义**的描述，不是数据模型的限制。
+
+### 16.3 结论：`--kv-stream` 必须是这套 store 的一种放置策略
+
+要"开着也一样"，流式地址必须能回答 16.1 的全部问题。两条路：
+
+| 路 | 做法 | 代价 |
+|---|---|---|
+| **(a) 在 arena 里重造** | 在 `StreamedKVSpace` 里实现 fork/snapshot/protection/entitlement/truncate 族 | 复制整套页语义，约 15 个方法 + 3 个 tier；仍有 22 处分支；最贵且最容易再出缺陷 |
+| **(b) 让流式回到 store 里**（推荐） | 页仍由 `LogicalKVPageStore` 拥有、**宿主副本覆盖全部页**、设备只持窗口；`materialize` 向 `StreamedKVSpace` 要一个环槽；fork/snapshot/protection/truncate/snapshot 全部原样生效 | 反转 design §4.11 的结构决定；动 `text.cpp` 的分发钩子（行为不变）；重测性能 |
+
+(b) 之后：`mapped_pages` 真、`private N` 真、锚点/闭包真、磁盘会话真、spill 真、22 处分支**全部删除**。
+B1/B2/B3 从"三个项目"变成"三个验证里程碑"。
+
+### 16.4 (b) 的触点与风险（必须让所有者知道）
+
+- **`text.cpp` 的分发钩子会改**：现在它从 `stream_space_` 取窗口/环；改后从 store 取"该 owner 的
+  窗口与环槽"。**拷贝编排的形状（每层 run、事件顺序）不变**，`src/ops` 仍零改动。
+- **`kv_stream_space` 缩小**为窗口/环/事件/块表管理器（它现在也承担"拥有全部槽与整块宿主"）。
+- **性能必须重测**：按需物化不能退化成逐页拷贝，必须保持"按 run 顺序预取"；251 K 的
+  `round_ms_median ≤ 41.4 ms × 1.01` 是硬判据。
+- **风险**：这是 1298 行设计文档里 §4.11 的**反转**。它的原理由是"把流式塞进 store 会继承按需分配的
+  语义，而那正是要避开的"——现在由所有者的要求推翻：按需语义正是基线行为，必须保留。
+
+### 16.5 需要所有者批准的两项
+
+1. **反转 design §4.11**（流式从"取代两层存储"改为"store 的放置策略"）。
+2. **允许修改 `text.cpp` 的分发钩子**（拷贝编排与 `src/ops` 不变，行为不变）。
+
+不批准则只剩 §16.3(a)：在 arena 里重造约 15 个协议方法，工作量与风险都更大。

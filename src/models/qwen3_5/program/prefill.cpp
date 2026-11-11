@@ -632,7 +632,7 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                 throw std::logic_error("resident DFlash context is not at the append frontier");
             }
             bind_sequence_kv(sequence);
-            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));
+            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));  // prefill:reuse-tail
             resize_sequence_kv_entitlement(sequence, request_plan.text_kv_page_entitlement,
                                            request_plan.backend_kv_page_entitlement);
             sequence.text_kv_valid = base;
@@ -681,7 +681,7 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                 sequence.dflash_context_frontier = base;
             }
             bind_sequence_kv(sequence);
-            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));
+            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));  // prefill:reuse-tail
             resize_sequence_kv_entitlement(sequence, request_plan.text_kv_page_entitlement,
                                            request_plan.backend_kv_page_entitlement);
             sequence.tail_hidden_valid = base == prompt_tokens;
@@ -713,7 +713,7 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                 sequence.dflash_context_frontier = base;
             }
             bind_sequence_kv(sequence);
-            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));
+            trim_sequence_kv(sequence, base, backend_kv_valid(sequence));  // prefill:reuse-tail
             resize_sequence_kv_entitlement(sequence, request_plan.text_kv_page_entitlement,
                                            request_plan.backend_kv_page_entitlement);
             sequence.tail_hidden_valid = base == prompt_tokens;

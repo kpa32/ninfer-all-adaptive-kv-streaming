@@ -1837,9 +1837,10 @@ void ProgramImpl::trim_sequence_kv(SequenceState& sequence, std::uint32_t main_t
     if (backend_tokens != 0 && !sequence.kv->backend) {
         throw std::logic_error("backend KV trim requested without an allocation");
     }
-    text_kv_addresses->destructive_truncate(sequence.kv->text, main_tokens);
+    text_kv_addresses->destructive_truncate(sequence.kv->text, main_tokens, "trim_sequence_kv");
     if (sequence.kv->backend) {
-        backend_kv_addresses->destructive_truncate(*sequence.kv->backend, backend_tokens);
+        backend_kv_addresses->destructive_truncate(*sequence.kv->backend, backend_tokens,
+                                                  "trim_sequence_kv");
     }
 }
 

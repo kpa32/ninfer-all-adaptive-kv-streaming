@@ -1772,7 +1772,8 @@ public:
         address.committed_frontier = frontier;
     }
 
-    void destructive_truncate(KVAddressSpaceHandle handle, std::uint32_t frontier) {
+    void destructive_truncate(KVAddressSpaceHandle handle, std::uint32_t frontier,
+                              const char* why = nullptr) {
         Address& address = require_active(handle);
         if (stream_space_ != nullptr) {
             // A streamed context only truncates to the frontier it already reached: a request that
@@ -1781,9 +1782,10 @@ public:
             if (frontier > address.committed_frontier) {
                 if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
                     std::fprintf(stderr,
-                                 "[stream] truncate beyond: frontier=%u committed=%u pages=%u "
+                                 "[stream] truncate beyond (%s): frontier=%u committed=%u pages=%u "
                                  "space_pages=%u\n",
-                                 frontier, address.committed_frontier, address.page_count,
+                                 why == nullptr ? "unspecified" : why, frontier,
+                                 address.committed_frontier, address.page_count,
                                  stream_space_->active_pages());
                 }
                 throw std::invalid_argument("KV truncate frontier is beyond the sequence");

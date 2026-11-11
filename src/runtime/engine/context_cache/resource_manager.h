@@ -716,6 +716,9 @@ public:
             if (published != 0 && program.matched_prefix_tokens(*entry.handle, prompt) >= published) {
                 continue;
             }
+            if (std::getenv("NINFER_MAT_DEBUG") != nullptr) {
+                std::fprintf(stderr, "[evict] drop-unusable slot=%u frontier=%u\n", slot, published);
+            }
             if (program.release_continuation(std::move(*entry.handle)).status !=
                 ConsumeStatus::Consumed) {
                 continue;
@@ -2442,6 +2445,10 @@ private:
             return false;
         }
         const std::uint32_t checkpoints = continuation_checkpoint_count(entry.summary);
+        if (std::getenv("NINFER_MAT_DEBUG") != nullptr) {
+            std::fprintf(stderr, "[evict] release-owner slot=%u id=%llu checkpoints=%u\n", slot,
+                         static_cast<unsigned long long>(entry.id), checkpoints);
+        }
         const auto released             = program.release_continuation(std::move(*entry.handle));
         if (released.status != ConsumeStatus::Consumed) { return false; }
         erase_session_if_owner(entry.id);

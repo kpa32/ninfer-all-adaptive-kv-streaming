@@ -306,3 +306,42 @@ embedding 常驻占 388.4 MiB；换成 host 后这部分显存回到 KV 池（�
 - 文档同步：strategy §0.1/§0.2/§2 R7/§4/§7.2/P1/§9.2、fidelity #4/#6/T2/§11.3、design §2.3/§4.8/M3、
   verification C5（退役）/C6（改为规划期保证）、measurements 表 6（改为"启动时规划一次"）、
   SPEC 完成条件 #2（新增几何不变性）。
+
+## 验证记录：全新树 `build-verify`（`bf0554da`）
+
+删除后的验收全部在一棵**全新配置/全新目录**的树上做（`build-sm89`、`build-sm89-tests` 已删除，
+它们含诊断补丁时代的对象文件）；测试机源码与本地同一提交、零未提交改动，8 处诊断补丁已清除。
+
+**特性层（流式开）**
+
+- `ctest -R kv_stream`：`layout` / `feedback` / `span_tuner` / `signal` / `guards` / `ninfer_kv_stream_test` 全 PASS；
+  `serial_real` **PASS 749 s**（190 K，冷跑 + 保留两臂；冷跑臂 `rounds 7→14`、字节 oracle
+  `736 checks / 0 mismatches`）；`geometry_real`（C14，新增）**PASS 86 s**：
+  `2889 vs 1866 pages/layer, 11 vs 20 ring runs` → `8 ids and 6 logprobs identical`。
+- `geometry_driver` 预留 0/64/512 MiB：`resident` 1413/1372/1075、`ring` 24/24/26，
+  三组 `ids equal=1 logprobs equal=1`；`reuse_driver`：`frontier=4614 → reused=4614`、`equal_ids=1`、`OK`。
+- `check --suite equiv`：**4/4 PASS**，`20261111T073620Z-equiv-verify-clean-bf0554da`
+  （183 K streamed 100.2 tok/s、`upload 356.6 MiB/轮`、`exposed 0.1 ms`）。
+- 251 K `bench --case stream-251k --reps 2`：**PASS**，`95.0 tok/s`、`41.4 ms/轮`、`upload 689.1 MiB/轮`、
+  `exposed 1.0 ms`，`20261111T074344Z-bench-verify-clean-bf0554da`；与删除前同构测量**完全一致**（性能中性）。
+- 8 K CLI：`shape=all-resident`、`ring_runs=0`、报告 `stream` 无 `layout_generation`（其余 25 键齐全）。
+
+**两个真机测试曾经是"错误的合格证"**
+
+- `serial_real` 的保留臂把前沿写死成 `190008`，正确值是 `prompt+generated−1 = 190007`；该臂从加入起
+  从未在测试树跑过，所以错的常量没暴露。现改为按请求算术并打印 `(executed E)`。
+- 几何用例最初两处都错：没有清空流式拒绝的 `context_cache` 字段（启动即报错，**根本没进行比较**），
+  以及用显式容量造几何（`--kv-stream` 要求 `auto`）。现改为同一 `auto`、headroom 1 GiB vs 2 GiB。
+
+**共享面回归（全量 ctest，`-j 1`，`2026-11-11 15:51`–`17:30`）**
+
+- **378/385 PASS**。7 个失败全部与本次改动无关，逐条有原文：
+  `chat_templates`（缺 `jinja2`）、`qwen4_exp_ngram_writer_interop`（缺 `pytest`）、
+  `tma_shared_card`（`requires an sm_100a or sm_120a GPU`）、`qwen3_5_moe_real`（需 35B MoE 产物，
+  机器只有 27B 稠密）、`qwen3_5_dflash_real`（产物无 `dflash` 组件）、
+  `qwen3_5_prefix_real`（`requires 5778971136 bytes, but only 3975675904 bytes are available`）、
+  `qwen3_5_hybrid_prefix_real`（`3297600000` vs `2109210624`，显存不足）。
+- 支撑"无关"的三条：这 7 个测试文件不在改动面（`git diff --name-only` 命中 0）；全仓只有
+  `serial_real`、`geometry_real` 两个测试文件打开 `kv_stream`，所以这些用例不构造 `StreamedKVSpace`；
+  其余是依赖/架构/产物的前置校验失败，不是断言。
+- 未做：回到改动前的提交再跑这 7 个做双跑反证（需另建一棵树，约 45 分钟）。现结论是推断，不是对比。

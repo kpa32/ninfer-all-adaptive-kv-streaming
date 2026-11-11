@@ -1330,3 +1330,36 @@ A again:  enabled=1 catalog=2 opportunities=1   ← 目录已空
 "没有可用状态槽/镜像"还是"传输需求被排队"。
 
 **已验证不受影响**：取消用例 `reused 23 424`；region=2 无崩溃；两个 fast 用例全过。
+
+### 20.14 定案的数字：端点 StateImage 赖在**唯一的设备状态槽**上
+
+`[mat-debug] peak / held / limits` 三行（`build-verify`，`private=2`、`host_state_slots=4`、
+`device_state_slots=0`）：
+
+```
+peak  (要的): lanes=1 states=1 main=0 backend=0 host_kv=0
+held  (已占): lanes=0 states=1 main=0 backend=0 host_states=1 host_kv=0
+limits(上限): lanes=1 states=1 main=47403 backend=0 host_states=4 host_kv=0
+```
+
+推理链（每一步都有数字）：A 目录化后仍占 `device.state_slots = 1`；流式形状的上限
+`limits.device.state_slots = max_concurrency + device_state_slots = 1 + 0 = 1`；B 的 peak 要 1 个
+⇒ `1 + 1 > 1` ⇒ `physical_peak_fits` 为假 ⇒ `revalidate` 返回 stale ⇒ `inspect` 返回
+`TemporarilyBlocked` ⇒ 引擎"无放置且无活跃 lane"⇒ 丢 A ⇒ B 立刻 `Ready`。
+
+⇒ **流式形状下，已目录化的端点必须住 host shelf**，不能占设备槽：
+- `host_state_slots = 4` 已经配了，`host_states = 1` 也在计数（说明 host 副本存在）；
+- 但设备那份没被释放，于是把唯一的设备槽占死（那 1 个槽是给**在飞请求**的 active 镜像的）。
+
+**修法（下一处代码）**：给 `StateImageStore` 加一个 `demote_checkpoint_to_host(handle)`
+（分配 host slot → 设备→宿主拷贝 → 释放设备槽 → residency 变 HostOnly），并在
+`publish_active_continuation`/`retain_prefill_progress` 的 `freeze` 之后、当
+"设备槽没有余量给下一个请求"时调用它。
+
+**为什么这条路安全**：HostOnly checkpoint 在恢复路径上已有支持——
+`checkpoint_recovery.cpp:115` 对 `HostOnly` 会追加一条 `HostToDevice` 传输需求；
+`adopt_host_image`（`state_store.h:265`）已经能造出同形状的镜像（session restore 用的就是它）。
+
+**另一条路（不推荐）**：把 `limits.device.state_slots` 抬到 `max_concurrency + private`。
+它会让"设备镜像与流式窗口并存"，而 C13 已实测该组合从第 3 个 decode 轮起读到旧 state
+（`mtp accepted 0/9`、第 3 轮 argmax 变 EOS）——正是守卫 `device_state_slots == 0` 的由来。

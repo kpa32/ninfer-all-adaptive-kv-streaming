@@ -1522,3 +1522,23 @@ A 复用  decode: hidden=bf853e96,…  logits=bf370290,c0570252,bf71e3a4,c01ed77
 
 探针（下一构建）：在 decode 首步打印 `state_sources[0]`、`state_destinations[0]`、`kv_rows[0]`
 的原始值（两臂对比），并打印 `state_store` 中该槽的 `role/residency`。
+
+### 20.23 槽号一致、前沿一致，差值仍在 KV 内容或时序
+
+```
+A 复用  setup: reuse=4 base=900 prompt=901 text_kv=900 space=15
+        decode: state_source=0 state_destination=0 kv_row=0 logits=bf370290,…（负值）
+A 冷跑  decode: state_source=0 state_destination=0 kv_row=0 logits=40347402,…（正值）
+```
+
+两臂的槽号、行号完全相同，状态镜像逐字节相同，前沿相同（prefill 末尾 `text_kv_valid = prompt_tokens`）。
+⇒ 差值只剩两处：
+
+1. **KV 内容**：窗口回迁的字节是否真的落到了这 15 个槽（上传在 `compute_streams`，decode 在
+   `device.stream`；若两者不是同一条流，首步会读到回迁前的旧字节）；
+2. **页 14 的 committed columns**：锚点在 900（页 14 只有 4 列有效），而 A 后来把 token 900 写进了第 5 列；
+   恢复时若掩码按"5 列有效"计算，注意力的可见长度就比冷跑多一个 token。
+
+下一枪（两件事一起做）：
+- 在 decode 首步前 `cudaStreamSynchronize(device.stream)`，排除上传/解码的时序竞争；
+- 打印 `committed_frontier` 与页 14 的 `committed_columns`（两臂对比）。

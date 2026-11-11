@@ -56,6 +56,7 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
             std::to_string(cache.max_context()));
     }
     pages_per_layer_ = page_count(cache.max_context());
+    region_pages_per_layer_ = pages_per_layer_;
     ring_base_       = split_.layer_offset(layers_);
     // Every slot of the pool belongs to this space for the cache's lifetime: the mapping names
     // slots, so nothing else may allocate, lend or release one.
@@ -348,7 +349,7 @@ std::uint32_t StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
         const std::uint32_t count =
             streamed - first < split_.run_pages ? streamed - first : split_.run_pages;
         cache_->page_pool().copy_from_host_pages(
-            host_pages(layer).subview(first, count).data(), host_layout_,
+            region_pages(layer).subview(first, count).data(), host_layout_,
             static_cast<std::int32_t>(ring_base_ + ring_run*split_.run_pages), count,
             RankStreams(copy));
         CUDA_CHECK(cudaEventRecord(ready_run_[ring_run], copy));
@@ -399,7 +400,7 @@ void StreamedKVSpace::verify_streamed_page(std::uint32_t layer, std::uint32_t st
                                                RankStreams());
         CUDA_CHECK(cudaDeviceSynchronize());
         const auto* got  = verify_arena_->view(*verify_host_).data();
-        const auto* want = host_pages(layer).subview(page, 1).data();
+        const auto* want = region_pages(layer).subview(page, 1).data();
         ++verify_checks_;
         if (std::memcmp(got, want, page_bytes_) != 0) {
             ++verify_mismatches_;
@@ -411,7 +412,7 @@ void StreamedKVSpace::verify_streamed_page(std::uint32_t layer, std::uint32_t st
             bool named      = false;
             for (std::uint32_t other_layer = 0; other_layer < layers_ && !named; ++other_layer) {
                 for (std::uint32_t other_page = 0; other_page < active_; ++other_page) {
-                    if (std::memcmp(got, host_pages(other_layer).subview(other_page, 1).data(),
+                    if (std::memcmp(got, region_pages(other_layer).subview(other_page, 1).data(),
                                     page_bytes_) != 0) {
                         continue;
                     }
@@ -499,7 +500,7 @@ void StreamedKVSpace::verify_after_attention(std::uint32_t layer) {
                                            RankStreams());
     CUDA_CHECK(cudaDeviceSynchronize());
     const auto* got  = verify_arena_->view(*verify_host_).data();
-    const auto* want = host_pages(layer).subview(page, 1).data();
+    const auto* want = region_pages(layer).subview(page, 1).data();
     ++verify_checks_;
     if (std::memcmp(got, want, page_bytes_) != 0) {
         ++verify_mismatches_;
@@ -516,7 +517,7 @@ void StreamedKVSpace::verify_after_attention(std::uint32_t layer) {
         for (std::uint32_t other = 0; other < layers_ && found_layer < 0; ++other) {
             const std::uint32_t limit = window_start(other);
             for (std::uint32_t candidate = 0; candidate < limit; ++candidate) {
-                if (std::memcmp(got, host_pages(other).subview(candidate, 1).data(), page_bytes_) ==
+                if (std::memcmp(got, region_pages(other).subview(candidate, 1).data(), page_bytes_) ==
                     0) {
                     found_layer = static_cast<int>(other);
                     found_page  = candidate;
@@ -620,7 +621,7 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
             // first, and this round's copy names its streamed slot when it brings it back.
             const std::uint32_t dropped = page - resident;
             cache_->page_pool().copy_to_host_pages(
-                kv_stream_window_slot(layer, dropped, split_), 1, host_pages(layer).subview(dropped, 1),
+                kv_stream_window_slot(layer, dropped, split_), 1, region_pages(layer).subview(dropped, 1),
                 streams);
             add_download(layer, page_bytes_);
         }
@@ -689,6 +690,16 @@ HostKVAllocationView StreamedKVSpace::host_pages(std::uint32_t layer) noexcept {
 HostKVAllocationConstView StreamedKVSpace::host_pages(std::uint32_t layer) const noexcept {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
     return arena_->view(host_).subview(layer * pages_per_layer_, pages_per_layer_);
+}
+
+// The records of the region the current request owns. `host_pages` names the whole layer, which is
+// what the allocation is; every copy and every byte check reads inside one region.
+HostKVAllocationView StreamedKVSpace::region_pages(std::uint32_t layer) noexcept {
+    return host_pages(layer).subview(0, region_pages_per_layer_);
+}
+
+HostKVAllocationConstView StreamedKVSpace::region_pages(std::uint32_t layer) const noexcept {
+    return host_pages(layer).subview(0, region_pages_per_layer_);
 }
 cudaEvent_t StreamedKVSpace::ready_event(std::uint32_t layer) const {
     if (layer >= ready_.size()) { throw std::out_of_range("Streamed KV layer is out of range"); }

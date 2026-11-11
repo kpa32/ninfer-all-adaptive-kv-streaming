@@ -97,6 +97,16 @@ public:
     [[nodiscard]] HostKVAllocationView host_pages(std::uint32_t layer) noexcept;
     [[nodiscard]] HostKVAllocationConstView host_pages(std::uint32_t layer) const noexcept;
 
+    // The pages this space may hand to one owner. The host arena is cut into `regions_` equal
+    // stretches per layer, one per retained continuation: an owner's page `p` is record
+    // `region_base + p` of the layer's view, and no two owners ever share a record. With one
+    // region - today's shape - the base is zero and every offset is what it always was.
+    [[nodiscard]] HostKVAllocationView region_pages(std::uint32_t layer) noexcept;
+    [[nodiscard]] HostKVAllocationConstView region_pages(std::uint32_t layer) const noexcept;
+    [[nodiscard]] std::uint32_t regions() const noexcept { return regions_; }
+    // Pages one owner may use in a layer.
+    [[nodiscard]] std::uint32_t region_page_count() const noexcept { return region_pages_per_layer_; }
+
     // Device slot handles, indexed by slot number.
     [[nodiscard]] std::uint32_t slot_count() const noexcept { return slot_count_; }
 
@@ -306,6 +316,11 @@ private:
     KVStreamSplit split_;
     std::uint32_t layers_              = 0;
     std::uint32_t pages_per_layer_     = 0;
+    // One region per retained continuation: the host arena holds `regions_` of them per layer, each
+    // `region_pages_per_layer_` pages wide. The device side names only the current region's pages,
+    // so a region's byte path is the whole context's path with a different base.
+    std::uint32_t regions_             = 1;
+    std::uint32_t region_pages_per_layer_ = 0;
     std::uint32_t ring_base_           = 0;
     std::uint32_t ring_runs_           = 0;
     std::uint32_t slot_count_          = 0;

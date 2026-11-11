@@ -1423,3 +1423,20 @@ base 去截断一个 `committed_frontier == 0` 的新地址；要么 (b) demote 
 以及调用栈来源（prefill 的 `trim_sequence_kv` 还是 finish 的收尾）。三者一对就能定 (a)/(b)。
 
 在拿到这三个数之前不再改代码——前两次都是"看起来该在这里"的调用点，实际缺的是别处的记账。
+
+### 20.18 两个 region 时失败的具体数字（修复入口）
+
+```
+[stream] request starts: owner=65537 source=0 reuse=0 base=0 space_pages=15 space_owner=65536 retained=904
+[stream] truncate beyond: frontier=900 committed=256 pages=0 space_pages=4
+```
+
+- 请求以 `source=0`（规划器判为冷）进入，**stamp 与空间当前主人不同** ⇒ 我的 `enter_request` 取一个空
+  region、深度归 0（`space_pages=4` = 第一块 256 token）；
+- 随后上游仍按"已恢复到 900"的路径截断 ⇒ `900 > committed 256` ⇒ 抛。
+
+⇒ 入口语义缺一条：**带着非零 `tokens` 进入的请求，必须拿到一个深度至少到 `pages(tokens)` 的 region**
+（或者与它的源条目同 region），否则深度会被清零、前沿与实际不符。
+这条要在"规划器给出 source 时"才安全（否则等于把别人的字节让给新主人），所以先解决
+`source=0`：当目录里存在匹配的 checkpoint 时，规划器为什么没给出 `source`（§20.12/20.13 的
+`opportunities=0` 与峰值账已能看到一部分）。

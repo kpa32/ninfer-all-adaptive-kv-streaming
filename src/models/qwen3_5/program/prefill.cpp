@@ -754,6 +754,12 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
         } else {
             throw std::logic_error("request plan has an invalid prefix reuse path");
         }
+        if (text_stream_space != nullptr) {
+            // A reuse may jump straight to decode, where nothing grows the frontier and so nothing
+            // would bring a window another conversation left behind back from this context's own
+            // pages. The upload is a no-op for a space that is not dirty.
+            text_stream_space->upload_window(compute_streams);
+        }
         sequence.endpoint_valid = false;
         if (!preserving_source) {
             trim_sequence_kv(sequence, base, backend_kv_valid(sequence), "prefill-tail");

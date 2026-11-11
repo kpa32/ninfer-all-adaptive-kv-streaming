@@ -145,3 +145,10 @@ LP_RESERVE2=512 /tmp/geometry_driver <artifact>      # 期望 ids equal=1 logpro
 - 提交/推送后同步测试机；Conventional Commits；结论要真（没跑写"未跑"）。
 - 任何"逐位"结论必须带几何指纹（`resident_pages`/`ring_runs`/`layer_resident`）。
 - 同一张卡上**一次只跑一个 GPU 任务**；全量 ctest 用 `-j 1`。
+
+## 7. 后续的大工程：剪裁（另一分支）
+
+`docs/maintainer/slimming-map.md` 记录了"复杂度在哪、值得删什么、不能碰什么、每刀之后验收什么"。
+与本分支的关系：三个正确性缺陷都长在"流式接进通用缓存机器"的接缝上，剪裁到单族/单卡/单并发/
+一份 continuation 之后，这类缺陷在结构上不再可能发生。**先收口流式（§3 的 U1–U2），再剪裁**，
+且剪裁期间不改流式语义。

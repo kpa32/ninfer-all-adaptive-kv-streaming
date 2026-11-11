@@ -189,6 +189,9 @@ struct RequestRecord {
     bool capture_pending                  = false;
     // A Device KV lease that stayed short after retained-cache reclaim was reported once.
     bool lease_shortfall_reported         = false;
+    // A published continuation that this request could not reuse was dropped once, so the next pass
+    // inspects the catalogues again instead of dropping another entry on every loop.
+    bool dropped_unusable_context         = false;
     EngineRequestState post_capture_state = EngineRequestState::Prefill;
     std::optional<FinishReason> terminal_reason;
 

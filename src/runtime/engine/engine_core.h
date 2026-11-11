@@ -2516,6 +2516,19 @@ private:
         }
     }
 
+    // Drops the published continuations this head cannot reuse in full, so the next inspection can place
+    // it. Admission inspection is read-only by contract, so the mutation lives here, between two
+    // inspections, and happens at most once per request.
+    [[nodiscard]] bool drop_unusable_context(const std::shared_ptr<Request>& head) {
+        if constexpr (!kLegacyContextCache) {
+            (void)head;
+            return false;
+        } else {
+            head->dropped_unusable_context = true;
+            return resources_.drop_continuations_the_head_cannot_use(*instance_.program, head->prompt);
+        }
+    }
+
     [[nodiscard]] AdmissionProgress remove_pending_error(const std::shared_ptr<Request>& request,
                                                          std::exception_ptr error) {
         if (!erase_pending(request)) { return AdmissionProgress::None; }
@@ -2842,6 +2855,14 @@ private:
             const ActiveAdmissionSet active =
                 scheduler_.active_admission_set(slots_, max_concurrency_);
             if (active.size == 0) {
+                // A published continuation this request cannot reuse is a cache entry, not a lease: with
+                // one private catalog slot it is what refuses the request, and the resident cache never
+                // refuses a cold request for that reason. Drop it and inspect again - the eviction is an
+                // explicit mutation here because inspection itself is read-only.
+                if (!head->dropped_unusable_context && drop_unusable_context(head)) {
+                    control_progress = true;
+                    continue;
+                }
                 // No active lane will release anything, so the head cannot wait its way in. Fail
                 // only this request: a throw would stop the worker and refuse every later request.
                 ++cumulative_stats_.context_cache_exhausted_requests;

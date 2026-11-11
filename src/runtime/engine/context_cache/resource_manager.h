@@ -364,13 +364,13 @@ public:
         return best;
     }
 
-    // One inspection attempt. `plan_blocked` reports the one block a retry can act on: the
-    // materialization planner found no plan, which with a full private catalog means the published
-    // continuations the head cannot reuse are in the way.
-    [[nodiscard]] Inspection inspect_once(Program& program, const PreparedPrompt& prompt,
-                                          const RequestBasePlan& base,
-                                          std::uint64_t publication_order,
-                                          PlanningAllowance allowance, bool* plan_blocked) {
+    // Admission. Read-only: a failed inspection must leave the catalogues and the Program as they
+    // were, so a request that cannot be placed can be retried or refused without the engine having
+    // changed anything (the resource-manager test protects this). Dropping a continuation the head
+    // cannot use is an explicit mutation, made by the caller between two inspections.
+    [[nodiscard]] Inspection inspect(Program& program, const PreparedPrompt& prompt,
+                                     const RequestBasePlan& base, std::uint64_t publication_order,
+                                     PlanningAllowance allowance = {}) {
         if (!std::holds_alternative<std::monostate>(transaction_) ||
             program.has_context_transaction()) {
             if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
@@ -660,7 +660,6 @@ public:
             plan_materialization(program, prompt, base, *destination, candidates, publication_order,
                                  planning_started, provisional_demand, allowance);
         if (!selected) {
-            if (plan_blocked != nullptr) { *plan_blocked = true; }
             if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
                 std::fprintf(stderr, "[admission] blocked: no materialization plan\n");
             }
@@ -672,31 +671,13 @@ public:
         };
     }
 
-    // Admission. A published context the head cannot reuse in full is a cache entry, not a lease: the
-    // resident cache never refuses a cold request because an earlier continuation is still resident,
-    // and a streamed space must not either - with one private continuation slot, keeping such an entry
-    // blocks the replacement the head needs (measured: the second conversation of a served process
-    // could not be admitted at all). Dropping the entry frees the slot without moving a byte - a
-    // streamed space's host pages are the authority and the next request republishes them as it writes
-    // - and the inspection is then redone from scratch, because a retry inside one pass would leave the
-    // planner holding handles to the entry that was just released.
-    [[nodiscard]] Inspection inspect(Program& program, const PreparedPrompt& prompt,
-                                     const RequestBasePlan& base, std::uint64_t publication_order,
-                                     PlanningAllowance allowance = {}) {
-        bool plan_blocked = false;
-        Inspection first =
-            inspect_once(program, prompt, base, publication_order, allowance, &plan_blocked);
-        if (!plan_blocked || !cache_enabled_) { return first; }
-        if (drop_continuations_the_head_cannot_use(program, prompt)) {
-            rebuild_prefix_index();
-            return inspect_once(program, prompt, base, publication_order, allowance, nullptr);
-        }
-        return first;
-    }
-
     // Drops every catalogued private continuation the head cannot reuse in full, and reports whether it
-    // dropped one. It keeps no KV of its own (the streamed space's host pages are the authority), so
-    // dropping it moves no byte.
+    // dropped one. A published context is a cache entry, not a lease: the resident cache never refuses a
+    // cold request because an earlier continuation is still resident, and with one private slot keeping
+    // such an entry blocks the replacement the head needs (measured: the second conversation of a served
+    // process could not be admitted at all). It keeps no KV of its own - a streamed space's host pages
+    // are the authority and the next request republishes them as it writes - so dropping it moves no
+    // byte.
     bool drop_continuations_the_head_cannot_use(Program& program, const PreparedPrompt& prompt) {
         bool dropped = false;
         for (std::uint32_t slot = 0; slot < catalog_count_; ++slot) {
@@ -714,6 +695,7 @@ public:
             clear_catalog_entry(entry);
             dropped = true;
         }
+        if (dropped) { rebuild_prefix_index(); }
         return dropped;
     }
 

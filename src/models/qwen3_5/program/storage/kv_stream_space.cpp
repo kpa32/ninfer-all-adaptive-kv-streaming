@@ -634,6 +634,10 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     if (active_pages < active_) {
         throw std::invalid_argument("A streamed KV frontier only grows; reset before rewinding");
     }
+    // A context whose pages the device window does not hold brings them back first: this is the one
+    // place every request passes through before it reads a page, and the copy is ordered on the same
+    // streams as the writes that follow.
+    upload_window(streams);
     if (active_pages > pages_per_layer_) {
         throw std::invalid_argument("A streamed KV frontier exceeds the cache's context");
     }

@@ -267,3 +267,17 @@ embedding 常驻占 388.4 MiB；换成 host 后这部分显存回到 KV 池（�
 - 下一步若删除"死代码"（`repartition` 的窗口迁移分支、`kv_stream_partition.*` 及其单测），验收要求：
   251 K 轮时间 ≤ 基线 +1%、183 K 等价 PASS、prefill tok/s ≤ −1%。回退点：
   tag `kv-stream/layout-switch-before-removal` / 分支 `kv-stream/preserved-layout-switch`。
+
+## 测量记录：布局一次装配后的验收（`68941676` / `898fca00`）
+
+- 等价性套件（本机、同一构建 `898fca00`）：`check --suite equiv` 全 PASS——8 K/100 K/183 K 的
+  resident 与 183 K 的 streamed（`decode_tok_s=100.3`、`round_ms_median=39.6`、
+  `stream_upload_mib_per_round=356.6`、`stream_exposed_ms_per_round=0.0`）。
+  记录：`bench/results/kv-stream/runs/20261111T001855Z-equiv-layout-once-c14-898fca00`。
+- 251 K（`bench --case stream-251k`）：`decode_tok_s=95.0`、`round_ms_median=41.4`、
+  `acceptance_length=3.9`、`upload=689.1 MiB/轮`、`exposed=1.0 ms`。
+  记录：`bench/results/kv-stream/runs/20261111T001056Z-bench-layout-once-step1-898fca00`。
+  与文档记录的同一配方 ~96.5 tok/s 相差 ~1.5%，但记录区没有相邻基线可归因（配置不同），
+  归因需要与保留 tag 做交错 A/B（另一套 build 目录，属 Gate 2 的剩余项）。
+- 正确性：六组几何（resident 1413→40、ring 24→35）答案逐位相同；保留臂与冷跑臂几何不同也逐位相同；
+  8 K 流式 `all-resident`、`layout_generation=0`。

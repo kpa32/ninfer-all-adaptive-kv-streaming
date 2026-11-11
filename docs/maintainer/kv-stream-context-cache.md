@@ -1440,3 +1440,26 @@ base 去截断一个 `committed_frontier == 0` 的新地址；要么 (b) demote 
 这条要在"规划器给出 source 时"才安全（否则等于把别人的字节让给新主人），所以先解决
 `source=0`：当目录里存在匹配的 checkpoint 时，规划器为什么没给出 `source`（§20.12/20.13 的
 `opportunities=0` 与峰值账已能看到一部分）。
+
+### 20.19 多会话复用的最新定位：走的是"已恢复"分支，状态由宿主镜像填充
+
+两 region 下的 trace（一次运行）：
+
+```
+[stream] anchor restore: base=900 valid=900 fork_required=1 checkpoint=4@900 role=2 residency=2
+[stream] activate: fork_required=1 residency=2 refs=1
+[stream] window upload: region=0 active=15 start=0 count=15 resident=2874
+[reuse] second A reused 900 tokens
+[reuse] first difference at 0: got 220 cold 248046
+```
+
+- `role=2 CheckpointImmutable`、`residency=2 HostOnly`：锚点镜像确实被 demote 到宿主；
+- `activate` 走进的是 `transaction.state_restored` 分支（因此**没有** `begin_fork` 打印），
+  即目的地由"恢复路径"（`checkpoint_recovery` 的 HostToDevice 需求）填充，而不是 fork 拷贝；
+- KV 侧已排除：窗口上传搬了 15 页（=900 token），且 `start=0`（全部在窗口内，没有走环）；
+- **第一个生成 token 就不同** ⇒ 问题在"从 HostOnly 镜像恢复到设备"的那条路径（分段拷贝/布局），
+  不在 KV、不在 region、不在窗口。
+
+**下一步（唯一未验证的假设）**：`state_restored` 分支填充的目标镜像内容与源镜像不一致
+（分段 `copy_from_host_segments` 的段序/布局，或恢复了部分段）。验证方式：在该分支后立刻把
+目标镜像拷回宿主，与源镜像逐字节比较（`memcmp`），不一致则打印第一个不同的偏移与段号。

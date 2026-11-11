@@ -832,18 +832,31 @@ bool ProgramImpl::retain_prefill_progress(SequenceState& state, RequestControl& 
     // Everything before the first mutation only inspects. A lane that still holds an open state
     // fork (its first write after a capture or reuse has not run), an unanswered capture offer or
     // a live endpoint has no settled exclusive writer to release, so the strict clear takes it.
+    const bool trace_retain = std::getenv("NINFER_STREAM_DEBUG") != nullptr;
+    const auto refuse = [&](const char* why) {
+        if (trace_retain) { std::fprintf(stderr, "[retain] refused: %s\n", why); }
+        return false;
+    };
     if (request.lifecycle != Lifecycle::Prefilling || !request.publish_continuation ||
         !request.prefill || request.prefill->pending_capture_offer != 0 || !state.kv ||
         state.endpoint_valid || state.state.fork_pending || state.state.read != state.state.write ||
         (state.long_anchors.empty() && !state.rewrite_checkpoint.valid)) {
-        return false;
+        if (request.lifecycle != Lifecycle::Prefilling) { return refuse("not prefilling"); }
+        if (!request.publish_continuation) { return refuse("publish_continuation off"); }
+        if (!request.prefill) { return refuse("no prefill"); }
+        if (request.prefill->pending_capture_offer != 0) { return refuse("capture offer pending"); }
+        if (!state.kv) { return refuse("no kv address"); }
+        if (state.endpoint_valid) { return refuse("endpoint already live"); }
+        if (state.state.fork_pending) { return refuse("state fork pending"); }
+        if (state.state.read != state.state.write) { return refuse("read and write differ"); }
+        return refuse("no captured checkpoint");
     }
     qwen3_5::TargetKVRequirement retained;
     try {
         if (!state_store->valid(state.state.write) ||
             state_store->role(state.state.write) != StateImageRole::ActiveMutable ||
             state_store->checkpoint_references(state.state.write) != 0) {
-            return false;
+            return refuse("write state image is not settleable");
         }
         out.summary.long_anchors.reserve(state.long_anchors.size());
         populate_continuation_summary(state, out.summary);
@@ -860,6 +873,12 @@ bool ProgramImpl::retain_prefill_progress(SequenceState& state, RequestControl& 
         if (retained.main_frontier == 0 || retained.main_frontier > state.ledger.size() ||
             retained.main_frontier > state.text_kv_valid ||
             retained.backend_frontier > backend_kv_valid(state)) {
+            if (trace_retain) {
+                std::fprintf(stderr,
+                             "[retain] refused: frontier %u ledger %zu text_kv %u backend %u/%u\n",
+                             retained.main_frontier, state.ledger.size(), state.text_kv_valid,
+                             retained.backend_frontier, backend_kv_valid(state));
+            }
             return false;
         }
         // The continuation's rebuild work ends where its deepest checkpoint does.
@@ -896,7 +915,7 @@ bool ProgramImpl::retain_prefill_progress(SequenceState& state, RequestControl& 
                                                                    retained.main_frontier) ||
             (state.kv->backend && !backend_kv_addresses->can_deactivate_and_truncate_prefix(
                                       *state.kv->backend, retained.backend_frontier))) {
-            return false;
+            return refuse("cannot deactivate and truncate to the checkpoint");
         }
         // Everything fallible was checked above. The KV tail goes first, then the state images
         // whose release is irreversible, so a failure in either leaves the lane's state handles

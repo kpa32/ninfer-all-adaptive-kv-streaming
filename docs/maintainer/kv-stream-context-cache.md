@@ -1286,3 +1286,28 @@ A again:  enabled=1 catalog=2 opportunities=1      ← 此时 CAT 里两个槽�
 - 若是**判据误算**（有空槽/足够状态槽却驱逐）⇒ 修判据。
 
 这条一旦定案，A→B→A 要么直接变成"加预算即可"，要么是一个小修。region 与身份侧不需要再改。
+
+### 20.12 定案：就是"无放置方案 ⇒ 丢条目"补丁驱逐了 A
+
+给三条释放路径各加一行（`[evict] drop-unusable` / `release-owner`）后，A→B→A 的 trace 直接指认：
+
+```
+A:        enabled=1 catalog=2 opportunities=1
+B:        enabled=1 catalog=2 opportunities=0
+[evict] drop-unusable slot=0 frontier=904      ← B 的接纳把 A 丢了
+A again:  enabled=1 catalog=2 opportunities=1   ← 目录已空
+```
+
+`drop-unusable` 只在 `engine_core.h` 的"**本次请求没有任何可选放置**且没有活跃 lane"分支里触发
+（`drop_continuations_the_head_cannot_use`），丢弃后再 inspect 一次。因此：
+
+- **目录容量不是原因**（B 有根计划、槽 1 空着）；
+- **补丁本身按设计工作**，它被触发说明"B 完全没有可选放置方案"；
+- 唯一还没打印的是 **为什么 B 没有可选放置**（`inspect` 返回的 readiness / choice 数）。
+
+⇒ 下一枪：在 `engine_core.h` 的 no-choice 分支打印 `readiness` 与候选数，
+在 `resource_manager` 的选择过滤处打印每个候选被拒的理由（成本/可行性）。
+判据：若是"流式地址在 Program 侧被判定不可放置"（例如仍按池页记账），那是 Program 侧的一处特例；
+若只是"需要状态槽/宿主状态镜像"，则抬预算即可。
+
+**已验证不受影响**：取消用例仍 `reused 23 424`；region=2 下无崩溃。

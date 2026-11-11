@@ -141,6 +141,16 @@ int run() {
             engine.prepare_tokens(report, true, /*anchor_prompt_end=*/true), greedy(true));
         std::fprintf(stderr, "reuse: second A reused %u tokens, ids %zu\n",
                      a2.reused_prompt_tokens, a2.generated_token_ids.size());
+        for (std::size_t index = 0;
+             index < a2.generated_token_ids.size() && index < cold_ids.repeated.size(); ++index) {
+            if (a2.generated_token_ids[index] == cold_ids.repeated[index]) { continue; }
+            std::fprintf(stderr,
+                         "reuse: first difference at %zu: got %d cold %d (sizes %zu/%zu)\n", index,
+                         static_cast<int>(a2.generated_token_ids[index]),
+                         static_cast<int>(cold_ids.repeated[index]), a2.generated_token_ids.size(),
+                         cold_ids.repeated.size());
+            break;
+        }
         require(a2.generated_token_ids == cold_ids.repeated,
                 "the second A differs from a cold run");
         std::fprintf(stderr, "reuse: A -> B -> A on a fresh catalogue reused %u tokens\n",

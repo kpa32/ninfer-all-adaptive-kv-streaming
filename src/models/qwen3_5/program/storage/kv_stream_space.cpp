@@ -653,6 +653,12 @@ void StreamedKVSpace::upload_window(std::uint32_t layer, RankStreams streams) {
     for (std::uint32_t page = start; page < active_; ++page) {
         publish_slot(layer, page, kv_stream_window_slot(layer, page, split_), streams);
     }
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr && layer == 0) {
+        std::fprintf(stderr,
+                     "[stream] window upload: region=%u active=%u start=%u count=%u resident=%u "
+                     "\n",
+                     current_region_, active_, start, count, resident);
+    }
 }
 
 void StreamedKVSpace::upload_window(RankStreams streams) {
@@ -660,7 +666,6 @@ void StreamedKVSpace::upload_window(RankStreams streams) {
     for (std::uint32_t layer = 0; layer < layers_; ++layer) { upload_window(layer, streams); }
     window_dirty_ = false;
 }
-
 void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     if (active_pages < active_) {
         throw std::invalid_argument("A streamed KV frontier only grows; reset before rewinding");

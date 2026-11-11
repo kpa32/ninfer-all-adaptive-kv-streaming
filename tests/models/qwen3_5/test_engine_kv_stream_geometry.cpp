@@ -53,12 +53,18 @@ const char* kFiller =
     "onto the device. ";
 constexpr int kSentenceRepeats = 30;
 
-EngineOptions engine_options(const char* artifact, std::uint32_t capacity_tokens) {
+// The two pools this test compares are the same engine at two headrooms: `--kv-stream` sizes its KV
+// pool from free memory, so the reserved headroom is what decides how many pages the pool gets, and a
+// bigger headroom plans a narrower window and a different ring depth.
+constexpr std::size_t kHeadroomWide   = 1ULL << 30; // the delivered default
+constexpr std::size_t kHeadroomNarrow = 4ULL << 30;
+
+EngineOptions engine_options(const char* artifact, std::size_t headroom_bytes) {
     EngineOptions options;
     options.artifact_path   = artifact;
     options.purpose         = EnginePurpose::Generation;
     options.max_context     = 262144;
-    options.kv_capacity     = KvCapacityPolicy::explicit_capacity(capacity_tokens);
+    options.kv_capacity     = KvCapacityPolicy::automatic(headroom_bytes);
     options.kv_stream       = true;
     options.kv_cache        = KvCacheStorage::RotatedLloyd4KeyInt4Value;
     options.prefill_chunk   = 256;
@@ -99,8 +105,8 @@ struct Arm {
     StreamedKvStats stats;
 };
 
-Arm answer(const char* artifact, std::uint32_t capacity_tokens, const std::vector<TokenId>& prompt) {
-    Engine engine(engine_options(artifact, capacity_tokens));
+Arm answer(const char* artifact, std::size_t headroom_bytes, const std::vector<TokenId>& prompt) {
+    Engine engine(engine_options(artifact, headroom_bytes));
     const auto result = engine.generate(engine.prepare_tokens(prompt, false, false, true), greedy());
     require(result.generated_token_ids.size() == 8, "an arm stopped before its eight tokens");
     require(result.content_logprobs.size() >= 2, "an arm reported no log probabilities");
@@ -129,15 +135,15 @@ int run() {
     text += "\nReply with exactly: ALPHA\n";
     std::vector<TokenId> prompt;
     {
-        Engine tokenizer(engine_options(artifact, 262144));
+        Engine tokenizer(engine_options(artifact, kHeadroomWide));
         prompt = tokenizer.tokenize_text(text);
     }
     require(prompt.size() > 1024, "the prompt is too short to stream");
 
-    // The same prompt and weights, two capacities: the narrower pool plans a smaller window and a
-    // different ring depth, which is exactly the difference that used to change the answer.
-    const Arm wide   = answer(artifact, 262144, prompt);
-    const Arm narrow = answer(artifact, 196608, prompt);
+    // The same prompt and weights, two pools: the narrower one plans a smaller window and a different
+    // ring depth, which is exactly the difference that used to change the answer.
+    const Arm wide   = answer(artifact, kHeadroomWide, prompt);
+    const Arm narrow = answer(artifact, kHeadroomNarrow, prompt);
 
     if (same_geometry(wide.stats, narrow.stats)) {
         std::cout << "SKIP: both capacities planned the same pool (resident "

@@ -147,17 +147,23 @@ PersistentLayout persistent_layout(const SequencePlanImpl& plan) {
     // ring shared by all of them (kv_stream_layout.h). The capacity axis stays in slots, so the
     // cache keeps whatever the resolution granted and leaves fewer than `layers` slots idle.
     //
-    // The pool is planned for the phase a request *starts* in: its prompt. A prompt chunk's copies
-    // are hidden behind its own attention (measurements table 2: 0.0 s exposed), so a ring deeper
-    // than one layer's extent buys nothing there and only takes window away from a traffic that
-    // grows with the square of what streams. The decode round's shape - the one ring depth buys
-    // overlap for - is entered when the first decode round runs, once the frontier is large enough
-    // to hold its window (kv_stream_space.h, enter_layout).
-    const std::optional<KVStreamSplit> text_stream =
-        plan.features.kv_stream
-            ? plan_kv_stream_uniform(physical_pages, logical_pages,
-                                     config.full_attention_layers, kv_stream_run_pages(), 1.0)
-            : std::nullopt;
+    // The pool is planned once, for the shape a decode round wants: the ring depth that overlaps a
+    // round's copies is what a round's time is made of, and a prompt's copies are hidden behind its
+    // own attention (measurements table 2). Installing it here and never changing it is what keeps a
+    // page's slot a constant of the process: the layout used to be re-shaped when the first decode
+    // round ran, which renamed every resident page, and a rename that does not move bytes points the
+    // block table at another page (bench/results/kv-stream/layout-rename-defect.md).
+    const std::optional<KVStreamSplit> text_stream = [&]() -> std::optional<KVStreamSplit> {
+        if (!plan.features.kv_stream) { return std::nullopt; }
+        const std::uint32_t layers = config.full_attention_layers;
+        const std::uint32_t runs   = kv_stream_run_pages();
+        if (std::optional<KVStreamSplit> split = plan_kv_stream_split(
+                physical_pages, logical_pages, layers, runs, kv_stream_ring_ratio())) {
+            return split;
+        }
+        // A pool too small for the deeper ring still serves the prompt shape.
+        return plan_kv_stream_uniform(physical_pages, logical_pages, layers, runs, 1.0);
+    }();
     if (plan.features.kv_stream && !text_stream) {
         throw std::invalid_argument(
             "--kv-stream needs a KV pool of at least one layer's pages and a window over them: "

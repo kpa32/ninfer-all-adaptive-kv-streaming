@@ -1485,3 +1485,22 @@ base 去截断一个 `committed_frontier == 0` 的新地址；要么 (b) demote 
 
 排查方式：在 decode 的第一步打印 `positions[0..3]`、`ledger.size()`、`tail_hidden_valid`，
 并在两臂各打印一次，一次运行即可定案。
+
+### 20.21 复用请求携带的上下文量全部一致，差值只能在注意力输入
+
+```
+[stream] setup: reuse=4 base=900 prompt=901 text_kv=900 ledger=900 tail_hidden=0 rope_delta=0 space=15
+（对照冷跑：  reuse=0 base=0   prompt=901 text_kv=0   ledger=0   tail_hidden=0 rope_delta=0 space=0）
+```
+
+- `text_kv=base=900`、`ledger=900`、`space=15` 全部自洽；
+- 状态镜像逐字节等于宿主源（§20.20）；
+- 窗口 15 页全部回迁（§20.20）；
+- 环不参与（active 15 < resident 2874）。
+
+⇒ 剩下的只能是**注意力/前向的输入**本身：同一份状态 + 同一份 KV + 同样的位置，却给出不同 logits。
+下一批探针（一次构建全加）：
+
+1. decode 第一步打印 `hidden[0..3]` 与 `logits` 的前 4 个值（两臂对比，定位是 hidden 还是采样）；
+2. 打印该步读到的页范围与槽号（`slot_of_page`）前 3 项，确认没有读到别的槽；
+3. 打印 `invariant_attention` 下的 key 分段边界，确认分段与冷跑一致。

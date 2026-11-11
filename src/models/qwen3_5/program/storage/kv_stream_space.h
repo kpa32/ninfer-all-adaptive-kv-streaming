@@ -36,7 +36,8 @@ public:
     // The cache must have been planned with this split (`PagedKVCache::stream_split`).
     // `report` adds the timing event pairs that measure the copies and the waits they cause; they
     // cost device time of their own, so a run that is being measured leaves them off.
-    explicit StreamedKVSpace(PagedKVCache& cache, bool report = false);
+    explicit StreamedKVSpace(PagedKVCache& cache, bool report = false,
+                             std::uint32_t regions = 1);
     ~StreamedKVSpace();
 
     StreamedKVSpace(const StreamedKVSpace&)            = delete;
@@ -112,6 +113,18 @@ public:
     [[nodiscard]] std::uint32_t regions() const noexcept { return regions_; }
     // Pages one owner may use in a layer.
     [[nodiscard]] std::uint32_t region_page_count() const noexcept { return region_pages_per_layer_; }
+
+    // One stretch of the host arena per retained continuation. `depth` is how far that owner's
+    // context reaches, which is what a claim on its bytes is measured against; `owner` is the
+    // catalogue stamp, zero while the stretch is free; `used` orders the stretches for reuse.
+    struct RegionState {
+        std::uint64_t owner = 0;
+        std::uint32_t depth = 0;
+        std::uint64_t used  = 0;
+    };
+    [[nodiscard]] const std::vector<RegionState>& region_states() const noexcept {
+        return region_states_;
+    }
 
     // Device slot handles, indexed by slot number.
     [[nodiscard]] std::uint32_t slot_count() const noexcept { return slot_count_; }
@@ -327,6 +340,13 @@ private:
     // so a region's byte path is the whole context's path with a different base.
     std::uint32_t regions_             = 1;
     std::uint32_t region_pages_per_layer_ = 0;
+    std::vector<RegionState> region_states_;
+    std::uint32_t current_region_ = 0;
+    std::uint64_t request_serial_ = 0;
+    // The host record a region's page 0 sits at, inside a layer's view.
+    [[nodiscard]] std::uint32_t region_base_page() const noexcept {
+        return current_region_ * region_pages_per_layer_;
+    }
     std::uint32_t ring_base_           = 0;
     std::uint32_t ring_runs_           = 0;
     std::uint32_t slot_count_          = 0;

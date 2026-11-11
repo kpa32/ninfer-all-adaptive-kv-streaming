@@ -393,7 +393,9 @@ ProgramImpl::ProgramImpl(const execution::Parameters& parameters_in, const Seque
         // The streamed cache derives its mapping and owns every slot, so the address space above
         // publishes nothing and the pool has nothing to lend.
         text_stream_space =
-            std::make_unique<StreamedKVSpace>(decoder->text_kv, plan.features.kv_stream_report);
+            std::make_unique<StreamedKVSpace>(
+                decoder->text_kv, plan.features.kv_stream_report,
+                plan.context_cache.max_private_continuations.value_or(1));
         text_kv_addresses->enable_streaming(text_stream_space.get());
         // Created up front: every round of every pass copies a streamed cache's pages on this
         // stream, and a round that had to create it would have nowhere to report a failure.

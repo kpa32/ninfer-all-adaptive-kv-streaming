@@ -36,7 +36,7 @@ void destroy_events(std::vector<cudaEvent_t>& events) noexcept {
 
 } // namespace
 
-StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
+StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report, std::uint32_t regions)
     : cache_(&cache), split_(cache.stream_split()), layers_(cache.layers()), report_(report) {
     if (!cache.flat_slots()) {
         throw std::invalid_argument("A streamed KV space needs a cache planned with a flat pool");
@@ -56,7 +56,12 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
             std::to_string(cache.max_context()));
     }
     pages_per_layer_ = page_count(cache.max_context());
-    region_pages_per_layer_ = pages_per_layer_;
+    regions_         = regions == 0 ? 1U : regions;
+    region_pages_per_layer_ = pages_per_layer_ / regions_;
+    if (region_pages_per_layer_ == 0) {
+        throw std::invalid_argument("A streamed KV space has fewer pages than regions");
+    }
+    region_states_.assign(regions_, RegionState{});
     ring_base_       = split_.layer_offset(layers_);
     // Every slot of the pool belongs to this space for the cache's lifetime: the mapping names
     // slots, so nothing else may allocate, lend or release one.
@@ -577,25 +582,47 @@ std::uint32_t StreamedKVSpace::slot_of_page(std::uint32_t layer, std::uint32_t p
 
 void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
     const std::uint32_t pages = tokens == 0 ? 0U : page_count(tokens);
-    if (pages > active_) {
+    if (pages > region_pages_per_layer_) {
         throw std::logic_error("streamed KV frontier is beyond the space's context");
     }
-    if (pages < active_ || owner != owner_) {
-        // Nothing continues these pages: the request republishes every page its prompt reaches as it
-        // writes it, and the pages it overwrites stop belonging to whoever held them before. From
-        // here on the old owner's claim is refused by the owner stamp, never served stale bytes. A
-        // context that keeps its own pages keeps its window too; anything else has to bring the
-        // window back from the host authority before attention reads it.
-        window_dirty_ = active_ != 0;
-        active_       = 0;
+    // The bytes belong to a catalogue entry, so an entry that is still resident keeps its stretch of
+    // the arena and its depth; a new one takes a free stretch, or the one that has gone unused
+    // longest. Taking a stretch rewinds it, and the pages it loses stop belonging to their owner.
+    std::uint32_t region = regions_;
+    for (std::uint32_t index = 0; index < regions_; ++index) {
+        if (owner != 0 && region_states_[index].owner == owner) { region = index; break; }
     }
+    if (region == regions_) {
+        std::uint32_t oldest = 0;
+        for (std::uint32_t index = 0; index < regions_; ++index) {
+            if (region_states_[index].owner == 0) { oldest = index; break; }
+            if (region_states_[index].used < region_states_[oldest].used) { oldest = index; }
+        }
+        region = oldest;
+        window_dirty_ = active_ != 0 && region_states_[region].depth != 0;
+        region_states_[region].depth = 0;
+    }
+    if (region != current_region_) {
+        current_region_ = region;
+    }
+    RegionState& held = region_states_[region];
+    if (pages < held.depth) { held.depth = pages; }
+    if (pages < active_) { window_dirty_ = active_ != 0; }
+    active_            = held.depth;
+    held.owner         = owner;
+    held.used          = ++request_serial_;
     owner_             = owner;
     retained_frontier_ = 0;
     clear_round_bookkeeping();
 }
 
 bool StreamedKVSpace::can_serve(std::uint64_t owner, std::uint32_t tokens) const noexcept {
-    return owner != 0 && owner == owner_ && page_count(tokens) <= active_;
+    if (owner == 0) { return false; }
+    const std::uint32_t pages = page_count(tokens);
+    for (const RegionState& region : region_states_) {
+        if (region.owner == owner) { return pages <= region.depth; }
+    }
+    return false;
 }
 
 void StreamedKVSpace::upload_window(std::uint32_t layer, RankStreams streams) {
@@ -672,6 +699,7 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
         CUDA_CHECK(cudaEventRecord(dropped_[layer], streams[0]));
     }
     active_ = active_pages;
+    region_states_[current_region_].depth = active_pages;
 }
 StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
     if (report_) { collect_timings(); }
@@ -734,11 +762,11 @@ HostKVAllocationConstView StreamedKVSpace::host_pages(std::uint32_t layer) const
 // The records of the region the current request owns. `host_pages` names the whole layer, which is
 // what the allocation is; every copy and every byte check reads inside one region.
 HostKVAllocationView StreamedKVSpace::region_pages(std::uint32_t layer) noexcept {
-    return host_pages(layer).subview(0, region_pages_per_layer_);
+    return host_pages(layer).subview(region_base_page(), region_pages_per_layer_);
 }
 
 HostKVAllocationConstView StreamedKVSpace::region_pages(std::uint32_t layer) const noexcept {
-    return host_pages(layer).subview(0, region_pages_per_layer_);
+    return host_pages(layer).subview(region_base_page(), region_pages_per_layer_);
 }
 cudaEvent_t StreamedKVSpace::ready_event(std::uint32_t layer) const {
     if (layer >= ready_.size()) { throw std::out_of_range("Streamed KV layer is out of range"); }

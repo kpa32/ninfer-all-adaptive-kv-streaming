@@ -1776,10 +1776,14 @@ public:
                               const char* why = nullptr) {
         Address& address = require_active(handle);
         if (stream_space_ != nullptr) {
-            // A streamed context only truncates to the frontier it already reached: a request that
-            // reuses the retained endpoint continues at that frontier, and every other request
-            // starts from an empty space (the space decides from the frontier it holds).
-            if (frontier > address.committed_frontier) {
+            // The space is the authority on how far a streamed context reaches: a restored checkpoint
+            // hands the request a frontier the address itself never mapped, so the address's committed
+            // frontier is not the limit - what the space actually holds is. Truncation only discards,
+            // so a tail the space no longer has is already gone; asking for more than the space holds
+            // is the error, and it names the numbers.
+            const std::uint32_t held =
+                stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize);
+            if (frontier > held) {
                 if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
                     std::fprintf(stderr,
                                  "[stream] truncate beyond (%s): frontier=%u committed=%u pages=%u "
@@ -1790,13 +1794,6 @@ public:
                 }
                 throw std::invalid_argument("KV truncate frontier is beyond the sequence");
             }
-            // The space owns the whole context and holds one lineage: a request that did not continue
-            // it rewound it, so the bytes this address still claims may already be gone. Truncation
-            // only ever discards, and a tail the space no longer holds is already discarded - keep what
-            // the space serves instead of demanding the address frontier from it (that check lives in
-            // the space, and asking for more than it holds threw inside the worker).
-            const std::uint32_t held =
-                stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize);
             const std::uint32_t served = std::min(frontier, held);
             stream_space_->enter_request(stream_space_->held_owner(), served);
             address.committed_frontier = served;

@@ -608,3 +608,47 @@ P2 可能是零成本；P3/P4 是范围问题，不是缺陷修复。
 ### 13.4 立即可做、不需要决定的
 
 P0（编译 + 取消序列 + equiv + C13/C15）与 P2 的观测（0 代码）。这两件先做完，再回答 13.3。
+
+### 13.5 §13 的三处更正（再读代码后，均以代码为准）
+
+**C1 §13.2 的 P0 里"把 `mapped_pages` 改成返回 arena 深度"是错的，撤回。**
+流式地址背后没有 `LogicalKVPageStore` 的成员页，`logical_page(address, page)` 对它没有意义；
+让 `mapped_pages` 报出页数，会使所有"`required <= mapped_pages` 后用逻辑页取页"的非流式分支
+（`session_snapshot.cpp:533`、`pressure.cpp:156`、`checkpoint_recovery.cpp` 等）去解引用不存在的页。
+所以 `mapped_pages` 保持 0，直到真正有页成员关系（即 P3/P4）。它属于**新存储合同**的工作，不是收尾。
+
+**C2 §13.1 的 F6 错："本机驻留模式也是 private 1"。** 那个 `private 1` 是**流式 serve 的日志**。
+基线默认（`model_instance.cpp:443-477`，context cache 启用、Legacy）：
+
+```cpp
+cache.max_private_continuations = value_or(2 * concurrency);          // concurrency=1 ⇒ 2
+cache.max_shared_prefixes       = value_or(max(concurrency, K)) + grafts;
+cache.max_long_anchors_per_continuation =
+    value_or(cache.automatic_long_anchors ? 4U : 2U);                  // 默认 2，不是 0
+if (*cache.max_long_anchors_per_continuation == 0) {                   // 锚点容量为 0 才关
+    cache.endpoint_anchors = false; cache.progress_anchor_tokens = 0; }
+```
+
+⇒ **基线的默认是"2 个私有 continuation + 每个 2 个长锚点 + progress 锚点开"**，流式的
+`private 1 / anchors 0` 是**收窄**，不是"与基线一致"。§9 那句"本机驻留实测 private 1"作废。
+
+**C3 §13.2 的 P1 只说"放开守卫"，不够。** `progress_anchor_tokens` 在锚点容量为 0 时被强制清零
+（同上），宿主状态槽数由 `(2 + anchors) * private + shared` 决定（`startup.cpp:1790-1840`）。
+所以恢复锚点 = 三处一起改（守卫、`max_long_anchors_per_continuation`、`host_state_slots` 预算），
+代价是每个 owner 多 `A` 个宿主 StateImage（单个镜像字节数需实测）。
+
+**确认成立的部分**（这几条读到了，可以当事实用）：
+
+- **salvage 在流式下可达**：`ProgramImpl::abort`（`commit.cpp:966`）先 `salvage_continuation`
+  再 `retain_prefill_progress`，**没有流式分支**；流式只影响 `deactivate` 之后的 `retain`。
+- F1（协议常量）、F2（有块表）、F3（共用 `HostKVArena`/`HostKVExtentStore`）、F7（~22 处分支）成立。
+
+**仍未读、因而仍未进入计划的部分**（不得当成已知）：
+
+- 回退时更深 checkpoint 的作废路径（`checkpoint_recovery.cpp:126/387`、`pressure.cpp` 的删除集合）；
+- finish 时 TurnClosure 的 capture offer 序列（`frontend.cpp:628-840` 的 fetch/rewrite 组）；
+- `session_snapshot` 的 restore 侧（保存侧只读到 `:533` 的覆盖检查）；
+- 单个宿主 StateImage 的实际字节数（决定 P1 的代价）。
+
+⇒ 修订后的执行顺序：**P0（编译 + 取消序列 + equiv + C13/C15，不含 `mapped_pages`）→
+P2 观测（零代码）→ P1（C3 的三处 + 上述作废路径，读完再动手）→ 所有者决定 P3/P4。**

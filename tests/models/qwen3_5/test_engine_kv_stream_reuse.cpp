@@ -129,13 +129,16 @@ int run() {
     // 0. Two conversations on a fresh catalogue, then the first one again. This runs first because
     // the cases below publish and consume entries, and a catalogue of two slots cannot be expected
     // to still hold the first conversation after five of them: this is the only arrangement in which
-    // 'return to A' has A's own entry to find.
+    // 'return to A' has A's own entry to find. A asks for its end anchor, because a raw prompt has no
+    // message structure and an endpoint past the prompt cannot serve an identical one.
     {
-        const auto a1 = engine.generate(engine.prepare_tokens(report), greedy(true));
+        const auto a1 = engine.generate(
+            engine.prepare_tokens(report, true, /*anchor_prompt_end=*/true), greedy(true));
         require(a1.generated_token_ids == cold_ids.repeated, "the first A differs from a cold run");
         const auto b1 = engine.generate(engine.prepare_tokens(other), greedy(true));
         require(b1.generated_token_ids == cold_ids.unrelated, "B differs from a cold run");
-        const auto a2 = engine.generate(engine.prepare_tokens(report), greedy(true));
+        const auto a2 = engine.generate(
+            engine.prepare_tokens(report, true, /*anchor_prompt_end=*/true), greedy(true));
         require(a2.generated_token_ids == cold_ids.repeated,
                 "the second A differs from a cold run");
         std::fprintf(stderr, "reuse: A -> B -> A on a fresh catalogue reused %u tokens\n",

@@ -736,10 +736,15 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
                     selected_state(sequence, request_plan.reuse,
                                    request_plan.selected_checkpoint);
                 std::fprintf(stderr,
-                             "[stream] anchor restore: base=%u valid=%u fork_required=%d state=%u "
-                             "role=%d residency=%d valid=%d\n",
+                             "[stream] anchor restore: base=%u valid=%u fork_required=%d "
+                             "checkpoint=%d@%u role=%d residency=%d valid=%d\n",
                              base, sequence.text_kv_valid,
-                             request_plan.state_fork_required ? 1 : 0, anchor_state.index_,
+                             request_plan.state_fork_required ? 1 : 0,
+                             request_plan.selected_checkpoint
+                                 ? static_cast<int>(request_plan.selected_checkpoint->kind)
+                                 : -1,
+                             request_plan.selected_checkpoint ? request_plan.selected_checkpoint->frontier
+                                                             : 0U,
                              static_cast<int>(state_store->role(anchor_state)),
                              static_cast<int>(state_store->residency(anchor_state)),
                              state_store->valid(anchor_state) ? 1 : 0);

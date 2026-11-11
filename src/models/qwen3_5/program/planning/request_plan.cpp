@@ -1201,12 +1201,17 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_lane(
         if (source_kv == nullptr) {
             throw std::logic_error("retained source has no KV address space");
         }
+        // A streamed address claims no pool page at all: the retained prefix lives in the arena's own
+        // region, so there is nothing to subtract from the request's entitlement and nothing it could
+        // exceed. The resident shape charges those pages to the request that continues them.
+        const bool streamed =
+            text_kv_addresses != nullptr && text_kv_addresses->streaming();
         const std::uint32_t main_full_pages =
-            plan->reuse_base / static_cast<std::uint32_t>(kPagedKVPageSize);
+            streamed ? 0U : plan->reuse_base / static_cast<std::uint32_t>(kPagedKVPageSize);
         const std::uint32_t backend_frontier =
             backend_frontier_at(speculative_backend, plan->reuse_base);
         const std::uint32_t backend_full_pages =
-            backend_frontier / static_cast<std::uint32_t>(kPagedKVPageSize);
+            streamed ? 0U : backend_frontier / static_cast<std::uint32_t>(kPagedKVPageSize);
         if (main_full_pages > active.main_kv_pages ||
             backend_full_pages > active.backend_kv_pages) {
             throw std::logic_error("retained prefix exceeds its active KV entitlement");

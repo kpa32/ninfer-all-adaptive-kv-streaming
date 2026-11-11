@@ -30,7 +30,9 @@ RTX 4080 SUPER 有 16 376 MiB。Qwen3.8-27B 的 IQ3_S 文本权重上卡占 11.6
 
 1. **质量**：`rk8v4` 是最低档（`rk4v4` 及以下幻觉与记忆不可接受，所有者实测）；流式稳定后支持
    `int8`。
-2. **数值**：同一 `--kv-dtype` 下，streaming 开/关的 greedy token ID 与 logprobs 完全一致。
+2. **数值**：同一 `--kv-dtype` 下，streaming 开/关的 greedy token ID 与 logprobs 完全一致；
+   并且**池的几何不是数值输入**：同一 prompt 在两种池形状（窗口深度/环深不同）下必须给出相同的
+   ids 与 logprobs（`bench/results/kv-stream/layout-rename-defect.md`、C14）。
 3. **默认**：关闭。关闭时行为与今天逐字节一致；打开是 opt-in。
 4. **诚实的速度**：262 144 时 decode 是 PCIe 带宽的函数，每层只能常驻约 34%（`rk8v4`，实测
    25.8 GB/s）：单流约 **15.3 tok/s**，拷贝与计算重叠后约 **18.9 tok/s**；`int8` 约 10.6 / 12.6。

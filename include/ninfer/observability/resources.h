@@ -217,11 +217,11 @@ struct StreamedKvStats {
     std::uint64_t window_bytes    = 0; // device bytes the resident windows hold
     std::uint64_t ring_bytes      = 0; // device_bytes - window_bytes
     // The layout the record ran in. `resident_pages` is the narrowest window, which is the same
-    // number for every shape; the per-layer windows, the frontier they were measured against and the
-    // number of boundary moves are what identify it.
+    // number for every shape; the per-layer windows and the frontier they were measured against are
+    // what identify it. The layout is planned once when the Engine starts and does not change, so a
+    // record carries no move counter: two records are comparable when these numbers match.
     std::vector<std::uint32_t> layer_resident;
     std::uint32_t active_pages      = 0;
-    std::uint32_t layout_generation = 0;
     // 0 = no round ran yet, 1 = all-resident, 2 = uniform, 3 = concentrated. A scalar rather than a
     // string because this struct crosses the model/runtime boundary by value; the label is derived.
     std::uint32_t shape             = 0;

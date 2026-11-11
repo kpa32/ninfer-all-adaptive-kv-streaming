@@ -333,9 +333,9 @@ prefill 侧同理：`begin_round` 的 `!prefill` 与 prefill 被排除在分帧�
 | 1 | 主机权威副本 + 块表换页 | `llama-kv-cache.cpp` | `kv_stream_space.cpp`（host arena + 每层表） | ✅ 有 |
 | 2 | 平铺槽池 + run 宽度 | `fattn.cu` transfer ring | `kv_stream_layout.h` 环/run | ✅ 有 |
 | 3 | 设备侧 ready 标志 + deadline 采样 | `fattn.cu:1285-1345`（`ready_flags_device`） | `core/kv_stream_signal.cu` | ✅ 有 |
-| 4 | 分区控制器（迟滞 3/8、冷却 64、1.10） | `llama-kv-stream-plan.cpp:355` | `core/kv_stream_partition.*` | ✅ 有 |
+| 4 | 分区控制器（迟滞 3/8、冷却 64、1.10） | `llama-kv-stream-plan.cpp:355` | **已移除**：边界在启动时按同一目标比规划一次（`kv_stream_layout.h`）；换形就改名（`bench/results/kv-stream/layout-rename-defect.md`） | ⛔ 移除 |
 | 5 | 跨度调优器（16 样本 / 0.5%） | `ggml-cuda/kv-stream-span-tuner.h` | `core/kv_stream_span_tuner.h` | ✅ 有 |
-| 6 | **prompt/decode 双布局 + 回退** | `llama-kv-cache.cpp:1400-1412` | **无**：`kv_stream_space.cpp:407` 把 `entering_decode_layout` 硬编码成 `false`；也没有"回到 uniform"的路径 | ❌ 缺 |
+| 6 | **prompt/decode 双布局 + 回退** | `llama-kv-cache.cpp:1400-1412` | **已移除**：池启动即 decode 形状，请求期内不变；换形会改名（C14） | ⛔ 移除 |
 | 7 | **每 ubatch 适配（含 prompt）** | `llama-context.cpp:1381-1387` | **无**：`begin_round` 只在 decode 调（`text.cpp:2168` 带 `!prefill`） | ❌ 缺 |
 | 8 | **写路径脏行 / 镜像标记** | `llama-kv-cache.cpp:1758` | **无**：`advance()` 无条件回写跌出窗口的页（`kv_stream_space.cpp:790`） | ❌ 缺 |
 | 9 | **图内换页 + 图内跨流事件** | `fattn.cu:1564-1720` | **无**：`startup.cpp:1510` 关图 | ❌ 缺（最贵） |
@@ -358,8 +358,8 @@ prefill 侧同理：`begin_round` 的 `!prefill` 与 prefill 被排除在分帧�
 | 251K decode 每轮 54.4 ms（rk4v4）、147.9 ms（rk8v4） | 无图（第 9 条）+ 无跨轮预取（第 10 条） | [measurements](kv-streaming-measurements.md) 表 1 |
 | 251K prefill 1281 tok/s、搬 ~94 GiB | 不换布局（第 6 条）+ 不适配（第 7 条）+ 每 chunk 重传尾部 | [measurements](kv-streaming-measurements.md) 表 2 |
 | prefill 形状对 prefill 不利 | decode 的集中布局被用于 prompt | 第 6 条 |
-| 控制器 `entering_decode_layout` 分支是死代码 | `kv_stream_space.cpp:407` 硬编码 false | 第 6 条 |
-| 集中布局可能从未真正被选中 | 同上 + 无测量记录形状 | 第 6 条 |
+| 控制器 `entering_decode_layout` 分支是死代码 | 已无控制器：边界启动时规划 | 第 6 条 |
+| 集中布局可能从未真正被选中 | 无测量记录形状 | 第 6 条 |
 | MTP KV 仍整层驻留（占容量） | 第 12 条（上游也未接线） | — |
 
 ### 11.4 计划：把"病猫"做成"老虎"（T1–T7，各自独立验收）
@@ -370,7 +370,7 @@ prefill 侧同理：`begin_round` 的 `!prefill` 与 prefill 被排除在分帧�
 |---|---|---|
 | **T0** | **先量后改**：在 183K/251K 上量 `--no-cuda-graph` ↔ graph 的差（旧记录说开图 −3%，未复测；没有这条数字，T1 就是拍脑袋） | 两个容量、两个 KV 格式各一组逐轮样本；结论写进 measurements |
 | **T1** | **CUDA Graph 与流式的关系**：按 T0 的实测决定是"补图内换页"还是"维持关图并写清理由"；若补，则块表/control 更新做成图内合法形状，布局代数进图缓存键 | 251K rk4v4 不慢于 72.8 tok/s；graph vs eager 的 logprobs 512/512 逐位 |
-| **T2** | **双布局**：prompt 用 uniform、decode 用 concentrated、下一个 prompt chunk 回退 uniform | 251K prefill 字节与 tok/s 优于 1281/94 GiB；decode 不退；日志与报告能读出当前布局 |
+| **T2** | ~~**双布局**~~ **已结案（不采用）**：曾实现 prompt 用 uniform、decode 用 concentrated，实测 prefill 上载 −1.6%（该时间本被注意力掩盖）、decode +0.2%，而换形会把每个常驻页改名（`layout-rename-defect.md`）；现在启动时规划一次 | 251K prefill 字节与 tok/s 不劣于 93.7 GiB/1286；decode 不退；报告能读出几何 |
 | **T3** | **每 chunk 适配 + 脏页回写** | prefill 期出现 `[partition]` 决策；prefill 回写字节 ≤ 实际写过页数 |
 | **T4** | **跨轮预取 + 槽位认领**（照上游 `producer_attention_index` 的依赖思想，而不是删掉预取） | `--kv-stream-ring-ratio 2.0` 下 251K `check --case equiv-183k` PASS，且每轮不慢于 1.10 |
 | **T5** | **跨度分档**：prompt 整层 / decode 阶梯，一套代码两个档 | prefill 与 decode 各自用对档；`[stream] ladder` 只在 decode 出现 |

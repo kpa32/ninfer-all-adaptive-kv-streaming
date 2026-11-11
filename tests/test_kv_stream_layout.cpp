@@ -157,10 +157,37 @@ void a_context_that_fits_needs_no_ring() {
     check(kv_stream_pool_pages(*fitted) <= 31572, "the fitted split fits the pool");
 }
 
+// Every page of a plan must be named by one slot, and no two pages by the same one. A page's slot is
+// its layer's window base plus its position, so a plan whose windows overlapped would point two pages
+// at one slot - the same mistake the removed mid-request re-shaping made with a whole window at once,
+// which answered with another page's KV (bench/results/kv-stream/layout-rename-defect.md). The pool is
+// planned once, so this has to hold for the plan that starts the process, not for a table built later.
+void every_page_of_a_plan_is_named_once() {
+    constexpr std::uint32_t kLayers = 16;
+    constexpr std::uint32_t kPages  = 4096;
+    for (const std::uint32_t budget : {20000U, 31572U, 47894U}) {
+        const auto planned = plan_kv_stream_split(budget, kPages, kLayers);
+        check(planned.has_value(), "a pool that holds one layer plans");
+        if (!planned) { continue; }
+        const std::uint32_t pool = kv_stream_pool_pages(*planned);
+        check(pool <= budget, "a plan never claims more slots than the pool has");
+        check_equal(planned->ring_pages % planned->run_pages, 0, "the ring is whole runs");
+        std::map<std::uint32_t, std::uint32_t> owners;
+        for (std::uint32_t layer = 0; layer < planned->layers(); ++layer) {
+            const std::uint32_t resident = planned->resident_of(layer);
+            for (std::uint32_t page = 0; page < resident; ++page) {
+                const auto slot =
+                    static_cast<std::uint32_t>(kv_stream_window_slot(layer, page, *planned));
+                check(slot < pool, "a window slot is inside the pool");
+                check(owners.emplace(slot, layer).second, "a window slot names at most one page");
+            }
+        }
+    }
+}
+
 // Growing the context keeps giving the ring what it needs and the window the rest, and never lets the
 // ring fall below the extent it must hold.
-void re_sizing_follows_the_context() {
-    const auto planned = plan_kv_stream_split(31572, 4096, 16);
+void re_sizing_follows_the_context() {    const auto planned = plan_kv_stream_split(31572, 4096, 16);
     check(planned.has_value(), "the shipping geometry plans");
     if (!planned) { return; }
     for (std::uint32_t active = 2000; active <= 4096; active += 97) {
@@ -240,6 +267,7 @@ int main() {
     a_short_ring_rounds_down_to_whole_runs();
     a_context_that_fits_needs_no_ring();
     re_sizing_follows_the_context();
+    every_page_of_a_plan_is_named_once();
     refuses_what_it_cannot_serve();
     the_shape_is_what_identifies_the_layout();
     if (!failures.empty()) {

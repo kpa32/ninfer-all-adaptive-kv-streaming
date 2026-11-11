@@ -773,7 +773,6 @@ StreamedKvStats Program::streamed_kv_stats() {
     out.device_bytes    = stats.device_bytes;
     out.layer_resident  = stats.layer_resident;
     out.active_pages    = stats.active_pages;
-    out.layout_generation = stats.layout_generation;
     // The shape is derived, never assumed: three plans share the narrowest-window number this report
     // has always carried, so a record has to say which one it ran before its round time is compared
     // with another record's. It is measured against the planned capacity, not the live frontier: the

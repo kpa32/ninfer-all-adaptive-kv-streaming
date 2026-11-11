@@ -42,17 +42,17 @@ references:
 | 结果正确（开关流式逐位相同） | `check --suite equiv` 4/4 PASS，183 K 的 512 token ids + logprobs **0/512 有差** |
 | 质量无损 | 流式不改数值路径：同一 dtype 的 KV 字节相同，只有位置不同 |
 | 不支持的组合被显式拒绝 | 并发 / 多卡 / 前缀缓存（`startup.cpp:1361-1372`），不会静默出错 |
-| 自适应机制在真机生效 | 150 K 紧池：控制器提出缩环 → 实测慢 85% → 自动回退并粘性拒绝[measurements](kv-streaming-measurements.md) 表 1 |
+| 流式上下文跨请求复用 | 同一前缀的下一个请求只 prefill 增量（`reuse=1 base=4614`、TTFT 2 ms），与冷跑逐位；`--no-prefix-reuse` 关闭（C13） |
 | 可复现 | 每次运行落盘 argv、git、设备、逐轮样本；`stream-*` 用例与金标可重跑 |
 
 ### 0.2 不可用/未达标的边界
 
 | 缺口 | 现状 | 后果 |
 |---|---|---|
-| `int8` 在 262 144 | **从未跑过** | SPEC 完成条件 #1 只对了一半 |
-| `rk8v4` 逐位等价 | 本机 183 K 装不下全驻留，金标录不了（110 K 可闭环但没做） | 交付格式只有"稳定 decode + ids 与旧金标一致"，无逐位证明 |
-| prefill 参与适配 | `begin_round` 带 `!prefill` | prefill 跑死计划；窗口由 decode 决定却悄悄决定 prefill 流量（`rk8v4` 582.9 GiB） |
-| prefill 双布局 | `entering_decode_layout` 硬编码 false | 死分支；prompt 用 decode 形状 |
+| `int8` 在 262 144 | **已跑过**：236.1 ms/轮、16.8 tok/s、5 483 MiB/轮（C3） | SPEC 完成条件 #1 满足；长会话未测 |
+| `rk8v4` 逐位等价 | 本机 183 K 装不下全驻留，金标录不了（110 K 可闭环但没做） | 交付格式只有“稳定 decode + ids 与旧金标一致”，无逐位证明 |
+| prefill 参与适配 | `begin_round` 带 `!prefill`，边界也不在运行时移动 | prefill 跑同一份计划；窗口由 decode 需求决定，因此也决定 prefill 流量（`rk8v4` 582.9 GiB） |
+| 自适应重分区 | **已移除**：换形即改名，收益实测 ≈0（decode +0.2%、prefill 流量 −1.6% 且该时间本被掩盖）；池在启动时定形一次 | prompt 与 decode 共用一份形状；无运行时试验与回滚 |
 | CUDA Graph | 流式时全关（父分支起） | 251 K 每轮多 ~0.4 ms（M6 上界 0.7%） |
 | 跨轮预取 | 已删，未用生产者依赖替代 | 重叠只有层前视，ring 1.38 就到底 |
 | 脏行/镜像 | 无 | 回写覆盖跌窗页而非脏页 |
@@ -75,7 +75,7 @@ references:
 1. **修好了一个不可见的正确性缺陷**：层号被映射两次（`attn_mix`），16 个 full 层里 4 个被消费两次、4 个从未释放，
    logprob 偏 0.118 nat 而 ids 全对。父分支一直有这个 bug。
 2. **又修了 4 个真缺陷**：`ahead` 越界崩溃、消费者不等块表发布、span 按帧序而非页区间寻址、跨轮预取抢在活读者前。
-3. **把作者的控制器/调优器/设备侧信号真正接上并通过真机判决**（迁移=可回退实验、前视=几何比例+字节双判据）。
+3. **把作者的调优器与设备侧信号真正接上并通过真机判决**（前视=几何比例+字节双判据）；控制器（R7）接了又删：它的收益实测为零，而换形就改名（`layout-rename-defect.md`）。
 4. **建立了一套能证伪的度量体系**（等价套件、逐轮样本、门禁式判据），这是上面所有结论能被检查的前提。
 
 ### 0.5 完成度评分（依据 §9/§10，不是感觉）
@@ -125,9 +125,9 @@ references:
 | R4 设备侧放行标志 | `fattn.cu:1298-1310`（`ready_flags_device` memset 后由拷贝流置 1） | 消费者在图内读标志，不在主机等 | ⚠️ 有标志（`core/kv_stream_signal.cu`），但不在图内 |
 | R5 槽位所有权（消费后才可覆盖） | `fattn.cu:1290-1292`（`cudaStreamWaitEvent(copy_stream, consumed[slot])`） | 拷贝等读者消费 | ✅ |
 | R6 跨度调优器 | `ggml/src/ggml-cuda/kv-stream-span-tuner.h:12-20`（`trial_samples=16`、`minimum_relative_gain=0.005`、`warmup_samples=1`） | 用端到端解码图计时选跨度 | ✅（`core/kv_stream_span_tuner.h:24-29`） |
-| R7 分区控制器 | `src/llama-kv-stream-plan.cpp:355-485`（`partition_adapt`：迟滞、冷却、`target_ring_working_set_ratio`） | 边界按反馈移动，不按模型 | ✅（`core/kv_stream_partition.cpp`） |
+| R7 分区控制器 | `src/llama-kv-stream-plan.cpp:355-485`（`partition_adapt`：迟滞、冷却、`target_ring_working_set_ratio`） | 边界按反馈移动 | ⛔ **已移除**：换形就改名（页槽号 = 层基址 + 窗口位置），实测收益 ≈0（decode +0.2%）；边界在启动时按同一目标比一次算出（`kv_stream_layout.h`） |
 | R8 **每 ubatch 适配（含 prompt）** | `src/llama-context.cpp:1381-1387`（`process_ubatch` 里调 `kv_stream_adapt`） | 不分阶段 | ❌ |
-| R9 **prompt/decode 双布局与回退** | `src/llama-kv-cache.cpp:1386-1398`（`decode_layout_pages`，`A zero target restores prefill`） | prompt 用 uniform、decode 用 concentrated | ❌ |
+| R9 **prompt/decode 双布局与回退** | `src/llama-kv-cache.cpp:1386-1398`（`decode_layout_pages`，`A zero target restores prefill`） | prompt 用 uniform、decode 用 concentrated | ⛔ **已移除**：唯一收益是 prefill 流量 −1.6%（该时间本被注意力掩盖），decode 反而 +0.2% |
 | R10 **写路径脏行/镜像** | `fattn.cu:709-746`（`mark_dirty_rows`）、`fattn.cu:757-800`（`get_mirror`/`mark_mirrored`） | 只回写真的写过的页 | ❌ |
 | R11 **图内调度（认领槽位 + 跨层预取 + 设备侧 deadline）** | `fattn.cu:1285-1345`（`graph_upload`）、`fattn.cu:1474-1520`（`graph_schedule_batch`）、`fattn.cu:1485-1486`（`deadline_sample`） | 整轮搬运在图内、工作守恒 | ❌ |
 | R12 **prompt 时跨度=整层** | `fattn.cu:1761-1762`（`Q->ne[1] == 1 ? graph_decode_span_pages : UINT32_MAX`） | 一行分档 | ❌（行为近似靠"排除分帧"） |
@@ -154,8 +154,8 @@ references:
 | 可复现基准体系 | `tools/bench/run_kv_stream.py`（cases/golden/check/bench/report/compare） | 每个 P 的验收都在它上面跑 |
 
 **我方与上游的结构差异（一句话）**：上游把"搬运"做成 CUDA 侧一个自带调度器的槽池（图内认领、
-设备侧放行、跨层预取），主机只负责喂计划；我们把"搬运"留在主机侧（每层顺序发 run），控制器与
-调优器在主机。前者能进图、能跨轮；后者简单、易验、但**无法重叠到图内**。
+设备侧放行、跨层预取），主机只负责喂计划；我们把"搬运"留在主机侧（每层顺序发 run），形状规划与
+跨度调优在主机（规划只在启动时做一次）。前者能进图、能跨轮；后者简单、易验、但**无法重叠到图内**。
 
 ---
 
@@ -163,12 +163,12 @@ references:
 
 | 机制 | 上游 | 我方 | 判定 |
 |---|---|---|---|
-| 池切分（窗口+环） | `llama-kv-stream-plan.cpp:355`（控制器）、`fattn.cu:437`（`resident_cache_layout`） | `core/kv_stream_layout.h:198/254/298/334`（uniform/concentrated/split/resize） | ✅ 等价 |
+| 池切分（窗口+环） | `llama-kv-stream-plan.cpp:355`（控制器）、`fattn.cu:437`（`resident_cache_layout`） | `core/kv_stream_layout.h`（uniform/concentrated/split/resize，启动时调用一次） | ✅ 等价 |
 | 环深（1.10） | `llama-kv-stream-plan.h:159`（`target_ring_working_set_ratio`） | `core/kv_stream_layout.h:70-73`（`kKVStreamRingRatio`）+ `:150`（`kv_stream_lookahead_ratio`） | ✅ 且我们多一条几何前视判据 |
-| 控制器参数 | `llama-kv-stream-plan.h:160-170`（3/8 迟滞、64 冷却） | `core/kv_stream_partition.h:49-50`、`kv_stream_space.h:379-384`（试 4 轮、0.5% 回退、64 冷却） | ✅ 且多了"迁移是实验"一层 |
+| 控制器参数 | `llama-kv-stream-plan.h:160-170`（3/8 迟滞、64 冷却） | — | ⛔ 已移除：迟滞与冷却只为限制“换边界”的频率，而边界不再换 |
 | 跨度调优 | `kv-stream-span-tuner.h:12-20`（16 样本、0.5%、warmup 1） | `core/kv_stream_span_tuner.h:24-29`（16 样本、0.5%）、四级阶梯 | ✅ |
 | 每阶段适配 | `llama-context.cpp:1381` | `execution/text.cpp:2168-2169`（`begin_round` 带 `!prefill`） | ❌ |
-| 双布局与回退 | `llama-kv-cache.cpp:1386-1398` | `kv_stream_space.cpp:407`（`entering_decode_layout = false` 硬编码） | ❌ 死分支 |
+| 双布局与回退 | `llama-kv-cache.cpp:1386-1398` | `kv_stream_space.h`：布局只在启动规划（`startup.cpp`），请求生命周期内不变 | ⛔ 已移除 |
 | 脏行/镜像 | `fattn.cu:709/757` | `kv_stream_space.cpp:798-826`（`advance` 无条件回写跌窗页） | ❌ |
 | 图内调度 | `fattn.cu:1285/1474` | `execution/text.cpp:2198-2270`（主机每层发 run） | ❌ |
 | 图 | 上游整轮在图内（`fattn.cu:1564-1720` 段） | `startup.cpp:1510`（流式关图，**父分支起如此**） | ❌（C7） |
@@ -290,9 +290,8 @@ flowchart TB
     PRE["prefill.cpp:1369<br/>每 chunk advance()"]
     RUN["text.cpp:2198-2270<br/>run_stage_layers 每层发射<br/>ahead = ring/runs − 1"]
     ATTN["TextContext::attn_mix<br/>text.cpp:1548"]
-    CTL["StreamedKVSpace::begin_round<br/>kv_stream_space.cpp:246<br/>仅 decode"]
-    PART["evaluate_partition<br/>kv_stream_space.cpp:312"]
-    LAY["plan_kv_stream_split<br/>kv_stream_layout.h:298"]
+    CTL["StreamedKVSpace::begin_round<br/>kv_stream_space.cpp<br/>仅 decode"]
+    LAY["plan_kv_stream_split<br/>kv_stream_layout.h<br/>启动时规划一次"]
   end
   subgraph dev["设备"]
     POOL["窗口槽 + 平坦环<br/>upload(): kv_stream_space.cpp:544"]
@@ -300,8 +299,8 @@ flowchart TB
     K["注意力（无 CUDA Graph）"]
   end
   HOSTKV[("pinned host KV<br/>host_pages()")]
-  PRE --> LAY
-  LAY --> CTL --> PART -->|"repartition()"| POOL
+  PRE --> POOL
+  LAY --> POOL
   HOSTKV --> RUN --> POOL --> TAB --> K
   K -->|"consume()"| POOL
   POOL -->|"deadline 采样 kv_stream_signal"| CTL
@@ -314,15 +313,15 @@ flowchart TB
 
 ## 8 分期计划（P 系列；编号即契约，验收不达标不算完成）
 
-顺序由依赖决定：**P0 入场券（基线+合规快项）；P1 移植上游 prefill 三件套并做双布局；P2 让 prefill 参与适配；
+顺序由依赖决定：**P0 入场券（基线+合规快项）；P1 布局（已结案：启动时规划一次）；P2 让 prefill 参与阶梯；
 P3 才是重叠与调度器；P4 由图决定；P5 容量；P6 多请求与服务端；P7 注意力侧；P8 收官**。
 每期的条目都钉在上游提交或 `CONTRIBUTING.md` 行号上，见 §9 与 §10。
 
 | 期 | 内容 | 上游对应 | 验收（可驳回） |
 |---|---|---|---|
-| **P0** | 基线 + 可视化：graph on/off 各一组（183 K、251 K × `rk4v4`、`rk8v4`）；报告写进布局形状（uniform/concentrated）、`entering_decode_layout`、repartition 次数、**每层窗口**。**并入合规快项**：`docs/cli.md` 补 `--kv-stream`、README What's New 一行、注册 `test_kv_stream_span_tuner.cpp`、`kv_stream_signal.cu` 的 oracle 测试 + `compute-sanitizer` racecheck/synccheck、env 旋钮定性、文档结构整改方案（把日期日志移出 `docs/`） | M6、Y2、`CONTRIBUTING.md:184/193/200` | 8 组样本落盘并验证 Y2；四项门禁全绿（CTest 含新测试、sanitizer 无报错、`docs/cli.md` 有条目、What's New 有行） |
-| **P1** | **分阶段布局**：prompt 用 uniform、decode 用 concentrated、下一个 prompt chunk 回退 uniform；布局代数进表发布与图缓存键；`aee6bb66c` 的 ubatch 组合（256/512/768/1024）各跑一次。上游三个 prefill 提交**不移植**（理由见 §9.4 的判定：本机 prefill 只慢 0.3%、计算侧暴露 0，且我们的 staging 已是每次 128 页一次 memcpy） | R9、R12、§9.4 | **完成（布局切换）**：池启动即 prompt 形状（uniform、环 1.0），decode 首轮进入 1.10，`layout_generation=1`；251 K prefill 上载 95.2 → 93.7 GiB（−1.6%）、prefill 1285 → 1286 tok/s、decode 54.5 vs 54.4 ms。**Y3 证伪**（−23% 需窗口 +12%，池不允许）。ubatch 四档已跑：256/512 均 54.1–54.3 ms，768/1024 分别 58.9/63.9 ms（chunk 越大 workspace 越大、窗口越小，1024 慢 18%） |
-| **P2** | 每 chunk 适配（prefill 也跑控制器与阶梯）+ 写路径脏行/镜像（`f0957c082` 的"稳定页"） | R8、R10 | prefill 期出现 `[partition]`；回写 ≤ 脏页量；251 K/183 K 逐位不变 |
+| **P0** | 基线 + 可视化：graph on/off 各一组（183 K、251 K × `rk4v4`、`rk8v4`）；报告写进布局形状（uniform/concentrated）、**每层窗口**与环深。**并入合规快项**：`docs/cli.md` 补 `--kv-stream`、README What's New 一行、注册 `test_kv_stream_span_tuner.cpp`、`kv_stream_signal.cu` 的 oracle 测试 + `compute-sanitizer` racecheck/synccheck、env 旋钮定性、文档结构整改方案（把日期日志移出 `docs/`） | M6、Y2、`CONTRIBUTING.md:184/193/200` | 8 组样本落盘并验证 Y2；四项门禁全绿（CTest 含新测试、sanitizer 无报错、`docs/cli.md` 有条目、What's New 有行） |
+| **P1** | ~~**分阶段布局**~~ **已移除**：池在启动时按 decode 形状规划一次，请求生命周期内不换形。被移除的机制（prompt 用 uniform、decode 首轮进入 concentrated、控制器试迁移）见 `bench/results/kv-stream/layout-rename-defect.md`：换形会把每个常驻页改名，而改名不搬字节就读到别的页。`aee6bb66c` 的 ubatch 组合（256/512/768/1024）已跑 | R9、R12、§9.4 | **完成（启动定形）**：251 K prefill 上载 93.7 GiB（−1.6%）、prefill 1286 tok/s、decode 41.4 ms/轮（MTP 开，本机 `20261111T001056Z`）。**Y3 证伪**（−23% 需窗口 +12%，池不允许）。ubatch 四档：256/512 均 54.1–54.3 ms，768/1024 分别 58.9/63.9 ms（chunk 越大 workspace 越大、窗口越小） |
+| **P2** | 每 chunk 适配（prefill 也跑阶梯）+ 写路径脏行/镜像（`f0957c082` 的“稳定页”） | R8、R10 | prefill 期阶梯日志；回写 ≤ 脏页量；251 K/183 K 逐位不变（边界自适应已不在计划内，见 P1） |
 | **P3** | **跨轮重叠**（这是 251K 最后一个杠杆，上限已算清）：本轮把下一轮的头几层拷贝在**本轮末**发出，用生产者依赖（拷贝等"写该页的 attention"完成）与槽位所有权保证安全。前置事实：池已是卡上限（启动后剩 53.5 MiB）、拷贝 47.2 ms 已在 24.7 GB/s、重叠已达 33 ms、天花板 47.2 ms（= 86 tok/s） | 引（R5/R11）、C8 | 251 K 每轮中位 ≤ 50 ms（对 54.4 基线 ≥8%）且 `check --case equiv-183k` 与 251 K 逐位 PASS；失败则明确否掉并记录 |
 | **P4** | CUDA Graph：按 P0 的 Y2 决定补图内换页或维持关图（维持必须写清代价） | R11、C7 | 251 K `rk4v4` 不慢于 72.8 tok/s；graph vs eager 512/512 逐位 |
 | **P5**（可选，收益已算过） | 草稿 KV（MTP）搬进同一个池：MTP 现在是"整段驻留、不进池"（`startup.cpp:162-164` 的注释与 `mtp_layers=1`）。262 144 时它占 `rk4v4` 293 MB / `rk8v4` 428 MB；搬进池可让窗口 +256/+257 页每层，但 drafter 每轮要取回自己的整段前缀（1 层 ≈ 226–317 MiB/轮），**净账 ≈ 每轮字节 −5%** | 上游**没做**（`pin_all` 只出现在单测，`plan_make` 运行时零调用者） | 251 K 每轮字节降 ≥3% 且逐位不破；否则明确否掉 |
@@ -368,9 +367,9 @@ P3 才是重叠与调度器；P4 由图决定；P5 容量；P6 多请求与服�
 | `39704675e` | **deadline 驱动的预取调度器** | ⚠️ 有 deadline 采样（`kv_stream_signal.cu`），**没有调度器**（只有 `current+ahead`） |
 | `1ba8f4406` | staged attention pages 异步流水 | ⚠️ 有界分帧（span 阶梯），非异步流水 |
 | `82a9a538c` | **跨 attention 层预取** | ⚠️ 有层前视，无跨轮 |
-| `b29fe5859` / `93df8ac33` | 按运行时压力自适应驻留/环 | ✅ `kv_stream_partition` |
-| `c51644ec1` | 固定池内的驻留边界 | ✅ |
-| `92d72914f` | 重分区限速 | ✅ 试 4 轮 + 冷却 64 |
+| `b29fe5859` / `93df8ac33` | 按运行时压力自适应驻留/环 | ⛔ 已移除（收益 ≈0；换形即改名） |
+| `c51644ec1` | 固定池内的驻留边界 | ✅（启动时规划一次，见 `plan_kv_stream_split`） |
+| `92d72914f` | 重分区限速 | ⛔ 随控制器移除 |
 | `6354bfdba` | 每层驻留页分区 | ✅ `layer_resident` |
 | `f0957c082` | **保留稳定缓存页在 CUDA** | ❌ 无（对应 R10 镜像/脏行） |
 | `ce7619a41` | 单页缓存保留普通注意力 | ⚠️ 我们窗口为 0 时可规划，GPU 未验 |
@@ -405,10 +404,11 @@ P3 才是重叠与调度器；P4 由图决定；P5 容量；P6 多请求与服�
    "让 prefill 和 KV 共享池子"，而是"让共享在他们引擎里可用且不慢"。我方的共享是本实现的前提，
    不需要额外工作。
 
-**prefill 真正欠的只有一件事**：prompt 与 decode 用同一套几何（R9 的双布局）。它不是速度问题，而是
-**风险与流量**问题：窗口由 decode 需求决定，prefill 流量按 `(P−W)²` 放大（`rk8v4` 251 K 实测 582.9 GiB）；
+**prefill 与 decode 现在用同一套几何（启动时按 decode 形状规划一次）**。这不是速度问题，而是
+**流量**问题：窗口由 decode 需求决定，prefill 流量按 `(P−W)²` 放大（`rk8v4` 251 K 实测 582.9 GiB）；
 今天这笔流量被计算掩盖，一旦链路与计算不再互相掩盖（更快的卡、更慢的链路、更大的 chunk），它就会变成
-真的时间。所以 P1 只做布局分档 + ubatch 实测。
+真的时间。**双布局曾被实现过并已移除**：prefill 流量只降 1.6%（该时间本被掩盖），decode 反而 +0.2%，
+而它把每个常驻页改名（`layout-rename-defect.md`）。P2 只做阶梯分档。
 
 **MTP 与"扩大池子"的关系（与 prefill 无关）**：作者**不做** MTP 流式——上游把 MTP 页当作 `pinned`
 （`llama-kv-stream-plan.cpp:259` 的 `pin_all`/`pin_tail`，只在单测里出现，`plan_make` 运行时零调用者），

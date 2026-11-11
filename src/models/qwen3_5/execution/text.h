@@ -447,10 +447,9 @@ private:
     const qwen3_5::PagedKVCache* batch_text_kv_ = nullptr;
     StreamedKVSpace* kv_stream_space_           = nullptr;
     cudaStream_t kv_stream_copy_                = nullptr;
-    // The pipeline the tuner currently measures, and the layout it was measured in: a change of
-    // layout invalidates every sample (kv_stream_span_tuner.h).
+    // The pipeline the tuner currently measures (kv_stream_span_tuner.h). The layout it measures in is
+    // planned once when the Engine starts, so a sample never refers to a different shape.
     KVStreamSpanTuner stream_span_tuner_;
-    std::uint32_t stream_layout_generation_ = 0;
     bool stream_ladder_reported_            = false;
     bool stream_bounded_round_              = false;
     // The round's span geometry, planned once before its first layer and the same for every layer of

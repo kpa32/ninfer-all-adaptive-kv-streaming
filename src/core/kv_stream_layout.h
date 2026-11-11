@@ -301,9 +301,9 @@ plan_kv_stream_uniform(std::uint32_t budget_pages, std::uint32_t active_pages,
 // the two. At 251K on this card those two numbers are 46.1 ms of copies and ~8.3 ms of attention per
 // round - 54.4 ms measured, i.e. no overlap at all - so a deep ring is worth up to 15% of a round. What
 // it costs is the window it displaces: at a fixed pool a deeper ring means less residency, and at 251K
-// `rk4v4` that is 44 pages per layer, about +4% of a round's bytes. Whether that trade pays is a
-// measurement, not a property of the design, so the space proposes it as a trial and keeps it only if
-// the round actually gets faster (kv_stream_space.cpp, evaluate_partition).
+// `rk4v4` that is 44 pages per layer, about +4% of a round's bytes. The pool is planned once, when the
+// Engine starts, so this decides the shape once rather than proposing a trial later: re-shaping a pool
+// renames every resident page (bench/results/kv-stream/layout-rename-defect.md).
 //
 // Returns nothing when the pool cannot afford two extents even with a zero window, or when the model has
 // too few streaming layers for the window term to dominate the ring's run rounding: then the depth-one

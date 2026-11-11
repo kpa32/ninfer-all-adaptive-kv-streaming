@@ -12,7 +12,6 @@ using ninfer::KVStreamBusySample;
 using ninfer::KVStreamDeadlineCounters;
 using ninfer::kv_stream_copy_busy_ratio;
 using ninfer::kv_stream_feedback_delta;
-using ninfer::kv_stream_ring_peak_ratio;
 
 std::map<std::string, int> failures;
 
@@ -114,15 +113,6 @@ void a_missing_sample_has_no_estimate() {
     check_near(kv_stream_copy_busy_ratio(sample), 0.0, 0.0, "a window without uploads has none");
 }
 
-// The controller reads occupancy as a fraction of the ring it planned, clamped: a ring that was
-// repartitioned between the copy and the read must not report more than full.
-void occupancy_is_a_fraction_of_the_planned_ring() {
-    check_near(kv_stream_ring_peak_ratio(0, 100), 0.0, 0.0, "an unused ring is empty");
-    check_near(kv_stream_ring_peak_ratio(30, 100), 0.30, 1e-12, "occupancy is a plain fraction");
-    check_near(kv_stream_ring_peak_ratio(140, 100), 1.0, 0.0, "occupancy is clamped to one");
-    check_near(kv_stream_ring_peak_ratio(5, 0), 0.0, 0.0, "a ring without slots reports nothing");
-}
-
 } // namespace
 
 int main() {
@@ -134,7 +124,6 @@ int main() {
     a_batched_sample_is_not_counted_twice();
     the_estimate_is_clamped();
     a_missing_sample_has_no_estimate();
-    occupancy_is_a_fraction_of_the_planned_ring();
     if (!failures.empty()) {
         for (const auto& [message, count] : failures) {
             std::cerr << "FAIL (" << count << "x): " << message << '\n';

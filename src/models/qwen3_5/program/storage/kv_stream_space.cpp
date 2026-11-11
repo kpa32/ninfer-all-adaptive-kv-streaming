@@ -101,7 +101,6 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report)
     // One deadline flag per layer: a layer's streamed pages are copied as one run sequence, so a
     // layer is the unit that can be late.
     signal_ = std::make_unique<KVStreamSignal>(layers_);
-    minimum_ring_pages_ = split_.ring_pages;
     round_.layers.resize(layers_);
     for (std::uint32_t layer = 0; layer < layers_; ++layer) { round_.layers[layer].layer = layer; }
     if (report_) {
@@ -281,21 +280,6 @@ void StreamedKVSpace::begin_round(cudaStream_t compute) {
     if (rounds_ != 0) { close_round(); }
     ++rounds_;
     round_streamed_pages_ = max_streamed_pages();
-    // The controller runs once per round, on the window that just closed: whether the boundary still
-    // pays for itself is decided from measurement, never from the plan that started the run.
-    (void)evaluate_partition(RankStreams(compute));
-}
-
-bool StreamedKVSpace::enter_layout(bool decode_phase, std::uint32_t pages, RankStreams streams) {
-    // The layout is installed once, at startup, and never changes: a request runs on the shape its pool
-    // was planned in. Re-shaping it here is what used to rename every resident page, and a rename that
-    // does not move bytes points the block table at another page
-    // (bench/results/kv-stream/layout-rename-defect.md): the same prompt then answered differently
-    // depending on how much device memory happened to be free.
-    (void)decode_phase;
-    (void)pages;
-    (void)streams;
-    return false;
 }
 
 bool StreamedKVSpace::close_signal_window() noexcept {
@@ -310,9 +294,6 @@ bool StreamedKVSpace::close_signal_window() noexcept {
         deadline_misses_  += delta.misses;
         round_.deadline_samples = delta.samples;
         round_.deadline_misses  = delta.misses;
-        window_samples_        = delta.samples;
-        window_misses_         = delta.misses;
-        window_measured_       = delta.has_evaluation;
     }
     KVStreamBusySample sample;
     sample.copy_seconds    = copy.seconds;
@@ -324,131 +305,9 @@ bool StreamedKVSpace::close_signal_window() noexcept {
     window_seconds_        = window.seconds;
     if (copy.recorded) {
         copy_busy_ratio_ = round_.copy_busy_ratio;
-        window_busy_     = round_.copy_busy_ratio;
         ++copy_busy_windows_;
     }
     return true;
-}
-
-bool StreamedKVSpace::evaluate_partition(RankStreams streams) {
-    // The boundary is planned once at startup and never moves, so there is nothing to evaluate: a move
-    // renames every resident page, and a rename that does not carry its bytes with it answers a
-    // different question than the prompt asked (bench/results/kv-stream/layout-rename-defect.md).
-    (void)streams;
-    return false;
-}
-
-void StreamedKVSpace::repartition(const KVStreamSplit& next, RankStreams streams,
-                                  std::uint32_t frontier) {
-    // The window may not exceed the pages the plan was made for: a page the layout names has to exist
-    // for the ring to bring it back, and the write path needs a resident slot for the token being
-    // appended. A caller planning a whole prompt passes that prompt's page count; everyone else means
-    // the frontier in force.
-    const std::uint32_t limit = frontier != 0 ? frontier : active_;
-    if (next.run_pages == 0 || next.layers() != layers_) {
-        throw std::invalid_argument("A streamed KV partition does not match the cache's layers");
-    }
-    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-        // A window of zero pages names every page's resident slot 0 and leaves the token being
-        // appended no device slot to land in: the plan is arithmetic, the write path is not. A
-        // streamed cache therefore keeps at least one page per layer (measured: a zero-window run
-        // emitted a different id at token 39 while reporting a clean layout).
-        if (next.resident_of(layer) == 0) {
-            throw std::invalid_argument(
-                "A streamed KV partition needs at least one resident page per layer: the token being "
-                "written lands in it");
-        }
-        if (next.resident_of(layer) > pages_per_layer_ || next.resident_of(layer) > limit) {
-            throw std::invalid_argument("A streamed KV partition window is out of range");
-        }
-    }
-    if (kv_stream_pool_pages(next) > slot_count_) {
-        throw std::invalid_argument("A streamed KV partition exceeds the pool");
-    }
-    if (next.ring_pages < max_streamed_pages(next)) {
-        throw std::invalid_argument("A streamed KV partition's ring cannot hold a layer's stream");
-    }
-    if (next.layer_resident == split_.layer_resident && next.ring_pages == split_.ring_pages) {
-        return;
-    }
-    // A page's bytes do not follow its name: the slot a page is named by is its layer's base plus its
-    // position in the window, so a partition that moves either the base or the window's depth names the
-    // same page by another slot. A page that stays resident across the change therefore has to move,
-    // and the host authority is current only for pages that have streamed, so its window is written
-    // back first and read again into the slots the new shape names. Renaming a resident page without
-    // moving it (what this did before) pointed the table at whichever page held the slot instead: the
-    // same prompt then produced a different answer, and which one depended on the pool's geometry
-    // (kv-streaming-verification.md C14).
-    const auto renames_slots = [&](std::uint32_t layer) {
-        return split_.layer_offset(layer) != next.layer_offset(layer) ||
-               split_.resident_of(layer) != next.resident_of(layer);
-    };
-    // Every write-back first: a page leaving the window and a page that is only renamed both free the
-    // slots they held, and a restore below may name one of them.
-    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-        const std::uint32_t old_start = kv_stream_window_start(active_, split_, layer);
-        const std::uint32_t new_start = kv_stream_window_start(active_, next, layer);
-        const bool renamed            = renames_slots(layer);
-        if (!renamed && new_start <= old_start) { continue; }
-        for (std::uint32_t page = old_start; page < active_; ++page) {
-            // A page that leaves the window must reach the host before its slot stops being its own; a
-            // page that stays resident and is renamed reaches it for the same reason: the restore reads
-            // it back into the slot the new shape names.
-            if (page < new_start || renamed) {
-                cache_->page_pool().copy_to_host_pages(
-                    kv_stream_window_slot(layer, page, split_), 1,
-                    host_pages(layer).subview(page, 1), streams);
-            }
-        }
-    }
-    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-        const std::uint32_t old_start = kv_stream_window_start(active_, split_, layer);
-        const std::uint32_t new_start = kv_stream_window_start(active_, next, layer);
-        const bool renamed            = renames_slots(layer);
-        for (std::uint32_t page = 0; page < active_; ++page) {
-            const bool was_streamed     = page < old_start;
-            const bool now_streamed     = page < new_start;
-            const std::int32_t new_slot = kv_stream_window_slot(layer, page, next);
-            const std::int32_t old_slot = kv_stream_window_slot(layer, page, split_);
-            if (was_streamed) {
-                if (now_streamed) { continue; }
-                // The page becomes resident: its bytes come back from the authority into the slot its
-                // window position names.
-                cache_->page_pool().copy_from_host_pages(
-                    host_pages(layer).subview(page, 1).data(), host_layout_, new_slot, 1, streams);
-                publish_slot(layer, page, new_slot, streams);
-                continue;
-            }
-            if (now_streamed) {
-                // Written back above; its streamed slot is assigned by the copy that brings it back.
-                continue;
-            }
-            if (old_slot == new_slot) { continue; }
-            // Resident before and after, renamed: the bytes written back above are this page's.
-            cache_->page_pool().copy_from_host_pages(host_pages(layer).subview(page, 1).data(),
-                                                     host_layout_, new_slot, 1, streams);
-            publish_slot(layer, page, new_slot, streams);
-        }
-    }
-    split_     = next;
-    ring_base_ = split_.layer_offset(layers_);
-    // The runs no longer hold what they claimed: their slots are re-assigned by this round's copies.
-    ring_runs_ = kv_stream_ring_runs(split_);
-    run_used_.assign(ring_runs_, 0);
-    run_owner_.assign(ring_runs_, kNoLayer);
-    run_layer_.assign(ring_runs_, kNoLayer);
-    // The per-run events were created for the ring this space started with. A deeper ring (a look-ahead
-    // trial) addresses runs past that size, and indexing the old vectors wrote outside them - a
-    // segfault, not a wrong answer, so growing them here is not optional.
-    grow_events(ready_run_, ring_runs_);
-    grow_events(consumed_run_, ring_runs_);
-    run_cursor_ = 0;
-    ++layout_generation_;
-    // The host copies above ran on the compute stream; the uploads that read them run on the copy
-    // stream, so they are ordered behind this mark.
-    for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-        CUDA_CHECK(cudaEventRecord(dropped_[layer], streams[0]));
-    }
 }
 std::uint32_t StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
@@ -738,14 +597,13 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
         throw std::invalid_argument("A streamed KV frontier exceeds the cache's context");
     }
     if (ring_runs_ == 0 && active_pages > split_.resident_of(0)) {
-        // An all-resident split has no ring, so its window is the frontier by definition: a served warmup
-        // or a frontier that keeps growing past the window it was planned with reaches this on a round.
-        // Widening it is a partition change - every layer's slot base is a prefix sum of the windows - and
-        // `repartition` is what may make one: it republishes the tables and leaves the bytes where they
-        // are, because the pages stay inside the widened window. The result is still all-resident, which
-        // is the resident layout, so the equivalence comparison against resident is unchanged.
-        repartition(kv_stream_all_resident(active_pages, layers_, split_.run_pages), streams,
-                    active_pages);
+        // An all-resident split is planned for the whole context, so its window is every page a frontier
+        // can name and this cannot happen. Widening it would be a layout change, and a page's slot is its
+        // layer's base plus its position in the window, so a new shape renames every resident page: a
+        // rename that does not move every byte answers with another page's KV
+        // (bench/results/kv-stream/layout-rename-defect.md). Report it rather than re-shape it.
+        throw std::logic_error(
+            "An all-resident streamed KV split cannot grow past the window it was planned with");
     }
     for (std::uint32_t page = active_; page < active_pages; ++page) {
         // The page appears in its layer's window, where this round's append writes it.
@@ -799,7 +657,6 @@ StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
     // the only place a campaign can learn which one produced it.
     out.layer_resident      = split_.layer_resident;
     out.active_pages        = active_;
-    out.layout_generation   = layout_generation_;
     // Whether a finished request's context still lives here, and at which token frontier: the next
     // request either continues it or starts from an empty space.
     out.retained          = retained_;

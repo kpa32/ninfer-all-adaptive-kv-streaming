@@ -4,15 +4,16 @@
 
 namespace ninfer {
 
-// The two numbers the adaptive partition controller runs on
-// (docs/maintainer/kv-streaming-design.md, docs/maintainer/kv-streaming-fidelity.md S1).
+// What a decode round's streaming actually did: how many copy runs missed their attention, and how
+// much of the round the copy engine was busy (docs/maintainer/kv-streaming-design.md).
 //
-// Both are pure: the CUDA side records raw samples, this layer turns them into the ratios the
-// controller compares against its thresholds, and refuses samples that cannot be true. Ported from
-// the reference implementation (llama-kv-stream-plan.cpp `llama_kv_stream_feedback_delta_make` and
-// fattn.cu `kv_stream_collect_timing`), whose thresholds are the reference article's own:
-// "只有当增大环形缓冲区仍有助于隐藏预取延迟的情况下才进行增长。如果 PCIe 带宽已饱和，则停止
-// 增大环形缓冲区" (inputs, appendix A, adaptive repartition, safeguard).
+// Both are pure: the CUDA side records raw samples and this layer turns them into the ratios the
+// report carries, refusing samples that cannot be true. Ported from the reference implementation
+// (llama-kv-stream-plan.cpp `llama_kv_stream_feedback_delta_make` and fattn.cu
+// `kv_stream_collect_timing`). The boundary they were originally consumed by - the adaptive
+// partition controller - is gone: the resident window and the ring are planned once, when the Engine
+// starts, because re-shaping a pool renames every resident page
+// (bench/results/kv-stream/layout-rename-defect.md). The ratios remain the round's explanation.
 
 // Deadline sampling: one sample per immutable copy run, counted on the device at the instant the
 // attention that needs the run is launched, and a miss when the run's ready flag is still clear
@@ -60,20 +61,13 @@ struct KVStreamBusySample {
     std::uint64_t window_uploads  = 0;
     // Device time of the window the uploads belong to (the round's compute span).
     double window_seconds = 0.0;
-    // False when no run was recorded in the window — the caller then has no busy estimate, and the
-    // controller must treat the window as "no evaluation", not as idle.
+    // False when no run was recorded in the window; the caller then has no busy estimate.
     bool recorded = false;
 };
 
 // `sampled copy time x window uploads / (sampled uploads x window time)`, clamped to one. A window
-// with no device time, no uploads, or no recorded run yields zero, which the controller reads as
-// "nothing to conclude" only together with `recorded`.
+// with no device time, no uploads, or no recorded run yields zero, which says nothing about the
+// window unless `recorded` is set.
 [[nodiscard]] double kv_stream_copy_busy_ratio(const KVStreamBusySample& sample) noexcept;
-
-// Peak ring occupancy of a window over the ring's slot count: how much of the ring the prefetch
-// window actually used. The controller shrinks the ring only when this stays well below half,
-// because a ring that never fills is a ring whose slots are resident pages instead.
-[[nodiscard]] double kv_stream_ring_peak_ratio(std::uint32_t peak_slots,
-                                               std::uint32_t ring_slots) noexcept;
 
 } // namespace ninfer

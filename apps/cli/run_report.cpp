@@ -98,7 +98,6 @@ json stream_stats(const StreamedKvStats& stream) {
     // "zero pages": printing 0 would read as an empty context beside a full round series.
     if (stream.active_pages != 0) { out["active_pages"] = stream.active_pages; }
     if (stream.shape != 0) { out["shape"] = kv_stream_shape_label(stream.shape); }
-    out["layout_generation"] = stream.layout_generation;
     // A finished request's context still lives in the space; the next request either continues from
     // this frontier or starts from an empty one.
     out["retained"]          = stream.retained;

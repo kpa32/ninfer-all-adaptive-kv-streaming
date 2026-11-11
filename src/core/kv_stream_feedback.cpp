@@ -39,9 +39,4 @@ double kv_stream_copy_busy_ratio(const KVStreamBusySample& sample) noexcept {
     return std::min(1.0, scaled);
 }
 
-double kv_stream_ring_peak_ratio(std::uint32_t peak_slots, std::uint32_t ring_slots) noexcept {
-    if (ring_slots == 0) { return 0.0; }
-    return std::min(1.0, static_cast<double>(peak_slots) / static_cast<double>(ring_slots));
-}
-
 } // namespace ninfer

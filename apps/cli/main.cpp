@@ -250,9 +250,7 @@ void print_generation_summary(const ninfer::GenerationResult& result,
             }
             print_metric("stream layout", std::string(ninfer::kv_stream_shape_label(streamed.shape)) +
                                               ", window " + std::to_string(least) +
-                                              ".." + std::to_string(most) + " pages/layer, " +
-                                              std::to_string(streamed.layout_generation) +
-                                              " boundary moves");
+                                              ".." + std::to_string(most) + " pages/layer");
         }
         print_metric("stream outside window",
                      std::to_string(streamed.streamed_pages) + " pages");

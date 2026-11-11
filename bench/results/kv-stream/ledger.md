@@ -289,3 +289,20 @@ embedding 常驻占 388.4 MiB；换成 host 后这部分显存回到 KV 池（�
 - 回退点：tag `kv-stream/layout-switch-before-removal` / 分支 `kv-stream/preserved-layout-switch`（`c8bdb380`）。
 - 未完成与复跑命令：见 `handoff.md` §3（U1 交错 A/B 归因、U2 死代码删除、U3 in-repo 驱动未验证编译、
   U4 自动化、U5 长会话/int8、U6 测试机 8 处临时补丁、U7 文档收尾）。
+
+## 移除落地：控制器与换形代码已删（本次提交）
+
+- 删除：`src/core/kv_stream_partition.{h,cpp}`（232 行，零调用者）、`StreamedKVSpace::enter_layout`
+  /`evaluate_partition`/`repartition`（约 170 行）、`advance()` 的全驻留加宽分支（数学上不可达，
+  现改为显式报错）、控制器状态（试迁移/冷却/拒绝环/窗口信号）、`kv_stream_ring_peak_ratio`
+  （控制器的第三个输入，随控制器移除）、报告字段 `stream.layout_generation`（含 CLI/report/
+  observability 三处）、`test_kv_stream_partition.cpp`。
+- 保留：环形本体与 run 拷贝、消费/事件顺序、`kv_stream_signal.*`、`kv_stream_feedback` 的
+  delta/busy 两项（报告仍用）、`kv_stream_span_tuner.*`、保留/复用通路、规划族。
+- 新增回归：`tests/test_kv_stream_layout.cpp::every_page_of_a_plan_is_named_once`
+  （一层窗口内槽号唯一、环为整 run、不越池）；`tests/models/qwen3_5/test_engine_kv_stream_geometry.cpp`
+  （同进程两 Engine、容量不同 ⇒ 池形状不同，ids 与 logprobs 必须位相等；几何相同则 skip 而非假通过）。
+- 定性（写进 `layout-rename-defect.md` §8）：架构选择错误而非笔误；收益实测为零；保真度不等于收益。
+- 文档同步：strategy §0.1/§0.2/§2 R7/§4/§7.2/P1/§9.2、fidelity #4/#6/T2/§11.3、design §2.3/§4.8/M3、
+  verification C5（退役）/C6（改为规划期保证）、measurements 表 6（改为"启动时规划一次"）、
+  SPEC 完成条件 #2（新增几何不变性）。

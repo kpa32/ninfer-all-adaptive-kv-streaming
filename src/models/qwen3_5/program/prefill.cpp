@@ -1383,14 +1383,6 @@ runtime::PrefillStepResult ProgramImpl::advance_prefill(SequenceState& sequence,
                     text_stream_space->advance(
                         1U + (chunk_end - 1U) / static_cast<std::uint32_t>(kPagedKVPageSize),
                         compute_streams);
-                    // The prompt's shape is planned for the whole prompt, not this chunk: the last
-                    // chunk reads every page the prompt wrote, so a ring sized to the first chunk
-                    // would be an order too small (kv_stream_space.h, enter_layout).
-                    (void)text_stream_space->enter_layout(
-                        false,
-                        1U + (staged.prompt_tokens - 1U) /
-                                 static_cast<std::uint32_t>(kPagedKVPageSize),
-                        compute_streams);
                 }
                 if (staged.vision) {
                     if (!workspace_plan.vision) {

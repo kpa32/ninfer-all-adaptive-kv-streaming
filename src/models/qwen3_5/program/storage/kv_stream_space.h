@@ -3,13 +3,11 @@
 #include "core/host_kv_arena.h"
 #include "core/kv_stream_feedback.h"
 #include "core/kv_stream_layout.h"
-#include "core/kv_stream_partition.h"
 #include "core/kv_stream_signal.h"
 #include "core/paged_kv_cache.h"
 #include "models/qwen3_5/state/decoder_state.h"
 #include "ninfer/observability/resources.h"
 
-#include <array>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -59,11 +57,6 @@ public:
     }    [[nodiscard]] std::uint32_t run_pages() const noexcept { return split_.run_pages; }
     // Runs the ring holds, which is how far ahead of the attending layer a copy may run.
     [[nodiscard]] std::uint32_t ring_runs() const noexcept { return ring_runs_; }
-
-    // The layout this space was built with, bumped whenever the resident/ring boundary moves: a
-    // measurement taken in one layout says nothing about another, so the caller resets its tuners on
-    // a change (kv_stream_span_tuner.h).
-    [[nodiscard]] std::uint32_t layout_generation() const noexcept { return layout_generation_; }
 
     // The device time of the last closed decode round's window, zero until one completes. The span
     // tuner compares pipelines by it.
@@ -243,7 +236,6 @@ public:
         // frontier those windows are measured against, and how many times the boundary moved.
         std::vector<std::uint32_t> layer_resident;
         std::uint32_t active_pages       = 0;
-        std::uint32_t layout_generation  = 0;
         // A finished request's context is still in the space: `retained_frontier` is the token
         // frontier its continuation was published at, and the next request either continues from it
         // or resets the space.
@@ -254,34 +246,8 @@ public:
 
     // Starts a decode round: the previous round's window is closed against `compute`, so its
     // deadline counters and copy-busy estimate are read from the device's own record, and the new
-    // round opens its window (kv_stream_feedback.h). The partition is re-evaluated from that
-    // measurement before the round's first layer.
+    // round opens its window (kv_stream_feedback.h).
     void begin_round(cudaStream_t compute);
-
-    // Puts the split into the shape the phase streams best in, migrating the pages that change sides
-    // when the phase changed. A prompt chunk reads the same extent in every layer, and the traffic its
-    // chunks move grows with the square of that extent (kv-streaming-strategy.md M4), so it wants the
-    // uniform shape at the ring's floor; a decode round copies layer by layer, so it wants the
-    // concentrated shape where the pool allows it (kv_stream_layout.h). One repartition per phase
-    // change, never per chunk.
-    //
-    // `pages` is the context the shape is planned for: a prompt names its whole prompt, because its
-    // last chunk reads all of it and a ring sized to the first chunk would be an order too small.
-    // Zero means the frontier in force (what a decode round streams).
-    bool enter_layout(bool decode_phase, std::uint32_t pages, RankStreams streams);
-
-    // The controller's decision for this round, applied when it moves the boundary (port of the
-    // reference implementation's `kv_stream_adapt` + `reconfigure`/`repartition`). Returns true when
-    // the pool moved.
-    bool evaluate_partition(RankStreams streams);
-
-    // Moves the boundary between the resident window and the ring inside this space's fixed pool.
-    // Every slot is re-addressed, so a page that changes sides migrates once - a page leaving the
-    // window is written back to its host record first, a page entering it is read back from there -
-    // and a page that stays resident moves to the slot the new shape names it by, because its bytes do
-    // not follow a rename. The block tables are republished afterwards. Rare by design: the controller
-    // rate-limits it.
-    void repartition(const KVStreamSplit& next, RankStreams streams, std::uint32_t frontier = 0);
 
     // Reads every timing pair the device has finished, closes the round in flight and returns the
     // series. Safe to call repeatedly: a pair is counted once.
@@ -385,7 +351,9 @@ private:
     // The continuation a finished request published, and whether its context is still in the space.
     std::uint32_t retained_frontier_ = 0;
     bool retained_                   = false;
-    // The deadline flags, the counters and the two window events the controller's inputs come from.
+    // The deadline flags, the counters and the two window events a round reports: how many copy runs
+    // missed their attention, how much of the round the copy engine was busy, and how long the last
+    // completed window's device span was (the span tuner prices a round with it).
     std::unique_ptr<KVStreamSignal> signal_;
     KVStreamDeadlineCounters signal_base_{};
     std::uint64_t signal_uploads_    = 0;
@@ -395,25 +363,7 @@ private:
     std::uint64_t deadline_misses_   = 0;
     std::uint64_t copy_busy_windows_ = 0;
     double copy_busy_ratio_          = 0.0;
-    // The last closed window's signals, which is what the controller evaluates.
-    std::uint64_t window_samples_ = 0;
-    std::uint64_t window_misses_  = 0;
-    double window_busy_           = 0.0;
-    double window_seconds_        = 0.0;
-    std::uint32_t layout_generation_ = 0;
-    bool window_measured_         = false;
-    // The controller's state: the ring may never shrink below the size the cache was planned with
-    // (the reference sets its minimum from the initial ring), and a repartition costs a table rebuild,
-    // so it runs at most once per cooldown.
-    // The phase the space is shaped for: -1 until the first caller names one, so the first phase of a
-    // request is a change and the default probe of a phase is never assumed to be its shape.
-    int phase_                   = -1;
-    // The layout the split is shaped for: the planner's answer in kv_stream_layout.h.
-    bool decode_phase_           = false;
-    std::uint32_t minimum_ring_pages_            = 0;
-    std::uint32_t evaluations_since_repartition_ = UINT32_MAX;
-    std::uint32_t starved_evaluations_           = 0;
-    std::uint32_t overprovisioned_evaluations_   = 0;
+    double window_seconds_           = 0.0;
     // The `NINFER_STREAM_VERIFY` diagnostic: how many streamed pages it still compares, and the one-page
     // pinned staging area it reads a ring slot into.
     int verify_budget_ = 20000;
@@ -422,40 +372,6 @@ private:
     std::uint64_t verify_mismatches_ = 0;
     std::unique_ptr<HostKVArena> verify_arena_;
     std::optional<HostKVAllocation> verify_host_;
-    // Every repartition is an experiment with a measured outcome: `trial_before_` is the layout it left,
-    // `trial_baseline_ms_` the mean round time that layout measured, and a trial that turns out slower
-    // reverts and waits out a cooldown before the boundary is tried again. The numbers are mechanism
-    // parameters, not properties of a card: any layout that is actually faster stays.
-    KVStreamSplit partition_trial_before_{};
-    double partition_trial_baseline_ms_ = 0.0;
-    std::uint32_t partition_trial_rounds_   = 0;
-    std::uint32_t partition_trial_measured_ = 0;
-    // The trial prices a ring of its windows and decides on their median: a window that carried a
-    // migration is rare and huge, and a mean of four lets one of them decide the answer (measured: a
-    // layout 1.9 ms/round slower read as +54%).
-    static constexpr std::uint32_t kPartitionTrialWindows = 8;
-    std::array<double, kPartitionTrialWindows> partition_trial_windows_{};
-    std::uint32_t partition_trial_window_cursor_ = 0;
-    // Windows a trial must not price: the round that opened it carried the migration itself, and the
-    // window that reports it can arrive one evaluation later. Counted rather than assumed: a migration
-    // round that landed in the mean made a +1.9 ms layout read as +54% and reverted it.
-    std::uint32_t partition_trial_skip_     = 0;
-    std::uint32_t partition_trial_target_ring_ = 0;
-    // The target that measured slower and the working set it was rejected at, so it is not proposed
-    // again until the working set moved.
-    std::uint32_t partition_rejected_ring_   = 0;
-    std::uint32_t partition_rejected_active_ = 0;
-    std::uint32_t partition_trial_cooldown_ = 0;
-    bool partition_trial_active_            = false;
-    // The running round-time mean of the layout in force, which is the baseline a new one must beat.
-    double layout_round_ms_        = 0.0;
-    std::uint32_t layout_rounds_   = 0;
-    static constexpr std::uint32_t kPartitionTrialRounds  = 4;
-    static constexpr double kPartitionRevertMargin        = 0.005;
-    static constexpr std::uint32_t kPartitionCooldownRounds = 64;
-    // A target that lowers the look-ahead has to save at least this fraction of a round's bytes: the
-    // overlap it gives up is worth more than a few percent of traffic (measurements M-17).
-    static constexpr std::uint64_t kPartitionSavingDivisor = 4;
     static constexpr std::uint32_t kNoLayer = std::numeric_limits<std::uint32_t>::max();
 };
 

@@ -2168,22 +2168,11 @@ void TextContext::run_stage_layers(std::size_t stage, Tensor& x, Phase ph, Tap& 
                          kv_stream_space_ != nullptr ? 1 : 0);
         }
     }
-    // A stage-0 pass names its phase; the split is shaped once per change (kv_stream_space.h).
-    if (kv_stream_space_ != nullptr && !prefill && stage == 0) {
-        (void)kv_stream_space_->enter_layout(true, 0, RankStreams::compute(ctx_));
-    }
     // A stage-0 decode pass is one round of the streaming loop, and the round before it is done
     // with its copies by the time this one starts issuing them.
     if (kv_stream_space_ != nullptr && !prefill && stage == 0) {
         kv_stream_space_->begin_round(ctx_.stream);
-        // The round that just closed is one sample for the pipeline tuner, if it streamed at all. A
-        // layout change makes every earlier sample meaningless, so the tuner starts over.
-        if (kv_stream_space_->layout_generation() != stream_layout_generation_) {
-            stream_layout_generation_ = kv_stream_space_->layout_generation();
-            stream_span_tuner_.reset();
-            stream_bounded_round_ = false;
-            stream_ladder_reported_ = false;
-        }
+        // The round that just closed is one sample for the pipeline tuner, if it streamed at all.
         const bool streamed = kv_stream_space_->window_start() != 0;
         stream_span_tuner_.observe(kv_stream_space_->last_window_seconds() * 1000.0, streamed,
                                    stream_runs_per_frame_, kv_stream_space_->runs_per_layer());

@@ -142,3 +142,25 @@ serve 上表现为提前 EOS 与 MTP 崩塌（`mtp 0/9`）。既有验收全绿�
 - 教训：**驱动必须与库同一次构建重新链接**，否则它自己就是一个过时的 oracle（写进
   `tools/bench/kv_stream/README.md`）。
 - 该结论不依赖本分支的任何设计文档：全部证据来自 base 代码、本分支代码与实测数字。
+
+## 12. 同族缺陷（2026-11-11）：保留的上下文被当成租约
+
+上面的缺陷是"改名不搬字节"。同一类"状态被当成不变量"的错误还有一个更狠的：**保留的上下文被当成租约**。
+
+- 现象：`--kv-stream` 默认保留（`8561809e`）后，serve 里第二段对话进来，req#7 完成（`cache 37,412 (98.5%)`），
+  req#8 等待 Engine 时抛 `KV activation reservation is stale` → 未捕获 → **整个进程 abort**；
+  上下文的长度完全无关（20% 就崩）。
+- 30 秒复现（Engine 级）：`A(901 tok)` 保留后，**任何**不同前缀（部分前缀、完全不同的 181 tok）都抛
+  `context cache exhausted: an idle Engine found no placement`。
+- 根因：私有 continuation 目录容量 = `max_private_continuations` = 1。保留的上下文占住唯一槽位，
+  新请求的规划器无法建立计划（`NINFER_ADMISSION_DEBUG` 打印 `no materialization plan`）⇒ 放置失败；
+  若规划器已取用激活，则句柄作废后再被使用 ⇒ stale。
+- base 的语义不是这样：resolved 的 resident 缓存**不会**因为"上一段上下文还在"而拒绝一个冷请求，
+  它会把旧条目挤掉。**保留端点必须是缓存条目，不是租约。**
+- 修复：放置失败且原因是"无物化计划"时，丢弃队头**无法完整复用**的已发布 continuation，并**把整次
+  放置重做一遍**（在单次放置内部重试会让规划器握着已释放的句柄 ⇒ `pressure planning candidate is stale`）。
+  丢弃不搬任何字节（host 页就是权威副本）。
+- 已知代价（未关闭）：只**部分**匹配的请求（例如原样重发不带上次生成结果）现在冷跑而不复用命中的前缀。
+  恢复它需要"替换式发布"（把旧条目在被挤掉的同时复用其前缀），属后续项。
+- 回归：`tests/models/qwen3_5/test_engine_kv_stream_eviction.cpp`（C15，五步：A → 部分前缀 → 无关 →
+  更长 → 回到 A，全部必须被接纳，无关/更长两臂的 ids 与无缓存跑逐位相同）。

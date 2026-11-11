@@ -1239,3 +1239,29 @@ A again:  request starts ... space_pages=15 space_owner=131072 （无 [candgen] 
 下一步的判据：在管理器的"无可查条目→冷计划"短路点打一行原因
 （`catalog_count_`、`occupied`、`free`、是否 `cache_enabled_`、是否本次请求带 `publish_continuation`），
 以及 B 接纳时是否触发了 supersede/recency 驱逐。**在拿到这两行之前不改容量或驱逐逻辑。**
+
+### 20.10 真凶找到：**B 的接纳把 A 的条目驱逐了**，尽管目录还有空槽
+
+`[admission] inspect` 一行（新加）把整个 A→B→A 链条显示清楚：
+
+```
+A:        enabled=1 catalog=2 ... opportunities=1   → CAT slot=0 endpoint=1 anchors=1 (frontier 904 / anchor 900)
+B:        enabled=1 catalog=2 ... opportunities=0   → （同一 episode 里 CAT 还是 A 的条目，说明 B 进来时 A 在）
+A again:  enabled=1 catalog=2 ... opportunities=1   → CAT slot=0 state=0, slot=1 state=0   ← 两个槽全空
+```
+
+即：**B 被接纳时 A 的条目被释放**，而 `catalog_count_ = 2`、槽 1 一直空着、`host_state_slots=4` 也够。
+这只能是"**冷请求无放置方案 ⇒ 丢条目**"那条补丁（`drop_continuations_the_head_cannot_use`，
+§10.3）在**还有空槽时**就触发了。
+
+⇒ 结论（重要）：A→B→A 的失败**与 region、身份、键都无关**，而是那条**驱逐补丁过于激进**。
+它当时是为了修 C15/429（唯一私有槽被占用时冷请求进不来）而加的，条件是"这条请求根本没有放置方案"，
+而现在的现象说明：即使有空槽，规划仍判为"无放置方案"（原因未打印）。
+
+**下一枪**：在 `engine_core.h` 的 no-plan 分支打印`inspect` 的 readiness/blocked 原因与
+`catalog` 占用情况，确认是"Program 侧无 placement"还是"manager 侧无 slot"，再决定：
+- 若是 manager 侧误判 ⇒ 修判据（有空槽就不该丢）；
+- 若是 Program 侧（后续槽位/状态账） ⇒ 修账，而不是丢缓存。
+
+**在这条链条上还有一条已验证的好消息**：取消用例（prefill 中途取消）在 region=2 下依然
+`reused 23424`、逐 token 正确，说明 region 与 `upload_window` 没有破坏既有能力。

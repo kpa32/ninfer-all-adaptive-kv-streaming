@@ -55,9 +55,10 @@ constexpr int kSentenceRepeats = 200;
 
 // The two pools this test compares are the same engine at two headrooms: `--kv-stream` sizes its KV
 // pool from free memory, so the reserved headroom is what decides how many pages the pool gets, and a
-// bigger headroom plans a narrower window and a different ring depth.
+// bigger headroom plans a narrower window and a different ring depth; 2 GiB is what a 16 GB card at
+// this artifact's weight fits (4 GiB leaves less than the runtime reservation).
 constexpr std::size_t kHeadroomWide   = 1ULL << 30; // the delivered default
-constexpr std::size_t kHeadroomNarrow = 4ULL << 30;
+constexpr std::size_t kHeadroomNarrow = 2ULL << 30;
 
 EngineOptions engine_options(const char* artifact, std::size_t headroom_bytes) {
     EngineOptions options;

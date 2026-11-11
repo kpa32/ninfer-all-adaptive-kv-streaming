@@ -109,7 +109,7 @@ int run() {
             "NInfer keeps every KV page of the context in pinned host memory. ", 60));
         other         = tokenizer.tokenize_text(text("A completely different opening sentence. ", 40));
         long_report   = tokenizer.tokenize_text(text(
-            "The quarterly report lists every shipped subsystem and its measured latency. ", 830));
+            "The quarterly report lists every shipped subsystem and its measured latency. ", 1660));
     }
 
     // The same three prompts without any cache: the ids a streamed run must also produce.
@@ -154,7 +154,7 @@ int run() {
     // case that shows whether a cancel keeps anything at all.
     {
         auto handle = engine.submit(engine.prepare_tokens(long_report), greedy(true));
-        std::this_thread::sleep_for(std::chrono::milliseconds(11000));
+        std::this_thread::sleep_for(std::chrono::milliseconds(14000));
         handle = {};
     }
     const auto rewrite = engine.generate(engine.prepare_tokens(long_report), greedy(true));

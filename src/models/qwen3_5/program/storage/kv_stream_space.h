@@ -121,10 +121,15 @@ public:
     // it (enter_request). Nothing is copied, because the pages are the pinned host authority.
     void retain() noexcept { clear_round_bookkeeping(); }
 
-    // Records the frontier a continuation is published at. A deactivation keeps the space either way;
-    // what makes a published claim servable is the owner stamp and the depth, not this frontier - a
-    // continuation restored from a checkpoint reuses a frontier the space already holds.
-    void publish_frontier(std::uint32_t tokens) noexcept { retained_frontier_ = tokens; }
+    // Records the catalogue entry these bytes belong to and the frontier it was published at. The
+    // stamp names the continuation (slot and generation), not the request that published it: a
+    // cancelled lane is retired while the checkpoint it left stays catalogued under the stamp it
+    // was published with, which is the stamp a later request presents when it reuses it. A zero
+    // stamp leaves the current owner alone.
+    void publish_frontier(std::uint64_t owner, std::uint32_t tokens) noexcept {
+        if (owner != 0) { owner_ = owner; }
+        retained_frontier_ = tokens;
+    }
     [[nodiscard]] std::uint32_t retained_frontier() const noexcept { return retained_frontier_; }
     // The continuation stamp of the bytes the space holds (zero when nothing owns them).
     [[nodiscard]] std::uint64_t held_owner() const noexcept { return owner_; }

@@ -140,7 +140,7 @@ std::uint64_t ProgramImpl::owner_stamp(const SequenceState& sequence) const noex
     // generation advances when the slot is retired, which is what makes a stamp unique to one use.
     const auto index = static_cast<std::uint32_t>(&sequence - continuation_states.data());
     if (index >= continuation_capacity) { return 0; }
-    return (continuation_slots[index].generation << 16) | index;
+    return continuation_stamp(index, continuation_slots[index].generation);
 }
 
 bool ProgramImpl::can_release_continuation_slot_strict(std::uint32_t index) const {

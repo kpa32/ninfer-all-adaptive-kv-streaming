@@ -726,21 +726,30 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
         }
 
         if (text_stream_space != nullptr) {
-            // The streamed arena is the whole context's host authority. A request that reuses the
-            // retained endpoint continues from its frontier; every other request starts from an
-            // empty space. Either way the previous request's ring bookkeeping is dropped here,
-            // before the first chunk claims a run.
+            // The streamed arena is the whole context's host authority. A request that reuses a
+            // catalogued checkpoint continues from that entry's stamp, because the bytes belong to
+            // the entry rather than to the request that published them; every other request starts
+            // from an empty space under its own stamp. Either way the previous request's ring
+            // bookkeeping is dropped here, before the first chunk claims a run.
+            const std::uint64_t stream_owner = owner_stamp(sequence);
+            const std::uint64_t source_owner =
+                request_plan.has_source
+                    ? continuation_stamp(request_plan.source_index,
+                                         request_plan.source_generation)
+                    : 0;
+            const std::uint64_t owner = source_owner != 0 ? source_owner : stream_owner;
             if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
                 std::fprintf(stderr,
-                             "[stream] request starts: owner=%llu reuse=%d base=%u valid=%u "
-                             "space_pages=%u space_owner=%llu retained=%u\n",
-                             static_cast<unsigned long long>(owner_stamp(sequence)),
+                             "[stream] request starts: owner=%llu source=%llu reuse=%d base=%u "
+                             "valid=%u space_pages=%u space_owner=%llu retained=%u\n",
+                             static_cast<unsigned long long>(owner),
+                             static_cast<unsigned long long>(source_owner),
                              static_cast<int>(request_plan.reuse), base, sequence.text_kv_valid,
                              text_stream_space->active_pages(),
                              static_cast<unsigned long long>(text_stream_space->held_owner()),
                              text_stream_space->retained_frontier());
             }
-            text_stream_space->enter_request(owner_stamp(sequence), sequence.text_kv_valid);
+            text_stream_space->enter_request(owner, sequence.text_kv_valid);
         }
 
         sequence.endpoint_valid = false;

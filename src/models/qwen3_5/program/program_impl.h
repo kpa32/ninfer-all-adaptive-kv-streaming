@@ -143,6 +143,16 @@ enum class MtpBridgeMode : std::uint8_t {
     AfterExactHit,
 };
 
+// The identity of one continuation: the slot it occupies and the generation that slot carried when
+// it was bound. A retired slot advances its generation, so a stamp never repeats - which is what
+// lets a streamed space refuse a claim on pages another context has since rewritten. The catalogue
+// entry, not the request that happened to publish it, is what owns the bytes: a cancelled prefill
+// retires its lane and the checkpoint it left keeps the stamp it was catalogued with.
+[[nodiscard]] constexpr std::uint64_t continuation_stamp(std::uint32_t index,
+                                                         std::uint64_t generation) noexcept {
+    return (generation << 16) | index;
+}
+
 } // namespace ninfer::models::qwen3_5::detail
 
 namespace ninfer::models::qwen3_5::detail {

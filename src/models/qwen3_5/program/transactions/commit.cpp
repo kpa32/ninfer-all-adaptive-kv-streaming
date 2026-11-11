@@ -722,7 +722,10 @@ bool ProgramImpl::publish_active_continuation(SequenceState& state, RequestContr
         }
         state.endpoint_valid = true;
         refresh_state_views(state);
-        text_kv_addresses->set_checkpoint_requirement(state.kv->text, state.execution_frontier);
+        text_kv_addresses->set_checkpoint_requirement(
+            state.kv->text, state.execution_frontier,
+            continuation_stamp(continuation_index,
+                               continuation_slots[continuation_index].generation));
         if (state.kv->backend) {
             backend_kv_addresses->set_checkpoint_requirement(*state.kv->backend,
                                                              backend_kv_valid(state));
@@ -927,7 +930,10 @@ bool ProgramImpl::retain_prefill_progress(SequenceState& state, RequestControl& 
         // Everything fallible was checked above. The KV tail goes first, then the state images
         // whose release is irreversible, so a failure in either leaves the lane's state handles
         // valid for the strict clear.
-        text_kv_addresses->set_checkpoint_requirement(state.kv->text, retained.main_frontier);
+        text_kv_addresses->set_checkpoint_requirement(
+            state.kv->text, retained.main_frontier,
+            continuation_stamp(continuation_index,
+                               continuation_slots[continuation_index].generation));
         if (state.kv->backend) {
             backend_kv_addresses->set_checkpoint_requirement(*state.kv->backend,
                                                              retained.backend_frontier);

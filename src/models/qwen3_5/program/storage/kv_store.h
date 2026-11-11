@@ -1905,16 +1905,18 @@ public:
         rebuild_checkpoint_protection();
     }
 
-    void set_checkpoint_requirement(KVAddressSpaceHandle handle, std::uint32_t protected_frontier) {
+    void set_checkpoint_requirement(KVAddressSpaceHandle handle, std::uint32_t protected_frontier,
+                                    std::uint64_t owner = 0) {
         Address& address = require(handle);
         if (protected_frontier > address.committed_frontier) {
             throw std::invalid_argument("KV checkpoint requirement exceeds committed frontier");
         }
         if (stream_space_ != nullptr) {
             // A streamed address owns no logical page to protect, and its window keeps whatever the
-            // continuation needs: the space records the frontier the next request may continue from.
-            // `checkpoint_frontier` stays zero because the protection pass walks logical pages.
-            stream_space_->publish_frontier(protected_frontier);
+            // continuation needs: the space records the catalogue entry the bytes now belong to and
+            // the frontier the next request may continue from. `checkpoint_frontier` stays zero
+            // because the protection pass walks logical pages.
+            stream_space_->publish_frontier(owner, protected_frontier);
             return;
         }
         address.checkpoint_frontier = protected_frontier;

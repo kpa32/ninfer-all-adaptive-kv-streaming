@@ -71,10 +71,13 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
             if (dumped < 40) {
                 std::uint32_t first_logits[4]{};
                 std::uint32_t first_hidden[4]{};
-                (void)cudaMemcpy(first_logits, logits.data, sizeof(first_logits),
-                                 cudaMemcpyDeviceToHost);
-                (void)cudaMemcpy(first_hidden, hidden.data, sizeof(first_hidden),
-                                 cudaMemcpyDeviceToHost);
+                // Ordered on the stream that produced them: an unordered copy reads whatever the
+                // tensor held before the forward pass, which looks like a difference that is not there.
+                (void)cudaMemcpyAsync(first_logits, logits.data, sizeof(first_logits),
+                                      cudaMemcpyDeviceToHost, state.execution.device.stream);
+                (void)cudaMemcpyAsync(first_hidden, hidden.data, sizeof(first_hidden),
+                                      cudaMemcpyDeviceToHost, state.execution.device.stream);
+                (void)cudaStreamSynchronize(state.execution.device.stream);
                 std::fprintf(stderr,
                              "[stream] decode: hidden=%08x,%08x,%08x,%08x "
                              "logits=%08x,%08x,%08x,%08x\n",

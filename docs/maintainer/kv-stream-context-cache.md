@@ -120,6 +120,25 @@ tags:
 （complete continuation、checkpoint 独立 frontier、取消保留、计划式降级）全部无处落地。
 四次崩溃不是四个 bug，是**这四个偏差的必然产物**。
 
+### 3.5 影响面：所有触达 KV 地址空间的功能（逐个核过）
+
+“不破坏原版体验”不能只看前缀命中，必须把所有**碰 KV 地址空间**的功能列全。
+
+| 功能 | 驻留模式 | 流式现状 | 要求 |
+|---|---|---|---|
+| 前缀复用（endpoint / TurnClosure / 锚点） | 有 | **无 TurnClosure、`anchors 0`** | 照基线发布 |
+| 多会话保留（`private N`） | `private 1` | 只有 1 个世系 | 同基线同预算 |
+| 取消保留（salvage / retain_progress） | 有 | **`reset()` 整块清空** | 照基线 |
+| 淘汰/降级 | 计划 + 记录删除集合 | 静默覆盖 | 进入 `ResourcePlan` |
+| **磁盘会话保存/恢复（`--slot-save-path`）** | 有：`POST /slots/{id}?action=save\|restore\|erase` | **保存抛错**：`save_continuation` 用 `mapped_pages(address)`，而流式 address 的 `page_count == 0` ⇒ `retained session Text KV coverage is inconsistent` | arena 实现页导出/导入 |
+| **淘汰时自动 spill 到槽文件** | 有：`spill_catalog_slot`（best-effort） | **静默失效**：上面那个抛错被 `catch (...) {}` 吞掉 ⇒ 绑定槽文件的会话被淘汰时一声不响地丢上下文 | 同一次修复 |
+| KV 容量/缓存报告（`capacity`、`context cache` 行） | 真实页数/字节 | `0 B KV`（字节在 arena，未计入） | 报告真实占用 |
+| Hybrid prefix cache | 有 | 显式拒绝（`--kv-stream` 与 hybrid 不共存） | 已是明确范围，保持 |
+| 会话恢复后的冷启动续聊 | 有 | 无（先要保存能成功） | C19 |
+
+**结论**：磁盘会话不是“另一个功能”，而是**同一个地址空间契约的另一半**——
+“页能被寻址”包含“页能被拷出/拷回”。漏掉它，流式在“重启后继续对话”这个最基本的使用方式上就是不可用的。
+
 ---
 
 ## 4. 缺陷编年（同族，供验收对照）
@@ -203,6 +222,18 @@ context cache | 1 active + 0 cached device states | host 1 states, 0 B KV | priv
 | `ResourcePlan` 的删除集合（§9.4） | arena region 释放进入同一份计划；`CheckpointRef` 逐项核对 |
 | `inspect` 只读（§2.2） | 不变式保留：驱逐只发生在放置循环里 |
 
+### 5.5 磁盘会话：arena 必须能导出/导入页（新增阻碍）
+
+- 保存侧：`session_snapshot.cpp` 计算 `text_pages = kv_pages_for_frontier(text_committed)`，再要求
+  `text_pages <= text_kv_addresses->mapped_pages(text_address)`；后者返回 `address.page_count`，
+  流式分支把它固定为 0 ⇒ **恒为假** ⇒ 抛错。
+- 自动 spill：`engine_core.h::spill_catalog_slot` 用 `catch (...) {}` 包裹 ⇒ **错误被吞**，
+  且注释明确“a failed spill never blocks the eviction”。所以流式下槽文件会话被淘汰 = **静默丢失**。
+- 要求（与 §5.0 同源）：arena 必须回答与页池相同的四个问题——
+  **深度**（这份地址空间现在多少页）、**拷出**（按页拷到快照字节）、**拷入**（恢复时写入 region）、
+  **释放**（淘汰时归还 region）。返回字节的布局继续用 `plan_host_kv_page_layout`，快照格式不变。
+- 容量事实：192 K 上下文 ≈ 4.07 GiB，所以一个 192 K 的槽文件也约 4 GiB（用户须知）。
+
 ---
 
 ## 6. 实施顺序（不可颠倒）
@@ -231,6 +262,7 @@ context cache | 1 active + 0 cached device states | host 1 states, 0 B KV | priv
 | C15 保留即缓存 | 任意下一请求都被接纳 |
 | **C17 假未命中（新）** | 同一 prompt 连续两次 ⇒ 第二次 `reused > 0`；`anchors > 0` |
 | **C18 取消不作废（新）** | 长会话 → 续聊 → 客户端断开 → 再续聊：`reused > 0`、进程存活 |
+| **C19 磁盘会话（新）** | 流式 + `--slot-save-path`：save → erase → restore → 续聊命中且与不中断逐位相同；淘汰 spill 真实落盘（文件存在且非空） |
 | serve 端到端 | `A→B→A`、`A→A2` 全 200；`worker crash`/`terminate`/`FATAL engine` = 0 |
 | 性能 | 251 K `round_ms_median` ≤ 41.4 ms +1%；`upload_bytes` 不显著变化 |
 | 冲突检查 | `[stream] request starts` 中 `space_pages < base` 的次数 = 0 |
@@ -257,6 +289,7 @@ context cache | 1 active + 0 cached device states | host 1 states, 0 B KV | priv
 | 允许几个 owner？ | 原版能缓存几个，流式就必须能缓存几个；否则“第二个会话变冷跑”本身就是体验变化 | **与同一内存预算下驻留模式的 `private N` 相同**（本机实测 `private 1`；想要更多是**加宿主内存**的配置问题，与驻留模式加内存等价），不是流式侧的新参数 |
 | 取消时是否发布 checkpoint？ | 原版会保留（§2.3），不保留就是体验变差 | **照基线**：salvage 成立就发布，否则 `retain_prefill_progress`；条件完全相同，不新增开关 |
 | 251 K 长会话 与 多会话切换 是否二选一？ | 原版两者都能做，受内存限制 | **不二选一**：同一策略在容量允许范围内都成立；唯一区别是限额来自**宿主内存**而不是显存 |
+| 磁盘会话要不要支持？ | 原版支持（`--slot-save-path` + 淘汰 spill），是“重启后继续对话”的唯一手段 | **必须支持**，且与流式组合正是本项目的目标场景（16 GB 卡 + 190 K 上下文 + 跨重启） |
 
 **唯一真正需要所有者决定的是资源额度**：给流式 arena 多少宿主内存（`--kv-capacity` 一族）。
 这与“给驻留模式多少显存/宿主 KV”是同一类配置，不改变任何缓存语义。
@@ -269,4 +302,5 @@ context cache | 1 active + 0 cached device states | host 1 states, 0 B KV | priv
 2. region 化 owner（每个 owner 一份地址空间），使 `private N` 与驻留模式一致；
 3. checkpoint（endpoint / TurnClosure / 锚点）按基线发布，`anchors` 计数 > 0；
 4. 把 `stream_can_serve`、`inspect_lane` 的流式分支、截断钳位**降级为断言并删除**；
-5. 验收：C13–C18 + equiv + serve 两会话 + 251 K 不退化。
+5. arena 实现页导出/导入（`save_continuation` / `restore_continuation` / spill）⇒ C19；
+6. 验收：C13–C19 + equiv + serve 两会话 + 251 K 不退化。

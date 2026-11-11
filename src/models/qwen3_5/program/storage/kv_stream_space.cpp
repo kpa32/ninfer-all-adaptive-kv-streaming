@@ -664,7 +664,7 @@ StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
     out.active_pages        = active_;
     // Whether a finished request's context still lives here, and at which token frontier: the next
     // request either continues it or starts from an empty space.
-    out.retained          = retained_;
+    out.retained          = owner_ != 0 && retained_frontier_ != 0;
     out.retained_frontier = retained_frontier_;
     out.timing_samples = timing_samples_;
     out.timing_lost    = timing_lost_;

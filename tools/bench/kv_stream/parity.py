@@ -35,7 +35,7 @@ from pathlib import Path
 SERVE_FLAGS = [
     "--max-concurrency", "1",
     "--kv-dtype", "rk8v4",
-    "--max-context", "131072",
+    "--max-context", "65536",
     "--kv-capacity", "auto",
     "--spec", "mtp",
     "--draft-tokens", "3",

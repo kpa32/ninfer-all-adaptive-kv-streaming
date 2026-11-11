@@ -1167,3 +1167,33 @@ reuse: five cases admitted; upload 0 B, download 0 B, verify 0/0
 ⇒ 下一片的实现顺序：先写 `upload_window`（单 owner 下也能用：进入时的"全冷"路径等价于它），
 用 `NINFER_STREAM_VERIFY=1` 验证字节；再让 `enter_request` 在 owner 不同时调用"重发表项 + upload_window"，
 最后才把 `regions_` 从 1 提到 `max_private_continuations`。
+
+### 20.7 region 分区已落地（R=2 可配），A→B→A 仍为 0：下一个瓶颈是**目录容量**，不是 region
+
+已实现并编译通过：
+
+- 空间持有 `region_states_`（每个 region：`owner` / `depth` / `used`）；
+- `enter_request`：已知 owner ⇒ 复用其 region 与深度；未知 ⇒ 取空余或最久未用的 region 并回退深度，
+  此时 `window_dirty_` 触发 `upload_window`；
+- `can_serve` 按**该 owner 的 region 深度**判断；
+- region 数来自 `max_private_continuations`（`program_impl.cpp` 构造空间时传入）；
+- 修掉一处：`request_plan.cpp` 对"保留源"的 entitlement 扣减在流式下无意义（流式不占池页），
+  否则两个私有 continuation 时抛 `retained prefix exceeds its active KV entitlement`。
+
+**实测（`max_private_continuations = 2`，rc=0，无崩溃）**：取消后复用 23 424、重发 900 均保持；
+A→B→A 仍 0。trace 指出原因：
+
+```
+request starts: owner=131072 source=0 ... space_owner=65536
+request starts: owner=196608 source=0 ... space_owner=131072
+request starts: owner=327680 source=0 ... space_owner=262144
+```
+
+**每个请求的 owner stamp 都是"slot 0 + 递增的 generation"**——即每条新请求都在退役并重占**同一个**
+continuation 槽。说明 Program 的 `continuation_capacity` 实际仍是 1（`max_private_continuations = 2`
+没有传导到它），于是 A 的目录条目在 B 到来时被退役，A 回来时无条目可查。
+
+⇒ 下一枪：查 `continuation_capacity` 的推导（`program_impl` 构造 `continuation_states` /
+`continuation_slots` 时用的容量），确认 `ContextCacheOptions::max_private_continuations` 是否只在
+`host_cache_budget` 路径被使用、以及 Engine 侧 `context_cache` 规范化（`model_instance.cpp:443-477`）
+是否把它改回 `2 * concurrency`（本机 concurrency=1 ⇒ 2，本应足够）。region 侧不需要再改。

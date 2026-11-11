@@ -1363,3 +1363,23 @@ limits(上限): lanes=1 states=1 main=47403 backend=0 host_states=4 host_kv=0
 **另一条路（不推荐）**：把 `limits.device.state_slots` 抬到 `max_concurrency + private`。
 它会让"设备镜像与流式窗口并存"，而 C13 已实测该组合从第 3 个 decode 轮起读到旧 state
 （`mtp accepted 0/9`、第 3 轮 argmax 变 EOS）——正是守卫 `device_state_slots == 0` 的由来。
+
+### 20.15 demote 的第一次落点失败（已回滚），正确落点在管理器侧
+
+实现过的内容（已 `git revert`，`3a89a5ea`）：
+- `StateImageStore::demote_checkpoint_to_host(handle, streams)`：分配 host slot → `device_->copy_to_host`
+  → `return_device_slot` → residency 变 HostOnly（与 `drop_device_replica` 同一套归还路径）；
+- 在 `publish_active_continuation` 的 `freeze` 之后调用。
+
+实测 `rc=1`：`FATAL: KV truncate frontier is beyond the sequence`。
+
+⇒ 落点太早：发布事务在 `freeze` 之后仍要用**设备副本**完成前沿/截断收尾
+（`truncate_inactive_prefix`、`rebuild_work`、`refresh_state_views` 的顺序），设备槽被提前归还即失败。
+
+**正确的落点（下一片）**：把"目录条目住 host"放在**拥有一条目录条目的那一层**——
+`resource_manager` 在把条目写入目录之后（`publish_continuation` / `publish_salvaged_continuation`
+的尾部）调用一次 `program.demote_catalogued_state(handle)`；Program 内部实现为
+"仅流式形状 + role==CheckpointImmutable + 无 pin → demote"，非流式形状是 no-op。
+
+好处：发布事务不感知流式；demote 发生时该条目已经无人再写，只等被恢复读取；
+HostOnly 恢复路径已存在（`checkpoint_recovery.cpp:115` 的 `HostToDevice` 需求）。

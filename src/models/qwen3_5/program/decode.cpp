@@ -6,6 +6,8 @@
 #include "models/qwen3_5/program/planning/graph_profiles.h"
 #include "core/nvtx.h"
 #include "core/device.h"
+#include <cstdio>
+#include <cstdlib>
 #include "ninfer/ops/logprob_topk.h"
 #include "ninfer/ops/prepare_ragged_prefix.h"
 #include "ninfer/ops/sampling.h"
@@ -62,6 +64,25 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
 
         card.ordinary_decode_batch(tokens, cache_positions, rope_positions, kv_rows, state_sources,
                                    state_destinations, envelope, hidden, logits);
+        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+            // The first decode step of a request is what tells a correct restore from a plausible
+            // one: the sampled token can agree by coincidence, the logits cannot.
+            static int dumped = 0;
+            if (dumped < 40) {
+                std::uint32_t first_logits[4]{};
+                std::uint32_t first_hidden[4]{};
+                (void)cudaMemcpy(first_logits, logits.data, sizeof(first_logits),
+                                 cudaMemcpyDeviceToHost);
+                (void)cudaMemcpy(first_hidden, hidden.data, sizeof(first_hidden),
+                                 cudaMemcpyDeviceToHost);
+                std::fprintf(stderr,
+                             "[stream] decode: hidden=%08x,%08x,%08x,%08x "
+                             "logits=%08x,%08x,%08x,%08x\n",
+                             first_hidden[0], first_hidden[1], first_hidden[2], first_hidden[3],
+                             first_logits[0], first_logits[1], first_logits[2], first_logits[3]);
+                ++dumped;
+            }
+        }
         ops::scatter(hidden, state_destinations, state.continuation_hidden_store,
                      state.execution.device.stream);
         // The structured lanes' masks, computed while the forward pass ran.

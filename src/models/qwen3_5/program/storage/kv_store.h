@@ -1782,8 +1782,16 @@ public:
             if (frontier > address.committed_frontier) {
                 throw std::invalid_argument("KV truncate frontier is beyond the sequence");
             }
-            stream_space_->enter_request(frontier);
-            address.committed_frontier = frontier;
+            // The space owns the whole context and holds one lineage: a request that did not continue
+            // it rewound it, so the bytes this address still claims may already be gone. Truncation
+            // only ever discards, and a tail the space no longer holds is already discarded - keep what
+            // the space serves instead of demanding the address frontier from it (that check lives in
+            // the space, and asking for more than it holds threw inside the worker).
+            const std::uint32_t held =
+                stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize);
+            const std::uint32_t served = std::min(frontier, held);
+            stream_space_->enter_request(served);
+            address.committed_frontier = served;
             return;
         }
         if (frontier > address.committed_frontier) {
@@ -1863,8 +1871,11 @@ public:
             if (frontier > address.committed_frontier) {
                 throw std::invalid_argument("KV truncate frontier is beyond the sequence");
             }
-            stream_space_->enter_request(frontier);
-            address.committed_frontier  = frontier;
+            const std::uint32_t held =
+                stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize);
+            const std::uint32_t served = std::min(frontier, held);
+            stream_space_->enter_request(served);
+            address.committed_frontier  = served;
             address.checkpoint_frontier = 0;
             return;
         }

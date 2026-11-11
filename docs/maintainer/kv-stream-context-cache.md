@@ -1064,3 +1064,29 @@ reuse: five cases admitted; upload 0 B, download 0 B, verify 0/0
 所以下一处要查的是**候选选择**：salvage 出来的端点被目录记为可复用条目了吗、
 `matched_prefix_tokens`/候选筛选是否把"取消留下的端点"排除在外。
 这条线索比继续改身份更可能命中，下一步就从 `request_plan` 的候选构建读起。
+
+### 19.7 身份已不是瓶颈：取消后的端点根本没进候选（已在代码里定位到层）
+
+开了 `NINFER_MAT_DEBUG`（`cdbg_log` 的门槛）后，取消场景**没有任何 `[candgen]` 行**：
+
+```
+[stream] retained endpoint frontier=19924 ledger=19925 kv_valid=19924
+[stream] request starts: owner=131072 source=0 reuse=0 base=0 space_pages=312 space_owner=65536 retained=19924
+```
+
+`[candgen]` 只在 `resource_manager.h` 的私有候选循环里打印（`inspect_admission` 之后）。没有它意味着
+**候选循环没有为该请求产出任何候选键**：`candidate_keys` 由
+`base.context_cache().opportunities` 生成（`resource_manager.h:419-426`），而 `prefix_index_` 的每一项
+以 checkpoint 的 `shortlist_key` 索引（`rebuild_prefix_index`，`:2427-2460`）。
+
+⇒ 结论：取消留下的端点 frontier（19924，**不在任何栅格上**）与请求侧的机会栅格
+（`anchor_prompt_end` 的 prompt_end-1，或 `progress_anchor_tokens` 的整倍数）**没有共同的键**，
+因此连候选都构不成。这不是身份问题，也不是深度问题；是**查找键的构造方式**问题。
+
+**下一枪的判据**（两种情况，二选一即可定案）：
+1. 若 `[candgen]` 在高频机会（`anchor_prompt_end`）下出现而这次没有 ⇒ 机会集合为空/不含该 frontier；
+2. 若给同一请求加 `anchor_prompt_end` 后仍无 `[candgen]` ⇒ 键不匹配（短名单键是按 frontier 精确匹配）。
+
+**修法方向（未实施，待判据）**：请求侧的候选键不能只来自"机会栅格"，还要能表达"我的前缀在某处结束"——
+即按**提示前缀**去索引（条目携带其前缀的 shortlist key，请求按自身前缀在所有条目 frontier 处求键）。
+这正是 §2.1"完整 continuation"允许的：条目仍然是带 StateImage 的 checkpoint，变的只是**如何找到它**。

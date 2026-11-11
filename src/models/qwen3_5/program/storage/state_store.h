@@ -1,6 +1,7 @@
 #pragma once
 
 #include "models/qwen3_5/state/state_image.h"
+#include "core/device_wait.h"
 
 #include <cstdint>
 #include <cstring>
@@ -316,6 +317,12 @@ public:
             if (!slot) { return false; }
             try {
                 device_->copy_to_host(*object.device_slot, host_->writable_view(*slot), streams);
+                // The Device slot goes back to the pool below, where the next request's active image
+                // can take it. That reuse has no ordering of its own, so the copy that reads the slot
+                // has to be complete before the slot is handed out again.
+                for (std::size_t rank = 0; rank < streams.size(); ++rank) {
+                    (void)ninfer::wait_for_stream(streams[rank]);
+                }
             } catch (...) {
                 (void)host_->release(*slot);
                 throw;

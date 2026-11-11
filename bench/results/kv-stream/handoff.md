@@ -161,3 +161,11 @@ LP_RESERVE2=512 /tmp/geometry_driver <artifact>      # 期望 ids equal=1 logpro
 验收矩阵（新增 **C17 假未命中**、**C18 取消不作废**）与实施顺序（F1 → F2 → 删驱逐 → F3）。
 
 **开工顺序不可颠倒**：F1 之前做 F2，会在"取消清空"的空窗里继续产生陈旧声明。
+
+## 9. 压缩后第一读（当前）
+
+`docs/maintainer/kv-stream-context-cache.md` §10（计划重审）与 §11（压缩前快照）是当前权威：
+`--kv-stream` 的形状被 `startup.cpp:1380-1412` 显式限制（无 hybrid、无 host/disk KV tier、无 shared
+prefix、**无长锚点**、无 device state slot），所以磁盘与"取消后续聊"不是接线缺陷而是范围问题；
+`context-cache-tier` 上 `7adffbe9` 已实现身份戳 + 取消不清空（**尚未编译**），下一步是编译并跑
+S0 验收与 S0.5 观测。

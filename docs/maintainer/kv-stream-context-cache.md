@@ -397,3 +397,55 @@ context cache | 1 active + 0 cached device states | host 1 states, 0 B KV | priv
 - "流式下磁盘会话保存抛错是一个缺陷" ⇒ 先看守卫（§10.1 结论一）。
 - "F2 最长前缀命中" ⇒ 违反基线 §4.1，早已撤回。
 - "先删驱逐补丁，再补校验" ⇒ 顺序反了，驱逐是合法语义。
+
+---
+
+## 11. 压缩前快照（谁读到这里就该从这里接手）
+
+### 11.1 分支与提交
+
+| 项 | 值 |
+|---|---|
+| 工作分支 | `context-cache-tier`（从 `kv-stream-27b-16g` = `ff23cbe0` 分出） |
+| 已提交、**尚未编译** | `7adffbe9` 身份戳 + 取消不清空（7 文件，+81/−48，`src/ops` 改动 0） |
+| 计划重审 | `c3b56512`（本文 §10、§11） |
+| 剪裁版 | `pruned-qwen38-27b-16gb` = `bcbd38f5`（未动） |
+| 测试机 | `ssh debian`，仓库同分支，构建树 `build-verify`，模型 `~/ninfer-fork/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-ninfer-v3.ninfer` |
+
+### 11.2 已经改了什么（代码）
+
+- `StreamedKVSpace` 新增 `owner_`（字节属于哪条 continuation）+ `can_serve(owner, tokens)`；
+  `enter_request(owner, tokens)`：**不是本人或更浅 ⇒ 倒回并换主人**；`reset()` 与 `retained_` 已删除。
+- `ProgramImpl::owner_stamp(sequence)` = 槽位 + `ContinuationSlot::generation`（退役即 +1，永不重复）。
+- `KVStore::stream_can_serve(owner, tokens)`；`deactivate` 流式分支**不再 reset**。
+- `prefill.cpp` 用 owner 进入，调试行新增 `owner/space_owner/retained`。
+- `request_plan.cpp` 按身份拒绝复用（共享前缀在流式下无身份 ⇒ 拒绝）。
+- `kv_store.h` 两处截断的钳位保留。
+
+### 11.3 还没做的（下一步就是它）
+
+1. **编译**（测试机）：`CCACHE_DISABLE=1 cmake --build build-verify -j 16`；
+2. **S0 验收**：取消序列（长会话→续聊→断开→再续聊）不崩、`equiv 4/4` 逐位、C13/C15；
+3. **S0.5 观测**（0 代码）：`NINFER_STREAM_DEBUG=1` 看 `reuse/base/space_pages/owner`，
+   并查流式是否捕获 `TurnClosure`（若捕获，"同一 prompt 再发"本就该命中）；
+4. 之后由所有者选 S1（放宽锚点守卫）/ S2（region 化）/ S3（磁盘或会话发布，需新决定）。
+
+### 11.4 已定的裁决（不要再推翻）
+
+- **保留**驱逐补丁（`drop_continuations_the_head_cannot_use`）：删掉会恢复 429。
+- **不做**"任意最长前缀复用"（违反基线 §4.1：GDN 不能任意回退，复用点是带 StateImage 的 checkpoint）。
+- **不把冷启动当修复**：只用于 `space_pages == 0`。
+- **流式 = 存储层**：`ResourceManager`/`Program`/`capture` 里不应出现流式分支（现状 4 处泄漏是历史债）。
+- 磁盘 KV（`--disk-kv-path`）与长锚点**当前被守卫排除**，动它们先改守卫（范围变更，需所有者决定）。
+
+### 11.5 复现与诊断（现成命令）
+
+```bash
+# 取消后崩溃的序列（脚本在测试机 /tmp，仓库内 tools/bench/kv_stream/README.md 有驱动说明）
+bash /tmp/serve_cancel.sh            # A(16k) → A → 取消 → B → A
+# 关键日志
+grep -E "\[stream\] request starts|worker crash|FATAL engine" /tmp/kvlogs/serve_cancel.log
+```
+
+判据：`r1..r5` 全 200（或仅取消那条 499/中断）、`worker crash`=0、`FATAL engine`=0，
+且任何复用的 `owner` 与 `space_owner` 相同、`space_pages >= base`。

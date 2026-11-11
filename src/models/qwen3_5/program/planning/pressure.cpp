@@ -2443,6 +2443,8 @@ ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
     }
     if (!physical_peak_fits(details.demand.physical_peak_additional)) {
         if (cdbg) {
+            const detail::PhysicalResources occupied = physical_occupancy();
+            const detail::PhysicalResources limits   = admission_capacity();
             std::fprintf(stderr,
                          "[mat-debug]   peak: lanes=%u states=%u main=%u backend=%u host_kv=%zu\n",
                          details.demand.physical_peak_additional.device.active_lanes,
@@ -2450,6 +2452,16 @@ ProgramImpl::revalidate_materialization(const AdmissionCandidate& plan,
                          details.demand.physical_peak_additional.device.main_kv_pages,
                          details.demand.physical_peak_additional.device.backend_kv_pages,
                          details.demand.physical_peak_additional.host.kv_bytes);
+            std::fprintf(stderr,
+                         "[mat-debug]   held: lanes=%u states=%u main=%u backend=%u host_states=%u "
+                         "host_kv=%zu; limits: lanes=%u states=%u main=%u backend=%u "
+                         "host_states=%u host_kv=%zu\n",
+                         occupied.device.active_lanes, occupied.device.state_slots,
+                         occupied.device.main_kv_pages, occupied.device.backend_kv_pages,
+                         occupied.host.state_slots, occupied.host.kv_bytes,
+                         limits.device.active_lanes, limits.device.state_slots,
+                         limits.device.main_kv_pages, limits.device.backend_kv_pages,
+                         limits.host.state_slots, limits.host.kv_bytes);
         }
         trace("stale: peak does not fit");
         return runtime::PreflightStatus::StalePolicyState;

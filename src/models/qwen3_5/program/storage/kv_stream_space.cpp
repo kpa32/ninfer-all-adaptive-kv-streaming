@@ -583,8 +583,11 @@ void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
     if (pages < active_ || owner != owner_) {
         // Nothing continues these pages: the request republishes every page its prompt reaches as it
         // writes it, and the pages it overwrites stop belonging to whoever held them before. From
-        // here on the old owner's claim is refused by the owner stamp, never served stale bytes.
-        active_ = 0;
+        // here on the old owner's claim is refused by the owner stamp, never served stale bytes. A
+        // context that keeps its own pages keeps its window too; anything else has to bring the
+        // window back from the host authority before attention reads it.
+        window_dirty_ = active_ != 0;
+        active_       = 0;
     }
     owner_             = owner;
     retained_frontier_ = 0;
@@ -593,6 +596,38 @@ void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
 
 bool StreamedKVSpace::can_serve(std::uint64_t owner, std::uint32_t tokens) const noexcept {
     return owner != 0 && owner == owner_ && page_count(tokens) <= active_;
+}
+
+void StreamedKVSpace::upload_window(std::uint32_t layer, RankStreams streams) {
+    const std::uint32_t resident = split_.resident_of(layer);
+    if (resident == 0 || active_ == 0) { return; }
+    const std::uint32_t start = window_start(layer);
+    const std::uint32_t count = active_ - start;
+    if (count == 0) { return; }
+    // The window's slots are `layer_offset + page % resident`, so a run of pages is contiguous until
+    // it wraps; a context shorter than the window is one copy from the window's first slot.
+    const std::uint32_t offset = split_.layer_offset(layer);
+    const std::uint32_t first  = start % resident;
+    const std::uint32_t head   = count < resident - first ? count : resident - first;
+    cache_->page_pool().copy_from_host_pages(
+        region_pages(layer).subview(start, head).data(), host_layout_,
+        static_cast<std::int32_t>(offset + first), head, streams);
+    add_upload(layer, static_cast<std::uint64_t>(head) * page_bytes_);
+    if (head < count) {
+        cache_->page_pool().copy_from_host_pages(
+            region_pages(layer).subview(start + head, count - head).data(), host_layout_,
+            static_cast<std::int32_t>(offset), count - head, streams);
+        add_upload(layer, static_cast<std::uint64_t>(count - head) * page_bytes_);
+    }
+    for (std::uint32_t page = start; page < active_; ++page) {
+        publish_slot(layer, page, kv_stream_window_slot(layer, page, split_), streams);
+    }
+}
+
+void StreamedKVSpace::upload_window(RankStreams streams) {
+    if (!window_dirty_) { return; }
+    for (std::uint32_t layer = 0; layer < layers_; ++layer) { upload_window(layer, streams); }
+    window_dirty_ = false;
 }
 
 void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {

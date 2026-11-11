@@ -76,8 +76,14 @@ public:
         return kv_stream_window_start(active_, split_, layer);
     }
 
-    // Pages any layer streams at the current context - the widest streamed extent, which is what the
-    // ring has to hold.
+    // Makes the current context's device window hold what the host authority holds. The window of a
+    // context that has just been entered belongs to whoever held the region before, so every page of
+    // it has to be brought back before attention can read it; a context that was already in hand
+    // skips the copy. One contiguous copy per run of slots, on `streams`, ordered with the writes.
+    void upload_window(RankStreams streams);
+
+    // The same for one layer, which is what a caller that dispatches layer by layer wants.
+    void upload_window(std::uint32_t layer, RankStreams streams);
     [[nodiscard]] std::uint32_t max_streamed_pages() const noexcept {
         return max_streamed_pages(split_);
     }
@@ -374,6 +380,9 @@ private:
     // the request, so the live value is not what a finished request moved.
     std::uint32_t round_streamed_pages_ = 0;
     std::uint32_t active_ = 0;
+    // Set when the pages in hand no longer describe the device window - an entry that took a region
+    // from another owner - and cleared by the upload that republishes it.
+    bool window_dirty_ = false;
     // The continuation whose ledger these bytes hold. Reused continuation slots never repeat a
     // stamp, so a claim on pages another request rewrote can never be served by accident.
     std::uint64_t owner_ = 0;

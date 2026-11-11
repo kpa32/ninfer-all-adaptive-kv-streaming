@@ -1383,3 +1383,23 @@ limits(上限): lanes=1 states=1 main=47403 backend=0 host_states=4 host_kv=0
 
 好处：发布事务不感知流式；demote 发生时该条目已经无人再写，只等被恢复读取；
 HostOnly 恢复路径已存在（`checkpoint_recovery.cpp:115` 的 `HostToDevice` 需求）。
+
+### 20.16 两次落点都失败，结论：HostOnly 端点需要改状态库的恢复/截断路径
+
+| 落点 | 结果 |
+|---|---|
+| `publish_active_continuation` 的 `freeze` 之后 | `FATAL: KV truncate frontier is beyond the sequence` |
+| 管理器侧（条目写入目录之后，`demote_catalogued_state`） | 同上 |
+
+⇒ 不是时序问题：**回退前沿时走的 `truncate_inactive_prefix` 仍需要设备副本**，与"条目住哪"无关。
+
+因此 A→B→A 的正确修法是三选一，且都必须改状态库而不是调用点：
+
+1. **让 HostOnly 端点可恢复/可截断**：`demote` 之后，恢复路径先用 `HostToDevice` 上传再截断
+   （`checkpoint_recovery.cpp:115` 已有这条需求，缺的是"恢复后仍按 HostOnly 记账"）；
+2. **给流式形状一个额外的设备状态槽**（`limits.device.state_slots = max_concurrency + private`），
+   但 C13 实测该叠加会让 target 从第 3 个 decode 轮读到旧 state —— **已否决**；
+3. **端点留在宿主但恢复时临时占槽**：`demote` 在恢复前不释放设备槽，只在"空闲且无人引用"时释放，
+   即让设备槽成为一个**按需租约**而不是常驻。
+
+当前树已恢复到最后一个绿色状态（`ddeacbeb`，编译通过、复用/驱逐用例通过）。

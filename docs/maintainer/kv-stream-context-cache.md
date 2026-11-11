@@ -904,3 +904,30 @@ B1/B2/B3 从"三个项目"变成"三个验证里程碑"。
 
 只允许在"功能冲突、无法融入"时保留特例，并且必须写进本文：冲突是什么、基线的哪条语义无法表达、代价。
 不允许以"快一点""简单一点"为理由保留分支。
+
+---
+
+## 18. R0 实测（`context-cache-tier` @ 编译通过，2026-11-11，RTX 4080 SUPER 16 GB）
+
+命令：`python3 tools/bench/kv_stream/parity.py --model <Qwen3.8-27B…ninfer> --bin build-verify/apps/ninfer-serve`
+（日志 `/tmp/kvlogs/parity/`）。
+
+| 检查 | 结果 | 证据 |
+|---|---|---|
+| **P1 库存** | **FAIL** | `host states=1 host_kv=0B private=1 shared=0 anchors=0`；而 serve 自己的 `--help` 写基线默认：`device-state=max-concurrency, private=2x concurrency, shared=max(max-concurrency,7), anchors=2 (4 with --auto-long-anchors), Host state=8 slots, Host KV=8192 MiB` |
+| **P2 同一 prompt 两次** | **PASS（今天就已命中）** | `reuse=2 base=1427 valid=1427`、`cache 1,427 (99.7%, turn closure)`、TTFT **45 ms**。⇒ 本文 §3 的 D4"同一 prompt 重发也 miss"**作废**；TurnClosure 在流式下已经工作 |
+| **P3 取消后继续** | **FAIL** | 取消那条把空间倒回自己的前缀，下一条 `reuse=0 base=0`、`cache 0 (0.0%)`；进程存活（无崩溃） |
+| **P4 A→B→A** | **FAIL** | A 命中一次后，B 冷跑；A 再来 `reuse=0`（`space_owner` 已换成 B）⇒ 单 owner 覆盖 |
+| **P5 槽会话** | **拒绝（不是崩溃）** | serve 直接拒绝：`--kv-stream keeps its context in the streamed arena: --slot-save-path is not available` ⇒ §3.5 的"保存抛错"在 serve 路径上不可达，真实形态是**显式拒绝** |
+| **P6 进程存活** | **PASS** | 全部检查后 `alive=True`、无 `worker crash`/`FATAL engine`/`terminate` |
+
+### 18.1 由此得到的真实缺口（取代 §15.1 的估计）
+
+1. **取消后继续**（P3）：需要锚点（基线 `anchors=2` 默认）或可用的 salvage frontier；取消当前把空间倒回，
+   之后没有 checkpoint 可复用。
+2. **多会话**（P4）：单 arena 单 owner，B 覆盖 A。
+3. **槽会话/磁盘**（P5）：显式拒绝，需要 arena 的页导出/导入才能打开。
+4. **库存/报告**（P1）：流式只报 1 个端点、0 B 宿主 KV。
+
+**已经工作、不要再修**：同一 prompt 重发（turn closure，99.7%、45 ms）、跨请求 endpoint 复用（C13）、
+取消后不崩溃（P6，identity 修复的结果）。

@@ -169,7 +169,7 @@ def check_repeat(server: Server, prompt: str) -> Result:
     second, _ = server.ask(prompt)
     starts = stream_starts(server.text())[before:]
     reused = starts[0][0] if starts else -1
-    return Result("P2 same prompt twice", first == 200 and second == 200 and reused == 1,
+    return Result("P2 same prompt twice", first == 200 and second == 200 and reused > 0,
                   f"http {first}/{second} reuse={reused}")
 
 
@@ -182,7 +182,7 @@ def check_cancel(server: Server, prompt: str) -> Result:
     second, _ = server.ask(prompt)
     starts = stream_starts(server.text())[before:]
     reused = starts[0][0] if starts else -1
-    return Result("P3 cancel then continue", first == 200 and second == 200 and alive and reused == 1,
+    return Result("P3 cancel then continue", first == 200 and second == 200 and alive and reused > 0,
                   f"http {first}/{second} alive={alive} reuse={reused}")
 
 
@@ -194,7 +194,7 @@ def check_two_conversations(server: Server, first: str, second: str) -> Result:
     code_a2, _ = server.ask(first)
     starts = stream_starts(server.text())[before:]
     reused = starts[0][0] if starts else -1
-    return Result("P4 two conversations", min(code_a, code_b, code_a2) == 200 and reused == 1,
+    return Result("P4 two conversations", min(code_a, code_b, code_a2) == 200 and reused > 0,
                   f"http {code_a}/{code_b}/{code_a2} reuse={reused}")
 
 

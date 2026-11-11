@@ -345,3 +345,27 @@ embedding 常驻占 388.4 MiB；换成 host 后这部分显存回到 KV 池（�
   `serial_real`、`geometry_real` 两个测试文件打开 `kv_stream`，所以这些用例不构造 `StreamedKVSpace`；
   其余是依赖/架构/产物的前置校验失败，不是断言。
 - 未做：回到改动前的提交再跑这 7 个做双跑反证（需另建一棵树，约 45 分钟）。现结论是推断，不是对比。
+
+## 缺陷记录：#12 保留的上下文被当成租约（`2026-11-11`，serve 实测）
+
+- **触发**：`--kv-stream`（保留默认开）下，服务端第二段对话进来。用户实测 req#7 `cache 37,412 (98.5%)`
+  之后 req#8 抛 `KV activation reservation is stale` → 未捕获 → `terminate` → **进程 abort**（上下文仅 20%）。
+- **Engine 级 30 秒复现**：`A(901 tok)` 保留后，任意不同前缀都抛
+  `context cache exhausted: an idle Engine found no placement`；`NINFER_ADMISSION_DEBUG=1` 打印
+  `no materialization plan`。
+- **根因**：私有 continuation 目录容量 = `max_private_continuations` = 1。保留的上下文占住唯一槽位，
+  新请求的规划器无法建立计划；若规划器已取用激活，句柄作废后再被使用就是 stale。base 的 resident
+  缓存不是这个语义——它会把旧条目挤掉，冷请求照常接纳。
+- **修复**（`f8f3d6c…` 实际提交见 log）：放置失败且原因是"无物化计划"时，丢弃队头**无法完整复用**的
+  已发布 continuation，并**重做整次放置**（单次放置内部重试会让规划器握着已释放句柄 ⇒
+  `pressure planning candidate is stale`，第一版踩过）。丢弃不搬字节（host 页即权威副本）。
+- **验收**：Engine 级五步全接纳、无关/更长两臂 ids 与无缓存逐位（C15 测试 75 s PASS）；
+  serve `A → B → A` 三条 200，同会话继续仍 `cache 78 (60.5%)`、TTFT 126 ms；`reuse_driver` 仍
+  `reused=4614 equal_ids=1`、`serial_real` 750 s PASS、9/9 kv_stream 用例 PASS。
+- **已知边界（容量，不是缺陷）**：只有 1 个私有槽 ⇒ 第二段对话一定会挤掉第一段；旧版看起来"保住了
+  60.5%"是因为它把第二段**拒了**。要多会话同时留住上下文，需要更多私有槽（host RAM + 地址空间），
+  属容量决策。
+- **未关闭**：只共享开头的请求现在冷跑（不复用命中前缀）——要恢复需"替换式发布"（复用旧条目前缀的
+  同时把它挤掉）。另：`NINFER_ADMISSION_DEBUG` 是本次新增的诊断口。
+- **过程教训**：serve 的 429 复现第一次是"只重编了 `ninfer`、没重编 `ninfer-serve`"造成的假象；
+  以后每次改引擎/运行时库，都要把 serve 与驱动一起重链。

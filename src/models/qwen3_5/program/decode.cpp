@@ -62,6 +62,11 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
         Tensor logits             = ordinary.logits.slice(1, 0, batch_size);
         Tensor sampled            = ordinary.sampled_tokens.slice(0, 0, batch_size);
 
+        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+            // One experiment at a time: if the answer becomes right when the stream is drained before
+            // the forward pass, the window's return copy was racing the step that read it.
+            (void)cudaStreamSynchronize(state.execution.device.stream);
+        }
         card.ordinary_decode_batch(tokens, cache_positions, rope_positions, kv_rows, state_sources,
                                    state_destinations, envelope, hidden, logits);
         if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {

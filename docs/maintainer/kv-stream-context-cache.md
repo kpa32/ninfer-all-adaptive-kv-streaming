@@ -1219,3 +1219,23 @@ continuation 槽。说明 Program 的 `continuation_capacity` 实际仍是 1（`
 `catalog_` 全部条目的 `(slot, state, session, endpoint.frontier, handle?)` 与 `prefix_index_` 的
 `(occupied, frontier, slot)`，跑同一场景；这会一次分清"条目被驱逐"与"键没命中"。
 在那之前不再改 region 侧代码——它们已经是对的。
+
+### 20.9 A→B→A：A 回来时**候选生成根本没运行**（目录已被清空）
+
+`NINFER_MAT_DEBUG=1` 的 dump（新加的 `[candgen] CAT/IDX`）给出新事实：
+
+```
+A:        request starts ... space_pages=0  space_owner=0      （无 [candgen] 行）
+B:        request starts ... space_pages=15 space_owner=65536  （无 [candgen] 行）
+A again:  request starts ... space_pages=15 space_owner=131072 （无 [candgen] 行）→ source=0
+```
+
+- 三次请求**都没有 `[candgen] === episode`**，说明管理器在进入候选循环前就短路了（目录里没有可查的条目）；
+- 之后（取消用例）的 episode 打印显示 `CAT slot=0 state=1 endpoint=1`、`IDX slot=0 frontier=904`，
+  即目录在**有**条目时是正常的、索引也对。
+
+⇒ 因此 A 的条目在 **B 被接纳时就被清掉了**，而 `private_catalog_capacity` 本应是 2
+（`make_resource_manager` 用 `options.context_cache.max_private_continuations`，测试给 2）。
+下一步的判据：在管理器的"无可查条目→冷计划"短路点打一行原因
+（`catalog_count_`、`occupied`、`free`、是否 `cache_enabled_`、是否本次请求带 `publish_continuation`），
+以及 B 接纳时是否触发了 supersede/recency 驱逐。**在拿到这两行之前不改容量或驱逐逻辑。**

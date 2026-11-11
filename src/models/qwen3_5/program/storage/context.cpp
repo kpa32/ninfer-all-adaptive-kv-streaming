@@ -223,6 +223,7 @@ void ProgramImpl::demote_catalogued_state(ContinuationHandle& continuation) noex
     // so a catalogued entry that keeps its Device replica makes the next request's peak unfittable.
     // A resident cache keeps the replica where it is - the publication left it there on purpose.
     if (text_stream_space == nullptr || !valid_continuation(continuation)) { return; }
+    if (std::getenv("NINFER_STREAM_NO_DEMOTE") != nullptr) { return; }
     SequenceState& state = continuation_states[ContractAccess::index(continuation)];
     if (!state_store->valid(state.state.read)) { return; }
     try {

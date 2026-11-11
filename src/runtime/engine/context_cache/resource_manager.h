@@ -446,8 +446,9 @@ public:
         // Isolated feasibility does not imply that an active Program is at a materialization
         // boundary: an unfinished StateImage fork must settle before admission can be planned.
         if (!root) {
-            if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
-                std::fprintf(stderr, "[admission] blocked: no root plan\n");
+            if (std::getenv("NINFER_MAT_DEBUG") != nullptr ||
+                std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
+                std::fprintf(stderr, "[admission] root plan refused: catalog=%u\n", catalog_count_);
             }
             return {.readiness = Readiness::TemporarilyBlocked};
         }

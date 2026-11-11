@@ -2843,6 +2843,10 @@ private:
             }
             if (head_inspection->readiness == Readiness::Ready ||
                 head_inspection->readiness == Readiness::NeedsTransfer) {
+                if (std::getenv("NINFER_MAT_DEBUG") != nullptr) {
+                    std::fprintf(stderr, "[admit] ready: choice=%d\n",
+                                 head_inspection->choice ? 1 : 0);
+                }
                 if (!head_inspection->choice) {
                     throw std::logic_error("ready resource inspection has no admission choice");
                 }
@@ -2854,6 +2858,10 @@ private:
 
             const ActiveAdmissionSet active =
                 scheduler_.active_admission_set(slots_, max_concurrency_);
+            if (std::getenv("NINFER_MAT_DEBUG") != nullptr) {
+                std::fprintf(stderr, "[admit] no choice: readiness=%d active=%u\n",
+                             static_cast<int>(head_inspection->readiness), active.size);
+            }
             if (active.size == 0) {
                 // A published continuation this request cannot reuse is a cache entry, not a lease: with
                 // one private catalog slot it is what refuses the request, and the resident cache never

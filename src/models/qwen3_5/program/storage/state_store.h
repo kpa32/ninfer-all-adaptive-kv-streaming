@@ -299,6 +299,34 @@ public:
         object.role = StateImageRole::ActiveMutable;
     }
 
+    // Moves a frozen checkpoint's authority to the Host shelf and frees its Device slot: a streamed
+    // shape reserves one Device slot for the request in flight, so an endpoint that keeps its Device
+    // replica refuses the next request's peak. The copy is ordered on `streams`, and the Device slot
+    // is dropped only once the Host bytes are the ones a later restore reads.
+    [[nodiscard]] bool demote_checkpoint_to_host(StateImageHandle handle, RankStreams streams = {}) {
+        if (!valid(handle)) { return false; }
+        Object& object = require(handle);
+        if (object.role != StateImageRole::CheckpointImmutable || !object.device_slot ||
+            object.source_pins != 0 || object.destination_pinned || has_pending_replica(object)) {
+            return false;
+        }
+        if (!object.host_slot) {
+            if (host_ == nullptr) { return false; }
+            std::optional<qwen3_5::HostStateSlotHandle> slot = host_->allocate();
+            if (!slot) { return false; }
+            try {
+                device_->copy_to_host(*object.device_slot, host_->writable_view(*slot), streams);
+            } catch (...) {
+                (void)host_->release(*slot);
+                throw;
+            }
+            object.host_slot = *slot;
+        }
+        return_device_slot(*object.device_slot);
+        object.device_slot.reset();
+        return true;
+    }
+
     [[nodiscard]] bool drop_device_replica(StateImageHandle handle) noexcept {
         if (!valid(handle)) { return false; }
         Object& object = objects_[handle.index_];

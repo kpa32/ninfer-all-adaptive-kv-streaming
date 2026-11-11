@@ -717,6 +717,13 @@ bool ProgramImpl::publish_active_continuation(SequenceState& state, RequestContr
         }
         if (state_store->role(state.state.read) == StateImageRole::ActiveMutable) {
             state_store->freeze(state.state.read);
+            if (text_kv_addresses->streaming()) {
+                // A streamed shape reserves one Device state image for the request in flight, so an
+                // endpoint a catalogue entry holds has to live on the Host shelf: keeping its Device
+                // replica is what makes the *next* request's peak unfittable, and the admission then
+                // drops the very context it would have returned to.
+                (void)state_store->demote_checkpoint_to_host(state.state.read, compute_streams);
+            }
         } else if (state_store->role(state.state.read) != StateImageRole::CheckpointImmutable) {
             return false;
         }

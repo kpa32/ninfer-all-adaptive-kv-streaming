@@ -437,6 +437,16 @@ public:
                                                  StateImageHandle destination) {
         Object& source_object      = require(source);
         Object& destination_object = require(destination);
+        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+            std::fprintf(stderr,
+                         "[stream] begin_fork: src=%u dst=%u src_device=%d src_host=%d "
+                         "src_role=%d dst_role=%d refs=%u\n",
+                         source.index_, destination.index_, source_object.device_slot.has_value() ? 1 : 0,
+                         source_object.host_slot.has_value() ? 1 : 0,
+                         static_cast<int>(source_object.role),
+                         static_cast<int>(destination_object.role),
+                         source_object.checkpoint_references);
+        }
         if (source == destination || source_object.role != StateImageRole::CheckpointImmutable ||
             !source_object.device_slot ||
             source_object.source_pins == std::numeric_limits<std::uint32_t>::max() ||

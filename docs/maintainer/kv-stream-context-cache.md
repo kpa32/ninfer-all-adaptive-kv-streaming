@@ -652,3 +652,85 @@ if (*cache.max_long_anchors_per_continuation == 0) {                   // 锚点
 
 ⇒ 修订后的执行顺序：**P0（编译 + 取消序列 + equiv + C13/C15，不含 `mapped_pages`）→
 P2 观测（零代码）→ P1（C3 的三处 + 上述作废路径，读完再动手）→ 所有者决定 P3/P4。**
+
+---
+
+## 14. 读完全部 kv 文档后的最终判断：声明范围 vs 所有者要求
+
+这一节取代 §10–§13 的**计划口径**（事实仍然有效）。触发它的三份文件：
+`kv-streaming-strategy.md`（status: active，**计划的唯一权威**，P0–P8 + §10 门禁）、
+`kv-streaming-design.md`（§4.9 与 §4.11 是流式形状的结构性决定）、
+`kv-streaming-verification.md`（C1–C16 的验收登记）。
+
+### 14.1 这些文档**已经声明**了流式的形状（不是缺陷，是决定）
+
+| 声明 | 出处 | 含义 |
+|---|---|---|
+| "流式 run 是单序列服务端模式：一个 continuation（host 权威 + 一张 host StateImage + 前沿）在请求间保留，同前缀的下一个请求只 prefill 增量" | strategy §0.2、§9.5 | **单 continuation 是设计**，不是遗漏 |
+| "端点必须在 host shelf … 并存一个 device StateImage 槽时 … target 从第 3 个 decode 轮起读到旧 state，所以 `device_state_slots` 必须为 0" | design §4.9 | device 槽禁令是**实测结论** |
+| "流式模式下 text pool 用 `KVStreamSpace` 取代前两层 … `ProgramImpl` 的 `text_kv_pages`/`text_kv_addresses` 在流式下为空；所有使用它们的路径必须逐一处理：**retention/checkpoint/prefix 路径拒绝**" | design §4.11 | 保留/checkpoint 最初被整段拒绝，P6 只把"一个 host 端点"放回来 |
+| "多序列/并发 … M1 限制 `--max-concurrency 1`，M4 再按序列数分摊环" | design §4.9 | 多会话是**后续里程碑**，不是当前缺陷 |
+| 守卫拒绝 hybrid / host KV tier / disk tier / session slot / shared prefix / long anchor | `startup.cpp:1380-1412` | 与 design §4.11 一致 |
+
+⇒ 结论：我此前把它们称作"四处偏差/漏掉的路径"（§3、§10）**口径过重**。它们是**声明的取舍**。
+真正属于缺陷的只有一类：**声明的形状下，声明了的行为不成立**——
+identity（#15）、规划期与使用期的窗口（#13/#14）、截断钳位、"保留被当租约"（#11/#12）。
+
+### 14.2 与所有者要求的真实冲突（必须由所有者裁决）
+
+> 「我们明明是只是增加上下文长度， 真正的好的体验是，不破坏原有的ninfer使用体验和流程。」
+
+| 能力 | 基线（不流式，默认值） | 流式（声明形状） | 关闭流式是否恢复 |
+|---|---|---|---|
+| 续聊命中（endpoint） | 有 | **有**（C13 PASS） | 是 |
+| 同一 prompt 重发命中（TurnClosure） | 有（anchors 默认 2） | **未验**（C17） | 是 |
+| 取消后续聊（salvage / 锚点） | 有 | **仅 salvage 可达**；无锚点 ⇒ 长 prompt 取消即丢（C18） | 是 |
+| 多会话并存（`private 2*N`） | 有 | 无（`private 1`） | 是 |
+| 磁盘会话 / 淘汰 spill（`--slot-save-path`） | 有 | 无（arena 不可导出） | 是 |
+| host KV tier / disk KV / hybrid | 有 | 拒（守卫） | 是 |
+
+两种解读，结论相反：
+
+- **解读 A（opt-in 即可）**：`--kv-stream` 是显式开关，其边界写在 `docs/cli.md`/`docs/serving.md`，
+  关掉即恢复到完整基线 ⇒ 当前声明**不违反**"不破坏原有流程"；本交付只需**把声明的形状做对**。
+- **解读 B（开着也要一样）**：打开流式后，上述能力必须与基线相同 ⇒ 声明的形状本身不满足需求，
+  需要逐项加回（锚点 → 多 owner → 磁盘），每一项都要付状态镜像/宿主内存/契约实现的账。
+
+**这是产品范围决定，不是技术选择。**我不能替所有者选；以下给出两条路线各自的具体工作量。
+
+### 14.3 两条路线
+
+**路线 A（把声明的形状做对）— 小，可立即完成**
+
+| 步 | 内容 | 验收 |
+|---|---|---|
+| A0 | 编译 `7adffbe9`（identity + 取消不清空 + 截断钳位 + 规划期按身份拒绝） | 编译通过 |
+| A1 | 取消序列（长会话→续聊→断开→再聊）：不崩、不静默错答 | C18 的"不崩/不错"半边；`equiv 4/4`；C13/C15/C16 不回归 |
+| A2 | 观测 TurnClosure（0 代码） | 同一 prompt 两次的 `reused`；决定 C17 是"已工作"还是"要接线" |
+| A3 | 文档写清边界（`docs/cli.md`、`docs/serving.md`、`--help`）——strategy §10 门禁本来就要 | 门禁项 |
+
+**路线 B（开着流式也与基线同能力）— 大，按项付费**
+
+| 步 | 内容 | 代价 | 依据 |
+|---|---|---|---|
+| B1 锚点 + TurnClosure | 放开守卫（3 处，见 §13.5 C3）+ 回退时按计划作废更深 checkpoint + 状态槽 `(2+A)*private+shared` | 每 owner A 个 host StateImage（**字节数未测**） | `model_instance.cpp:443-477`、`startup.cpp:1790-1840` |
+| B2 多 owner（`private N`） | arena region + 每 owner 一套前沿/checkpoint（= strategy 的 M4） | 每 owner ≈ 4 GiB 宿主（192 K） | design §4.9 的 M4 |
+| B3 磁盘/会话 | arena 导出/导入 + 放开 disk 守卫 + `session_snapshot` restore 侧 | 大；快照 ~4 GiB/192 K | `session_snapshot.cpp:533` |
+
+### 14.4 与 strategy 的 P 系列如何对齐
+
+- A0–A2 = **P6 的收尾**（P6 自己写着"未得：retained 臂的 CTest 未跑"）；取消崩溃属于 P6 交付的缺陷。
+- B1 = **P6 的延伸**（把 host shelf 从 1 个端点扩到"端点 + 锚点"）。
+- B2 = strategy 的 **M4**（多序列），本来就是后续里程碑。
+- B3 = strategy **未列**（磁盘/会话不在 P0–P8 任何一期）⇒ 若要，是新增范围。
+- strategy §10 的未过门禁（cli 文档、span tuner 注册、sanitizer、跨架构、交错测量）是**特性交付门**，
+  与本文的缺陷修复并行，不冲突。
+
+### 14.5 仍未验证（不得当已知）
+
+1. 单个 host StateImage 的字节数（决定 B1 的代价）；
+2. 回退时更深 checkpoint 的作废路径是否存在（`checkpoint_recovery.cpp:126/387`、`pressure.cpp`）；
+3. finish 时 TurnClosure 的 capture offer 是否对流式生效（`frontend.cpp:628-840`）；
+4. `session_snapshot` 的 restore 侧。
+
+⇒ **可立即执行、不需要裁决的**：A0 + A1 + A2。**B1/B2/B3 需所有者选择路线后，先读完 14.5 再动手。**

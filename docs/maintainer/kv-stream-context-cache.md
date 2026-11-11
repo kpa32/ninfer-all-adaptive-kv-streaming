@@ -931,3 +931,32 @@ B1/B2/B3 从"三个项目"变成"三个验证里程碑"。
 
 **已经工作、不要再修**：同一 prompt 重发（turn closure，99.7%、45 ms）、跨请求 endpoint 复用（C13）、
 取消后不崩溃（P6，identity 修复的结果）。
+
+### 18.2 Engine 级复用用例（新测试 `test_engine_kv_stream_reuse.cpp`，5 例全过）
+
+`ninfer_tests ninfer_qwen3_5_kv_stream_reuse_real_test`（RTX 4080 SUPER，`rk8v4`，1.4 k token 提示）：
+
+```
+reuse: repeated prompt reused 0 tokens
+reuse: unrelated after cancel reused 0 tokens
+reuse: prompt after cancel reused 0 tokens
+reuse: A -> B -> A reused 0 tokens
+reuse: five cases admitted; upload 0 B, download 0 B, verify 0/0
+```
+
+五个用例的**正确性**全部成立（每个用例都与无缓存引擎逐 token 相同、全部被接纳、无崩溃），
+但复用计数全为 0。两个原因，分开记录：
+
+1. **原始 token 提示没有消息结构**（`engine.h:101-106` 的 `anchor_prompt_end` 注释即此意）：
+   要让同一 prompt 重发命中，必须 `prepare_tokens(..., anchor_prompt_end=true)`，而它要的
+   正是一个 anchor checkpoint —— 流式当前**禁止锚点**（守卫要求
+   `max_long_anchors_per_continuation == 0`），于是请求了也不生效。**这是 §15.1 B1 的具体表现**，
+   且与 serve 路径不矛盾：serve 走 chat 模板，TurnClosure 可用，实测 99.7% 命中（§18.1 P2）。
+2. 提示只有 1.4 k token，池的窗口装得下整段 ⇒ `upload/download 0 B`，这条用例测的不是流式搬运，
+   而是复用判据本身（也正因如此它便宜、可进 CTest）。
+
+### 18.3 由 18.2 得出的 R2 判据（写给实现）
+
+- `prepare_tokens(anchor_prompt_end=true)` 在流式下必须与基线同样生效 ⇒ 锚点容量 ≥1；
+- 复用命中后 ids 必须逐 token 相同（本测试已强制）；
+- 取消后的请求必须被接纳且与冷跑逐 token 相同（本测试已强制）。

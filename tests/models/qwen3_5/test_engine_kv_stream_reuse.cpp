@@ -134,7 +134,7 @@ int run() {
         auto handle = engine.submit(engine.prepare_tokens(long_report), greedy(true));
         std::this_thread::sleep_for(std::chrono::milliseconds(14000));
         handle = {};
-        const auto rewrite = engine.generate(engine.prepare_tokens(long_report), greedy(true));
+        const auto rewrite = engine.generate(engine.prepare_tokens(long_report, true, /*anchor_prompt_end=*/true), greedy(true));
         require(rewrite.generated_token_ids == cold_ids.long_report,
                 "the request after a cancel emitted different ids");
         std::fprintf(stderr, "reuse: prompt after cancel reused %u tokens\n",

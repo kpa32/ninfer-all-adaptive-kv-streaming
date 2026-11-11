@@ -1386,11 +1386,22 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
                 "--kv-stream keeps every KV page in pinned host memory itself: no host KV tier, "
                 "disk tier or session slot takes part");
         }
-        if (!cache.max_shared_prefixes || *cache.max_shared_prefixes != 0 ||
-            !cache.max_long_anchors_per_continuation ||
-            *cache.max_long_anchors_per_continuation != 0) {
+        if (!cache.max_shared_prefixes || *cache.max_shared_prefixes != 0) {
             throw std::invalid_argument(
-                "--kv-stream retains one continuation: no shared prefixes and no long anchors");
+                "--kv-stream retains its own continuations: no shared prefixes");
+        }
+        // Anchors are how a raw prompt, a cancelled prefill or a long single message leaves a
+        // restore point behind, and a streamed run keeps them the way the resident one does: the
+        // pages stay in the arena and the state image lives on the host shelf. Their inventory is
+        // the same expression the resident shape uses (two mandatory images per private owner plus
+        // one per anchor), so a shape that cannot seat them is refused here instead of failing an
+        // admission later.
+        const std::uint32_t anchors = cache.max_long_anchors_per_continuation.value_or(0);
+        const std::uint32_t required_state_slots =
+            2U * cache.max_private_continuations.value_or(0) + anchors;
+        if (cache.host_state_slots < required_state_slots) {
+            throw std::invalid_argument(
+                kv_stream_rejection_message(KVStreamRejection::RetainedContextNoHostSlot));
         }
         // A retained continuation's state image lives on the host shelf, beside the streamed
         // arena's own authority. A device state slot buys a round-trip saving the streamed run

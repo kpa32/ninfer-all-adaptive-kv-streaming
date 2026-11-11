@@ -58,12 +58,12 @@ EngineOptions engine_options(const char* artifact, bool retain) {
     options.invariant_attention = true;
     options.context_cache.enabled                           = retain;
     options.context_cache.mode                              = ninfer::ContextCacheMode::Legacy;
-    options.context_cache.host_state_slots                  = retain ? 1U : 0U;
+    options.context_cache.host_state_slots                  = retain ? 4U : 0U;
     options.context_cache.host_kv_capacity_bytes            = 0;
     options.context_cache.device_state_slots                = 0;
     options.context_cache.max_private_continuations         = retain ? 1U : 1U;
     options.context_cache.max_shared_prefixes               = 0;
-    options.context_cache.max_long_anchors_per_continuation = 0;
+    options.context_cache.max_long_anchors_per_continuation = retain ? 2U : 0U;
     options.context_cache.host_cache_budget_bytes.reset();
     options.context_cache.disk_kv_path.clear();
     return options;

@@ -151,17 +151,20 @@ int run() {
 
     // 3. Cancelling past the progress-anchor grid and then sending the same prompt again: the
     // cancelled lane's own checkpoint is the only thing that can serve this request, so it is the
-    // case that shows whether a cancel keeps anything at all.
+    // case that shows whether a cancel keeps anything at all. It runs on a fresh engine so no
+    // earlier lane's endpoint can occupy the one private slot the check depends on.
     {
-        auto handle = engine.submit(engine.prepare_tokens(long_report), greedy(true));
+        Engine cancel_engine(engine_options(artifact, true));
+        auto handle = cancel_engine.submit(cancel_engine.prepare_tokens(long_report), greedy(true));
         std::this_thread::sleep_for(std::chrono::milliseconds(14000));
         handle = {};
+        const auto rewrite = cancel_engine.generate(cancel_engine.prepare_tokens(long_report),
+                                                    greedy(true));
+        require(rewrite.generated_token_ids == cold_ids.long_report,
+                "the request after a cancel emitted different ids");
+        std::fprintf(stderr, "reuse: prompt after cancel reused %u tokens\n",
+                     rewrite.reused_prompt_tokens);
     }
-    const auto rewrite = engine.generate(engine.prepare_tokens(long_report), greedy(true));
-    require(rewrite.generated_token_ids == cold_ids.long_report,
-            "the request after a cancel emitted different ids");
-    std::fprintf(stderr, "reuse: prompt after cancel reused %u tokens\n",
-                 rewrite.reused_prompt_tokens);
 
     // 4. Two conversations, then the first one again: whichever context the space kept, the answer
     // must match a cold run, and the request must be admitted.

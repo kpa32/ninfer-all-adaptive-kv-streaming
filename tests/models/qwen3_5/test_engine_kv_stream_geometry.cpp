@@ -75,7 +75,7 @@ EngineOptions engine_options(const char* artifact, std::uint32_t capacity_tokens
     options.context_cache.host_state_slots                  = 0;
     options.context_cache.host_kv_capacity_bytes            = 0;
     options.context_cache.device_state_slots                = 0;
-    options.context_cache.max_private_continuations         = 0;
+    options.context_cache.max_private_continuations         = 1;
     options.context_cache.max_shared_prefixes               = 0;
     options.context_cache.max_long_anchors_per_continuation = 0;
     options.context_cache.host_cache_budget_bytes.reset();

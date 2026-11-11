@@ -629,10 +629,6 @@ ReleaseResult Program::release_continuation(ContinuationHandle&& continuation) n
     return impl_->release_continuation(std::move(continuation));
 }
 
-void Program::demote_catalogued_state(ContinuationHandle& continuation) noexcept {
-    impl_->demote_catalogued_state(continuation);
-}
-
 SessionSnapshot Program::save_continuation(const ContinuationHandle& continuation,
                                            std::string_view model_binding) {
     return impl_->save_continuation(continuation, model_binding);

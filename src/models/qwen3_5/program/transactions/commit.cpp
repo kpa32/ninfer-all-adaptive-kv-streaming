@@ -760,6 +760,13 @@ bool ProgramImpl::salvage_continuation(SequenceState& state, RequestControl& req
     // Salvage publishes the in-place active state as the continuation endpoint. A pending
     // materialization Fork is skipped: its read source belongs to an external owner and the
     // destination copy duplicates a checkpoint the catalog already holds.
+    const bool trace_salvage = std::getenv("NINFER_STREAM_DEBUG") != nullptr;
+    if (trace_salvage) {
+        std::fprintf(stderr, "[salvage] lane=%u lifecycle=%d publish=%d fork=%d rw=%d kv=%d\n", lane,
+                     static_cast<int>(request.lifecycle), int(request.publish_continuation),
+                     int(state.state.fork_pending), int(state.state.read == state.state.write),
+                     int(state.kv.has_value()));
+    }
     if (!request.publish_continuation || state.state.fork_pending ||
         state.state.read != state.state.write || !state.kv) {
         return false;

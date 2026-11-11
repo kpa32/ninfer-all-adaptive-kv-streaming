@@ -734,3 +734,64 @@ identity（#15）、规划期与使用期的窗口（#13/#14）、截断钳位�
 4. `session_snapshot` 的 restore 侧。
 
 ⇒ **可立即执行、不需要裁决的**：A0 + A1 + A2。**B1/B2/B3 需所有者选择路线后，先读完 14.5 再动手。**
+
+---
+
+## 15. 路线 B 定案：开着流式，能力与基线相同（所有者裁决）
+
+> 所有者裁决（原文）：「必须开着也要一样， kv流式就是解决上下文不足的，我后面用肯定全程开着，
+> 要不破坏原有的ninfer使用体验和流程。」
+
+⇒ 规格从此是**基线（驻留模式）的行为**，流式只改"字节住在哪"。§14.2 的解读 A 作废。
+
+### 15.1 三项缺口与它们的真实成本（读完代码后）
+
+| # | 缺口 | 关键代码事实 | 规模 |
+|---|---|---|---|
+| **B1** | checkpoint 库存只有 1 个 host 端点：无锚点、无 TurnClosure ⇒ 同一 prompt 重发 miss、长 prompt 取消即丢 | 锚点由前端按 `progress_anchor_tokens` 的绝对栅格生成，**与流式无关**（`frontend.cpp:710-838`）；`progress_anchor_tokens` 在锚点容量 0 时被清零（`model_instance.cpp:452`）；库存 `(2+A)*private+shared`（`startup.cpp:1790-1840`）；基线的 `save_continuation` 靠**每页引用计数 + COW** 保住 checkpoint 的页，流式 arena 两者都没有 ⇒ 回退必须**按计划作废**更深的 checkpoint | 小–中 |
+| **B2** | `private 1`：第二个会话一来，第一个的字节被覆盖 | 基线默认 `max_private_continuations = 2 * concurrency`（`model_instance.cpp:443`）；流式守卫强制 `--max-concurrency 1` ⇒ **同一时刻只有一个 active decode**，环/窗口只服务当前请求；空闲 owner 只需要宿主页 + StateImage | 中 |
+| **B3** | 磁盘会话/淘汰 spill：`mapped_pages` 恒 0 ⇒ 保存抛错、spill 被 `catch (...)` 吞掉 | 保存与恢复两侧都用 `mapped_pages`（`session_snapshot.cpp:534/1020`，恢复还要求 `mapped_pages == page_count`）；流式地址没有逻辑页成员 | 中–大 |
+
+### 15.2 B2 的关键简化（由 `--max-concurrency 1` 推出，不是折衷）
+
+基线 M4 说"多序列同时 decode 会争环，M4 再按序列数分摊环"。但**流式被强制单并发**，
+所以"多个缓存的会话"与"多个并发的 decode"是两件事：
+**空闲 owner 不需要任何设备窗口**，宿主页就是它的全部状态。
+
+于是 B2 = **宿主 arena 按 owner 分区 + 设备窗口/环在请求进入时绑定到该 owner**：
+- 宿主：N 个连续 region，每层 `region_base(layer)`，owner 的页只落在自己的 region（等价于基线的
+  "每个 private continuation 有自己的地址空间"）；
+- 设备：窗口/环的算术不变，只是它对当前 owner 的页生效；切换 owner 时**不拷贝**（宿主是权威），
+  该 owner 的页在 `advance` 里按需上传，块表随之发布（`publish_slot` 已有）；
+- 目录：每个 owner 的条目携带 `region + 深度`，`can_serve(owner, tokens)` 增加"region 归属"判据；
+- 预算：每 owner 的容量 = 宿主预算 / N；N 取基线的 `2 * concurrency`（本机单人使用 ⇒ 2）。
+
+### 15.3 分步计划（每步单独可回退，验收不过不进下一步）
+
+| 步 | 内容 | 出口判据 |
+|---|---|---|
+| **B0** | 量出 `state_images.host.image_bytes`（一个打印持久布局的小驱动，不改产品代码） | 得到一个字节数，写进 §15.4 |
+| **B1a** | 放开锚点：守卫 + `max_long_anchors_per_continuation`（≥2，基线默认）+ `host_state_slots = (2+A)*private+shared` | 启动日志 `anchors 2`（或 A）；`equiv 4/4` 逐位不回归 |
+| **B1b** | 回退作废：倒回 frontier F 时，把 frontier > F 的 checkpoint 作为 `ResourcePlan` 的删除集合丢弃（`CheckpointRef` 逐项） | 无静默覆盖；计划审计可查 |
+| **B1c** | TurnClosure：先测（流式 finish 是否已有 `group.rewrite`），有 ⇒ 验 C17；无 ⇒ 在前端 offer 里接上 | **C17**：同一 prompt 两次，第二次 `reused > 0` 且逐位 |
+| **B1d** | 取消：salvage 可达已确认（`commit.cpp:966`）；锚点就绪后验 | **C18**：取消 16 k 后续聊 `reused > 0`、进程存活 |
+| **B2a** | 宿主按 owner 分区 + 窗口绑定（零行为变化：N=1 时 region_base≡0） | `equiv 4/4`、251 K `round_ms_median ≤ 41.4×1.01` |
+| **B2b** | `private N = 2*concurrency`：目录/准入/报告接入 | **A→B→A 两个会话都命中**、`private 2` 出现在启动行 |
+| **B3a** | 流式地址的页合同：`mapped_pages` = 真实深度、页可拷出/拷入（沿用 `plan_host_kv_page_layout`） | save→erase→restore→续聊逐位 |
+| **B3b** | 淘汰 spill 真实落盘（`spill_catalog_slot` 不再吞错） | spill 文件存在且非空 |
+| **B4** | 收口：`docs/cli.md`/`docs/serving.md`/`--help`、verification C17–C19、measurements、strategy §10 门禁 | 门禁项逐条 |
+
+顺序依据：**B1 先**（它让"同一 prompt / 取消"当天可用，且不动设备布局）；**B2 次**（宿主分区，
+N=1 时中性可证）；**B3 最后**（需要 B2 的 region 只是方便，不依赖它——B3 依赖的是"页可寻址"）。
+
+### 15.4 预算（B0 之后填实数）
+
+- 每 owner 宿主 KV：192 K ≈ 4.07 GiB（实测启动行）⇒ N=2 ⇒ ≈ 8.1 GiB。
+- 每 owner StateImage：`(2 + A)` 张；A=2、N=2 ⇒ 8 张 + shared；单张字节数待 B0 实测。
+- 上限：`resolve_host_cache_budget` 要求 `state_bytes ≤ host_cache_budget / 2`，否则启动即报错并给出算式。
+
+### 15.5 不做的事（保持）
+
+- 不重写流式核心：`src/ops` 零改动、`text.cpp` 拷贝编排不变；B2 只改 region 基址与目录判据。
+- 不引入第二套缓存策略：B1/B2 的删除与保留都走 `ResourcePlan`，与基线同一套计划语义。
+- 不用冷启动掩盖缺口：唯一的冷启动条件是"该 owner 没有可用 checkpoint"。

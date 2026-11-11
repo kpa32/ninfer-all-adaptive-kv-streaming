@@ -1265,3 +1265,24 @@ A again:  enabled=1 catalog=2 ... opportunities=1   → CAT slot=0 state=0, slot
 
 **在这条链条上还有一条已验证的好消息**：取消用例（prefill 中途取消）在 region=2 下依然
 `reused 23424`、逐 token 正确，说明 region 与 `upload_window` 没有破坏既有能力。
+
+### 20.11 排除驱逐补丁：根计划正常，A 的条目仍消失
+
+在管理器里加了 `[admission] root plan refused` 之后，整条 A→B→A 链条**一次都没有打印**它：
+
+```
+A:        enabled=1 catalog=2 opportunities=1
+B:        enabled=1 catalog=2 opportunities=0      ← 根计划正常，能冷跑
+A again:  enabled=1 catalog=2 opportunities=1      ← 此时 CAT 里两个槽都是空
+```
+
+⇒ **驱逐补丁没有参与**（它只在"完全无放置方案"时才跑）。A 的条目是在 B 的**接纳过程中**
+（`plan_materialization` / 压力规划）被释放的，而这不是"无放置"分支。
+
+**下一枪（唯一未打印的环节）**：在 `plan_materialization` 与压力规划的释放点打印
+"释放 slot/owner、原因、释放后的 free 统计"。判据：
+- 若是**内存确实不够**（A 的 StateImage + arena 的 region 与 B 的需求冲突）⇒ 这不是 bug，
+  而是宿主预算不足，需要按 `host_state_slots`/region 数把账抬高；
+- 若是**判据误算**（有空槽/足够状态槽却驱逐）⇒ 修判据。
+
+这条一旦定案，A→B→A 要么直接变成"加预算即可"，要么是一个小修。region 与身份侧不需要再改。

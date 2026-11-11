@@ -364,16 +364,15 @@ public:
         return best;
     }
 
-    [[nodiscard]] Inspection inspect(Program& program, const PreparedPrompt& prompt,
-                                     const RequestBasePlan& base, std::uint64_t publication_order,
-                                     PlanningAllowance allowance = {}) {
+    // One inspection attempt. `plan_blocked` reports the one block a retry can act on: the
+    // materialization planner found no plan, which with a full private catalog means the published
+    // continuations the head cannot reuse are in the way.
+    [[nodiscard]] Inspection inspect_once(Program& program, const PreparedPrompt& prompt,
+                                          const RequestBasePlan& base,
+                                          std::uint64_t publication_order,
+                                          PlanningAllowance allowance, bool* plan_blocked) {
         if (!std::holds_alternative<std::monostate>(transaction_) ||
             program.has_context_transaction()) {
-            if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
-                std::fprintf(stderr, "[admission] blocked: transaction=%d program=%d\n",
-                             std::holds_alternative<std::monostate>(transaction_) ? 0 : 1,
-                             program.has_context_transaction() ? 1 : 0);
-            }
             return {.readiness = Readiness::TemporarilyBlocked};
         }
         if (publication_order == 0) {
@@ -389,12 +388,7 @@ public:
                 break;
             }
         }
-        if (!destination) {
-            if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
-                std::fprintf(stderr, "[admission] blocked: no free lane\n");
-            }
-            return {.readiness = Readiness::TemporarilyBlocked};
-        }
+        if (!destination) { return {.readiness = Readiness::TemporarilyBlocked}; }
 
         const typename Planner::Clock::time_point planning_started = Planner::Clock::now();
         // NINFER_MAT_DEBUG traces how each catalogued checkpoint was or was not turned into a
@@ -433,12 +427,7 @@ public:
             prompt, base, *destination, nullptr, nullptr, std::nullopt, false);
         // Isolated feasibility does not imply that an active Program is at a materialization
         // boundary: an unfinished StateImage fork must settle before admission can be planned.
-        if (!root) {
-            if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
-                std::fprintf(stderr, "[admission] blocked: no root plan\n");
-            }
-            return {.readiness = Readiness::TemporarilyBlocked};
-        }
+        if (!root) { return {.readiness = Readiness::TemporarilyBlocked}; }
         Candidate root_candidate{.plan = std::move(*root)};
         if (const auto graft_slot = root_candidate.plan->graft_shared_slot()) {
             if (*graft_slot < shared_catalog_count_ &&
@@ -656,15 +645,58 @@ public:
             plan_materialization(program, prompt, base, *destination, candidates, publication_order,
                                  planning_started, provisional_demand, allowance);
         if (!selected) {
-            if (std::getenv("NINFER_ADMISSION_DEBUG") != nullptr) {
-                std::fprintf(stderr, "[admission] blocked: no materialization plan\n");
-            }
+            if (plan_blocked != nullptr) { *plan_blocked = true; }
             return {.readiness = Readiness::TemporarilyBlocked};
         }
         return {
             .readiness = selected->needs_transfer() ? Readiness::NeedsTransfer : Readiness::Ready,
             .choice    = std::move(selected),
         };
+    }
+
+    // Admission. A published context the head cannot reuse in full is a cache entry, not a lease: the
+    // resident cache never refuses a cold request because an earlier continuation is still resident,
+    // and a streamed space must not either - with one private continuation slot, keeping such an entry
+    // blocks the replacement the head needs (measured: the second conversation of a served process
+    // could not be admitted at all). Dropping the entry frees the slot without moving a byte - a
+    // streamed space's host pages are the authority and the next request republishes them as it writes
+    // - and the inspection is then redone from scratch, because a retry inside one pass would leave the
+    // planner holding handles to the entry that was just released.
+    [[nodiscard]] Inspection inspect(Program& program, const PreparedPrompt& prompt,
+                                     const RequestBasePlan& base, std::uint64_t publication_order,
+                                     PlanningAllowance allowance = {}) {
+        bool plan_blocked = false;
+        Inspection first =
+            inspect_once(program, prompt, base, publication_order, allowance, &plan_blocked);
+        if (!plan_blocked || !cache_enabled_) { return first; }
+        if (drop_continuations_the_head_cannot_use(program, prompt)) {
+            rebuild_prefix_index();
+            return inspect_once(program, prompt, base, publication_order, allowance, nullptr);
+        }
+        return first;
+    }
+
+    // Drops every catalogued private continuation the head cannot reuse in full, and reports whether it
+    // dropped one. It keeps no KV of its own (the streamed space's host pages are the authority), so
+    // dropping it moves no byte.
+    bool drop_continuations_the_head_cannot_use(Program& program, const PreparedPrompt& prompt) {
+        bool dropped = false;
+        for (std::uint32_t slot = 0; slot < catalog_count_; ++slot) {
+            CatalogEntry& entry = catalog_[slot];
+            if (entry.state != CatalogState::Catalogued || !entry.handle) { continue; }
+            const std::uint32_t published =
+                entry.summary.endpoint ? entry.summary.endpoint->ref.frontier : 0;
+            if (published != 0 && program.matched_prefix_tokens(*entry.handle, prompt) >= published) {
+                continue;
+            }
+            if (program.release_continuation(std::move(*entry.handle)).status !=
+                ConsumeStatus::Consumed) {
+                continue;
+            }
+            clear_catalog_entry(entry);
+            dropped = true;
+        }
+        return dropped;
     }
 
     [[nodiscard]] std::optional<PersistentBackfillProof>

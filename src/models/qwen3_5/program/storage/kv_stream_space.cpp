@@ -574,19 +574,24 @@ std::uint32_t StreamedKVSpace::slot_of_page(std::uint32_t layer, std::uint32_t p
     return ring_base_ + run*split_.run_pages + page % split_.run_pages;
 }
 
-void StreamedKVSpace::enter_request(std::uint32_t tokens) {
+void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
     const std::uint32_t pages = tokens == 0 ? 0U : page_count(tokens);
     if (pages > active_) {
         throw std::logic_error("streamed KV frontier is beyond the space's context");
     }
-    if (pages < active_) {
-        // Nothing continues: every page the prompt reaches is republished as it is written, and any
-        // page past its frontier is never read again.
+    if (pages < active_ || owner != owner_) {
+        // Nothing continues these pages: the request republishes every page its prompt reaches as it
+        // writes it, and the pages it overwrites stop belonging to whoever held them before. From
+        // here on the old owner's claim is refused by the owner stamp, never served stale bytes.
         active_ = 0;
     }
-    retained_          = false;
+    owner_             = owner;
     retained_frontier_ = 0;
     clear_round_bookkeeping();
+}
+
+bool StreamedKVSpace::can_serve(std::uint64_t owner, std::uint32_t tokens) const noexcept {
+    return owner != 0 && owner == owner_ && page_count(tokens) <= active_;
 }
 
 void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {

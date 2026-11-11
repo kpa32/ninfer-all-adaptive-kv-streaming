@@ -135,6 +135,14 @@ std::optional<std::uint32_t> ProgramImpl::allocate_continuation_slot() noexcept 
     return std::nullopt;
 }
 
+std::uint64_t ProgramImpl::owner_stamp(const SequenceState& sequence) const noexcept {
+    // `continuation_states` is sized once and never resized, so a state's index is its slot. The
+    // generation advances when the slot is retired, which is what makes a stamp unique to one use.
+    const auto index = static_cast<std::uint32_t>(&sequence - continuation_states.data());
+    if (index >= continuation_capacity) { return 0; }
+    return (continuation_slots[index].generation << 16) | index;
+}
+
 bool ProgramImpl::can_release_continuation_slot_strict(std::uint32_t index) const {
     if (index >= continuation_capacity || !state_store || !text_kv_addresses || !text_kv_pages ||
         continuation_slots[index].role != ContinuationSlotRole::Catalogued) {

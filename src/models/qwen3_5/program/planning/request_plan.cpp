@@ -754,13 +754,18 @@ std::optional<AdmissionCandidate> ProgramImpl::inspect_lane(
         }
     }
 
-    if (text_kv_addresses != nullptr && plan->reuse != ReusePath::Root && plan->reuse_base != 0 &&
-        !text_kv_addresses->stream_can_serve(plan->reuse_base)) {
-        // The streamed space owns the whole context and only one lineage is live at a time: a request
-        // that did not continue it rewound it, so this continuation's pages are gone. Refusing the
-        // candidate here makes the planner fall back to a cold plan; without this the reuse was planned
-        // and prefill threw `streamed KV frontier is beyond the space's context` after admission.
-        return std::nullopt;
+    if (text_kv_addresses != nullptr && plan->reuse != ReusePath::Root && plan->reuse_base != 0) {
+        // The streamed space holds one context, so a claim is only real while the space holds that
+        // continuation's bytes at least that deep. A shared prefix has no stamp of its own: with
+        // streaming the only candidates are private states, so a shared source is refused here rather
+        // than planned and then thrown from prefill.
+        const std::uint64_t owner = source != nullptr ? owner_stamp(*source) : 0;
+        if (!text_kv_addresses->stream_can_serve(owner, plan->reuse_base)) {
+            // Refusing the candidate makes the planner fall back to a cold plan; without this the
+            // reuse was planned and prefill threw `streamed KV frontier is beyond the space's
+            // context` after admission, taking the whole served process down.
+            return std::nullopt;
+        }
     }
 
     if (speculative_backend == SpeculativeBackend::Mtp) {

@@ -1721,6 +1721,10 @@ private:
     [[nodiscard]] SequenceState& active_sequence(std::uint32_t lane);
     [[nodiscard]] const SequenceState& active_sequence(std::uint32_t lane) const;
     [[nodiscard]] std::optional<std::uint32_t> allocate_continuation_slot() noexcept;
+    // The identity of the continuation a state belongs to: its slot and the generation that slot
+    // carried when the state was bound. A retired slot advances the generation, so a stamp never
+    // repeats and a claim on rewritten streamed bytes cannot be served by accident.
+    [[nodiscard]] std::uint64_t owner_stamp(const SequenceState& sequence) const noexcept;
     [[nodiscard]] bool can_release_continuation_slot_strict(std::uint32_t index) const;
     void release_continuation_slot_strict(std::uint32_t index,
                                           bool written_to_disk = false) noexcept;

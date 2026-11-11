@@ -946,12 +946,14 @@ public:
 
     // Whether the streamed space still holds the pages a continuation names. There is one space per
     // store, and any request that does not continue it rewinds it to its own frontier, so a published
-    // continuation's frontier is only real while the space is at least that deep. Planning a reuse the
-    // space cannot materialize used to succeed and then throw from `enter_request` in prefill, taking a
-    // whole served process down.
-    [[nodiscard]] bool stream_can_serve(std::uint32_t tokens) const noexcept {
+    // continuation is only real while the space holds that owner's bytes at least that deep. The
+    // depth alone is not enough: another conversation can drive the space past the same frontier with
+    // its own pages, and serving those under the first continuation's name would be a silent wrong
+    // answer. Planning a reuse the space cannot materialize used to succeed and then throw from
+    // `enter_request` in prefill, taking a whole served process down.
+    [[nodiscard]] bool stream_can_serve(std::uint64_t owner, std::uint32_t tokens) const noexcept {
         if (stream_space_ == nullptr) { return true; }
-        return pages_for_tokens(tokens) <= stream_space_->active_pages();
+        return stream_space_->can_serve(owner, tokens);
     }
 
     void activate(KVAddressSpaceHandle handle, std::uint32_t entitlement,
@@ -1093,19 +1095,16 @@ public:
     void deactivate(KVAddressSpaceHandle handle) {
         Address& address = require_active(handle);
         if (stream_space_ != nullptr) {
-            // The sequence's frontier goes with it, but a context the continuation published stays:
-            // its pages are the pinned host authority and the window it ended with is still on the
-            // device, so keeping them copies nothing. A release without a published endpoint
-            // forgets the context, and the next request republishes as its pages appear.
+            // The sequence's frontier goes with it, but the context stays: its pages are the pinned
+            // host authority and the window it ended with is still on the device, so keeping them
+            // copies nothing. A request that did not continue this context rewinds it at its own
+            // `enter_request`, which is also what refuses the old owner's claim - a cancel is not a
+            // reason to throw the context away.
             address.row.reset();
             address.reservation.release();
             address.page_count = 0;
             address.active     = false;
-            if (stream_space_->retained()) {
-                stream_space_->retain();
-            } else {
-                stream_space_->reset();
-            }
+            stream_space_->retain();
             return;
         }
         for (std::uint32_t page = 0; page < address.page_count; ++page) {
@@ -1790,7 +1789,7 @@ public:
             const std::uint32_t held =
                 stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize);
             const std::uint32_t served = std::min(frontier, held);
-            stream_space_->enter_request(served);
+            stream_space_->enter_request(stream_space_->held_owner(), served);
             address.committed_frontier = served;
             return;
         }
@@ -1874,7 +1873,7 @@ public:
             const std::uint32_t held =
                 stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize);
             const std::uint32_t served = std::min(frontier, held);
-            stream_space_->enter_request(served);
+            stream_space_->enter_request(stream_space_->held_owner(), served);
             address.committed_frontier  = served;
             address.checkpoint_frontier = 0;
             return;

@@ -732,11 +732,15 @@ void ProgramImpl::start_sequence(std::uint32_t lane, SequenceState& sequence,
             // before the first chunk claims a run.
             if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
                 std::fprintf(stderr,
-                             "[stream] request starts: reuse=%d base=%u valid=%u space_pages=%u\n",
+                             "[stream] request starts: owner=%llu reuse=%d base=%u valid=%u "
+                             "space_pages=%u space_owner=%llu retained=%u\n",
+                             static_cast<unsigned long long>(owner_stamp(sequence)),
                              static_cast<int>(request_plan.reuse), base, sequence.text_kv_valid,
-                             text_stream_space->active_pages());
+                             text_stream_space->active_pages(),
+                             static_cast<unsigned long long>(text_stream_space->held_owner()),
+                             text_stream_space->retained_frontier());
             }
-            text_stream_space->enter_request(sequence.text_kv_valid);
+            text_stream_space->enter_request(owner_stamp(sequence), sequence.text_kv_valid);
         }
 
         sequence.endpoint_valid = false;

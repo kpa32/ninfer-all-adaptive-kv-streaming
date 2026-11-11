@@ -116,25 +116,31 @@ public:
         clear_round_bookkeeping();
     }
 
-    // Keeps the frontier a published continuation left and drops the round's ring bookkeeping: the
-    // next request either continues from that frontier or starts empty (enter_request).
+    // Keeps the frontier a request left and drops the round's ring bookkeeping: a cancelled request
+    // keeps the context it computed, and the next request either continues that frontier or rewinds
+    // it (enter_request). Nothing is copied, because the pages are the pinned host authority.
     void retain() noexcept { clear_round_bookkeeping(); }
 
-    // Marks `tokens` as the frontier a continuation is published for. A deactivation of the address
-    // space then keeps the space (KVStore::set_checkpoint_requirement): the pinned host authority
-    // already holds every page and the window the request ended with is still on the device, so the
-    // retention copies nothing.
-    void publish_frontier(std::uint32_t tokens) noexcept {
-        retained_frontier_ = tokens;
-        retained_          = true;
-    }
-    [[nodiscard]] bool retained() const noexcept { return retained_; }
+    // Records the frontier a continuation is published at. A deactivation keeps the space either way;
+    // what makes a published claim servable is the owner stamp and the depth, not this frontier - a
+    // continuation restored from a checkpoint reuses a frontier the space already holds.
+    void publish_frontier(std::uint32_t tokens) noexcept { retained_frontier_ = tokens; }
     [[nodiscard]] std::uint32_t retained_frontier() const noexcept { return retained_frontier_; }
+    // The continuation stamp of the bytes the space holds (zero when nothing owns them).
+    [[nodiscard]] std::uint64_t held_owner() const noexcept { return owner_; }
 
-    // Starts one request at `tokens`: a request that continues the retained frontier keeps it, every
-    // other request starts from an empty space, and either way the round's ring bookkeeping is
-    // dropped (a run may only be claimed once its previous owner's events are behind it).
-    void enter_request(std::uint32_t tokens);
+    // Whether these bytes belong to `owner` and reach `tokens`. The space holds one context, and any
+    // request that does not continue it rewrites the pages from its own base, so a claimed frontier
+    // says nothing on its own: without the owner stamp a continuation could be served another
+    // conversation's bytes, because the page count only says how deep the space ever got.
+    [[nodiscard]] bool can_serve(std::uint64_t owner, std::uint32_t tokens) const noexcept;
+
+    // Starts one request at `tokens` for `owner`: a request that continues this frontier for this
+    // owner keeps it, and every other request rewinds the space to zero - which is also the moment
+    // the previous owner's claim stops being servable, because the pages are about to be rewritten.
+    // Either way the round's ring bookkeeping is dropped (a run may only be claimed once its
+    // previous owner's events are behind it).
+    void enter_request(std::uint64_t owner, std::uint32_t tokens);
 
     // Copies layer `layer`'s streamed pages (`[0, window_start)`) from their host pages into the
     // ring, on `copy`, in runs of `run_pages` pages, and republishes that layer's streamed table
@@ -348,9 +354,11 @@ private:
     // the request, so the live value is not what a finished request moved.
     std::uint32_t round_streamed_pages_ = 0;
     std::uint32_t active_ = 0;
+    // The continuation whose ledger these bytes hold. Reused continuation slots never repeat a
+    // stamp, so a claim on pages another request rewrote can never be served by accident.
+    std::uint64_t owner_ = 0;
     // The continuation a finished request published, and whether its context is still in the space.
     std::uint32_t retained_frontier_ = 0;
-    bool retained_                   = false;
     // The deadline flags, the counters and the two window events a round reports: how many copy runs
     // missed their attention, how much of the round the copy engine was busy, and how long the last
     // completed window's device span was (the span tuner prices a round with it).

@@ -484,14 +484,15 @@ turn), and the tokens it produces are the ones a cache-less run of the same prom
 `--no-prefix-reuse` releases the context at the end of every request instead. The endpoint lives on
 the host shelf: a device state slot beside the streamed window is rejected (`--device-state-slots 0`).
 
-A streamed pool is divided by the phase a pass runs in: a prompt keeps the ring at one layer's
-extent (its copies are hidden behind its own attention, so a deeper ring would only take window
-away), and the first decode round moves to the deeper ring that overlaps it. On a 16 GB card at
-251 K that leaves prompt and decode each measured at their best shape; the switch costs one page
-migration per request. `--prefill-chunk` also sizes the prompt's workspace out of the same pool, so
-`--kv-stream` wants 256 or 512: at 1024 the workspace takes 202 MiB of window on a 251 K context and
-a decode round takes 63.9 ms instead of 54.1 ms (see [measurements](maintainer/kv-streaming-measurements.md)
-table 7).
+A streamed pool is planned once, when the Engine starts, with the shape a decode round wants: the
+ring is deep enough to overlap a round's copies with the attention that consumes them, and every
+layer's window is the rest of the pool. The plan does not change while the process runs — a request
+runs on the shape its pool was installed with — because a page is named by its layer's base plus its
+position in the window, so re-shaping would rename every resident page. A pool too small for the
+deep ring falls back to the prompt's shape. `--prefill-chunk` also sizes the prompt's workspace out
+of the same pool, so `--kv-stream` wants 256 or 512: at 1024 the workspace takes 202 MiB of window
+on a 251 K context and a decode round takes 63.9 ms instead of 54.1 ms (see
+[measurements](maintainer/kv-streaming-measurements.md) table 7).
 
 `--kv-stream` also defaults the choices whose trade is memory for speed, because the pool, not the
 weights, bounds such a run: `--embedding-residency host` (the token table's 388 MiB becomes window)
@@ -510,6 +511,8 @@ that is not being measured does not record them.
 **Diagnostics, not options.** A streamed pool's shape is decided by measurement, so the shape
 parameters are environment variables rather than flags; none is a product mode, and each record
 carries the shape it ran with (`stream.run_pages`, `stream.ring_runs`, `stream.layer_resident`).
+Every record must carry that shape: two runs whose pools differ by a few pages are different
+layouts, and a result is only comparable to another result of the same one.
 
 | variable | effect | measured default |
 |---|---|---|

@@ -255,3 +255,15 @@ embedding 常驻占 388.4 MiB；换成 host 后这部分显存回到 KV 池（�
   P1 记录），池在启动时按 decode 形规划、进程内不变。
 - 回退点：tag `kv-stream/layout-switch-before-removal`、分支 `kv-stream/preserved-layout-switch`。
 - 完整档案（证据表、被排除的假设、复现配方、不变量）：`bench/results/kv-stream/layout-rename-defect.md`。
+
+## 决策记录：请求中途换布局已移除（`68941676`）
+
+- 换形的唯一实测收益是 decode 轮 0.2%（P1 记录），代价是"布局参与页命名 ⇒ 换形即改名 ⇒ 必须搬字节"，
+  以及本文件上一节记录的正确性缺陷（`layout-rename-defect.md`）。
+- 现在的形态：池在**启动时**按 decode 形（深环）一次规划整上下文，`enter_layout`/`evaluate_partition`
+  恒返回 false，请求生命周期内布局不变；环太小装不下深环时回退 prompt 形。
+- 证据（同一构建）：六组几何（`resident` 1413→40、`ring` 24→35）答案逐位相同；保留臂与冷跑臂几何不同
+  也逐位相同；8 K 流式仍 `all-resident`；`layout_generation=0`（此前首轮 decode 会 +1）。
+- 下一步若删除"死代码"（`repartition` 的窗口迁移分支、`kv_stream_partition.*` 及其单测），验收要求：
+  251 K 轮时间 ≤ 基线 +1%、183 K 等价 PASS、prefill tok/s ≤ −1%。回退点：
+  tag `kv-stream/layout-switch-before-removal` / 分支 `kv-stream/preserved-layout-switch`。

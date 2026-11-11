@@ -1792,14 +1792,7 @@ public:
                                  address.committed_frontier, address.page_count,
                                  stream_space_->active_pages());
                 }
-                // Truncation only discards, and the space is the authority: keep what it holds and
-                // let the sequence learn the shorter frontier from the space it is reading.
-                stream_space_->enter_request(stream_space_->held_owner(),
-                                             stream_space_->active_pages() *
-                                                 static_cast<std::uint32_t>(kPagedKVPageSize));
-                address.committed_frontier =
-                    stream_space_->active_pages() * static_cast<std::uint32_t>(kPagedKVPageSize);
-                return;
+                throw std::invalid_argument("KV truncate frontier is beyond the sequence");
             }
             const std::uint32_t served = std::min(frontier, held);
             stream_space_->enter_request(stream_space_->held_owner(), served);

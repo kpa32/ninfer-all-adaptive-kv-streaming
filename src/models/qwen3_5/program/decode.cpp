@@ -80,9 +80,22 @@ auto ordinary_batch_body(OrdinaryBatchContext& state, std::int32_t batch_size,
                 (void)cudaStreamSynchronize(state.execution.device.stream);
                 std::fprintf(stderr,
                              "[stream] decode: hidden=%08x,%08x,%08x,%08x "
-                             "logits=%08x,%08x,%08x,%08x\n",
+                             "logits=%08x,%08x,%08x,%08x",
                              first_hidden[0], first_hidden[1], first_hidden[2], first_hidden[3],
                              first_logits[0], first_logits[1], first_logits[2], first_logits[3]);
+                std::int32_t source_slot = -1;
+                std::int32_t destination_slot = -1;
+                std::int32_t kv_row = -1;
+                (void)cudaMemcpyAsync(&source_slot, state_sources.data, sizeof(source_slot),
+                                      cudaMemcpyDeviceToHost, state.execution.device.stream);
+                (void)cudaMemcpyAsync(&destination_slot, state_destinations.data,
+                                      sizeof(destination_slot), cudaMemcpyDeviceToHost,
+                                      state.execution.device.stream);
+                (void)cudaMemcpyAsync(&kv_row, kv_rows.data, sizeof(kv_row), cudaMemcpyDeviceToHost,
+                                      state.execution.device.stream);
+                (void)cudaStreamSynchronize(state.execution.device.stream);
+                std::fprintf(stderr, " state_source=%d state_destination=%d kv_row=%d\n",
+                             source_slot, destination_slot, kv_row);
                 ++dumped;
             }
         }

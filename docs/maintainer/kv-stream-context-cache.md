@@ -1311,3 +1311,22 @@ A again:  enabled=1 catalog=2 opportunities=1   ← 目录已空
 若只是"需要状态槽/宿主状态镜像"，则抬预算即可。
 
 **已验证不受影响**：取消用例仍 `reused 23 424`；region=2 下无崩溃。
+
+### 20.13 B 的结果是 `readiness=2`（TemporarilyBlocked），不是"计划失败"
+
+```
+[admit] no choice: readiness=2 active=0     ← B
+[evict] drop-unusable slot=0 frontier=904
+[admit] ready: choice=1                     ← 丢掉 A 之后同一个 B 就能进了
+```
+
+- 冷请求 B **有根计划**（§20.11 已证），但管理器给出的是 **TemporarilyBlocked**，且当时没有活跃 lane
+  ⇒ 永远不会自己解除 ⇒ 引擎走"丢条目再试"的分支；
+- 丢掉 A 之后，**同一个 B 立刻 `ready`**。
+
+⇒ 这说明阻塞来自**"已有条目 + 新请求"的组合**（状态镜像/传输/放置的账），不是目录容量、不是 region。
+下一步（最后一处未打印）：在 `inspect` 的候选过滤里打印每个候选的
+`MaterializationPhysicalStatus` 与阻塞原因（`TemporarilyBlocked` 的判据），定位到具体是
+"没有可用状态槽/镜像"还是"传输需求被排队"。
+
+**已验证不受影响**：取消用例 `reused 23 424`；region=2 无崩溃；两个 fast 用例全过。

@@ -153,7 +153,13 @@ void retained_continuation(const char* artifact) {
     require(first.generated_token_ids.size() == 8, "the retained arm's first request stopped early");
     const auto after_first = engine.runtime_stats().streamed_kv;
     require(after_first.retained, "the streamed space did not retain the finished context");
-    require(after_first.retained_frontier == 190008,
+    // The frontier a continuation is published at is the last token the request produced, which is the
+    // prompt plus its generated tokens minus the one that was never executed: the request's own
+    // arithmetic, not a constant (kv_stream_space.h, publish_frontier).
+    const std::uint32_t executed =
+        static_cast<std::uint32_t>(first.prompt.prompt_tokens) +
+        static_cast<std::uint32_t>(first.generated_token_ids.size()) - 1U;
+    require(after_first.retained_frontier == executed,
             "the retained frontier is not the finished request's execution frontier");
 
     RequestOptions reuse = greedy(8);
@@ -163,8 +169,9 @@ void retained_continuation(const char* artifact) {
             "the continuation did not reuse the whole retained prefix");
     require(resumed.generated_token_ids == reference,
             "the reused prefix changed the tokens the continuation produces");
-    std::fprintf(stderr, "kv stream retained: reused %u of %zu prompt tokens, frontier %u\n",
-                 resumed.reused_prompt_tokens, extended.size(), after_first.retained_frontier);
+    std::fprintf(stderr,
+                 "kv stream retained: reused %u of %zu prompt tokens, frontier %u (executed %u)\n",
+                 resumed.reused_prompt_tokens, extended.size(), after_first.retained_frontier, executed);
 }
 
 int run() {

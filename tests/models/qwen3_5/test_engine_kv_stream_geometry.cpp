@@ -67,6 +67,19 @@ EngineOptions engine_options(const char* artifact, std::uint32_t capacity_tokens
     // The report is comparable across the arms only if the arithmetic is: the same rule for every
     // key segment on both sides (docs/cli.md, --invariant-attention).
     options.invariant_attention = true;
+    // The streamed shape: the pinned host authority is the KV tier, so the cache itself takes no
+    // host tier, no disk tier and no slot (kv_stream_guards.h rejects every one of them beside a
+    // streamed pool).
+    options.context_cache.enabled                           = false;
+    options.context_cache.mode                              = ninfer::ContextCacheMode::Legacy;
+    options.context_cache.host_state_slots                  = 0;
+    options.context_cache.host_kv_capacity_bytes            = 0;
+    options.context_cache.device_state_slots                = 0;
+    options.context_cache.max_private_continuations         = 0;
+    options.context_cache.max_shared_prefixes               = 0;
+    options.context_cache.max_long_anchors_per_continuation = 0;
+    options.context_cache.host_cache_budget_bytes.reset();
+    options.context_cache.disk_kv_path.clear();
     return options;
 }
 

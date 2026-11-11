@@ -1,7 +1,7 @@
 ---
 id: kv-stream-context-cache
 type: architecture-design
-title: KV 流式的上下文缓存：语义、已知缺陷与修复设计
+title: KV 流式的上下文缓存：与 ninfer 基线契约的对齐设计
 status: draft
 parent: kv-streaming-design
 references:
@@ -14,215 +14,222 @@ tags:
   - plan
 ---
 
-# KV 流式的上下文缓存：语义、已知缺陷与修复设计
+# KV 流式的上下文缓存：与 ninfer 基线契约的对齐设计
 
-**这份文件是什么**：把"流式 run 里跨请求复用上下文"当作一个**功能**做整体评估与设计，而不是逐次修 bug。
-它记录功能应当是什么、现状错在哪、修什么、怎么验收、怎么回退。历史与逐次实测在
-`bench/results/kv-stream/ledger.md`；缺陷的原始证据在 `bench/results/kv-stream/layout-rename-defect.md`。
+**本文的地位**：把"流式 run 里跨请求复用上下文"作为**一个功能**做整体评估，而不是逐次修 bug。
+历史与逐次实测在 `bench/results/kv-stream/ledger.md`；几何/换形缺陷在
+`bench/results/kv-stream/layout-rename-defect.md`；接手指针在 `bench/results/kv-stream/handoff.md`。
 
-**当前状态**：四个崩溃已用"宽容化"补丁止血，但**其中一条补丁本身在破坏缓存收益**（见 §4.3），
-所以现状**不能当作完成**。
+**本文的立场**：基线（`f6928e00`）的上下文缓存契约已经完整、正确，并且**早已覆盖流式需要的全部情形**
+（取消保留、长 prompt 锚点、turn 边界复用、计划式降级）。流式的任务**不是重新设计缓存**，而是让
+"流式 KV 的物理承载"满足这份既有契约。**现状未满足，这就是四次崩溃的战略原因。**
 
 ---
 
 ## 1. 功能认知：缓存只影响速度，不影响接纳与结果
 
-这是原版 ninfer 的语义，也是流式必须继承的语义：
-
 1. 有可复用前缀 → 快；没有 → 从头算。
-2. 缓存里的东西作废了 → 丢掉，继续算。
-3. **绝不会因为缓存状态报错、拒绝请求或崩溃。**
-4. **输出与缓存无关**：命中与否必须逐位相同。
+2. 缓存条目作废了 → 丢掉、继续算。
+3. **绝不因为缓存状态报错、拒绝请求或崩溃。**
+4. **输出与缓存无关**：命中与否必须逐位相同（基线 §1 亦明确：不同数值路径不要求 logits 相同，
+   但同一路径的命中与未命中必须一致——本项目的验收取更强的一条：逐位）。
 
-### 1.1 代价模型（决定"假未命中"有多贵）
+代价（实测约 1.5 k tok/s prefill，命中 TTFT 百毫秒级）：
 
-prefill 实测约 1.5 k tok/s（183 K 流式 1476、251 K 1281），命中时 TTFT 是**百毫秒级**：
-
-| 上下文 | 全量 prefill（估） | 命中 TTFT |
+| 上下文 | 全量 prefill（估） | 命中 |
 |---|---:|---:|
 | 16 k | ≈ 11 s | ~0.1 s |
 | 37 k | ≈ 25 s | ~0.1 s |
 | 190 k | ≈ 2 min | ~0.1 s |
 
-**结论**：判据不是"能不能容错"，而是"**能复用的必须复用**"。任何"有疑问就重算"的设计等于删掉缓存。
-
-### 1.2 "命中"的正确定义
-
-命中的价值是**最长匹配前缀**，不是"与上次的端点完全一致"：
-
-- 请求的前 N 个 token 与某条已发布上下文一致 ⇒ 复用 N 个 token，剩下的重算；
-- 发布新上下文时**替换**旧条目（同一槽位），不并存、不静默丢弃；
-- 端点（endpoint = prompt + 已生成 − 1）只是"上次停在哪"，**不是**可复用的判据。
-
-现状实现把 `reuse_base` 取成**端点前沿**，并要求 prompt 以该前沿为前缀
-（`src/models/qwen3_5/program/planning/request_plan.cpp` 的 `inspect_lane`，`ReusePath::PrivateEndpoint`
-分支），于是"同一个 prompt 再发一次"（少了上次生成的尾巴）被判为不可复用 ⇒ 整段重算。§4.1 有实测。
+⇒ 判据是"**能复用的必须复用**"，任何"有疑问就重算"都等于删掉缓存。
 
 ---
 
-## 2. 责任边界：谁能回答"上下文现在有多深"
+## 2. 基线契约（`f6928e00`，权威文本 `docs/maintainer/resource-scheduling-and-context-cache.md`）
 
-现状**同一条事实存了四份**，且没有一份是权威：
+这一节是本次设计的地基，逐条给出出处。
 
-| 存放处 | 含义 |
-|---|---|
-| `address.committed_frontier` | 地址声称的已提交前沿 |
-| `address.checkpoint_frontier` | 检查点声称的前沿 |
-| `sequence.text_kv_valid` | 序列声称的 KV 有效深度 |
-| `StreamedKVSpace::active_` | **空间实际持有的深度** |
+### 2.1 复用是"完整 continuation"，不是"部分 cache hit"（§4.1）
 
-任何"使用前"的判定若取自前三者，就可能与第四者不一致。四个崩溃全部由此而来（§3）。
+> 某个 frontier 可以复用，当且仅当 Program 能证明：①存在该 frontier 的**完整 StateImage**；
+> ②Main KV 满足 target 定义的 typed coverage；③selected backend 的 KV 与 fixed state 满足同一
+> continuation；④token、position、Vision 和 mode identity 与 incoming prompt 精确一致。
+> **只有 token match、KV bytes 或 page match 时，缺少的是完整 continuation，不是一次部分 cache hit。**
 
-**设计规则**：`StreamedKVSpace` 是唯一权威；其余三处都是它的**派生值**，在使用那一刻取值，
-并且**只能比它短，不能比它长**。
+**含义（重要，纠正本文旧稿的一个错误方向）**：Qwen3.5 有不能无损回退的 recurrent state（GDN），
+所以**不存在"任意最长前缀复用"**——复用点必须是**一条带完整 StateImage 的 checkpoint frontier**。
+"同一个 prompt 再发一次"要命中，靠的不是截断到匹配长度，而是**在 prompt 末尾存在一个 checkpoint**
+（§4.3 的 `TurnClosure`）。旧稿的"F2 最长前缀命中"违反这条，已废弃。
+
+### 2.2 checkpoint 种类就是"可复用点"（§4.3）
+
+| Kind | 语义 | 对本任务的作用 |
+|---|---|---|
+| `SessionEndpoint` | 已完成请求的最新可继续状态 | 续聊命中 |
+| `TurnClosure` | assistant 可变后缀之前的稳定状态 | **同一 prompt 重发 / 追加 user 轮** 命中 |
+| `ResponseReplay` | generation opener 之前的稳定状态 | 重生成 |
+| `LongAnchor` | retention 选择的较早长上下文恢复点 | 长上下文下的回退点 |
+| `SharedStablePrefix` | 多条历史共同的不可变前缀 | 跨会话共享 |
+
+### 2.3 取消**已经**保留（§9.5）
+
+> `ProgramImpl::abort` 先尝试 **salvage**：把 active state 作为 endpoint 发布在 prefill cursor
+> （需要至少 1024 tokens；MTP 还需要 tail hidden state，即只有最后一个 chunk 之后才行）。
+> salvage 不成立时，`retain_prefill_progress` 发布该 lane 已 capture 的 checkpoint（long anchor 或
+> rewrite checkpoint）……以 Disposable retention 进入 catalog。
+> `ContextCacheOptions::progress_anchor_tokens`（`--progress-anchor-tokens N`，默认 16384）让
+> Frontend 在 prompt 内部按绝对 token 栅格提出 `PrivateLongAnchor` opportunities，**使没有 message
+> boundary 的超长单条 prompt 被取消时也有 checkpoint 可保留**。
+
+**这就是"取消不作废"的现成机制。** 流式路径没有用它，而是 `reset()` 掉整个 arena。
+
+### 2.4 Terminal 只有两种，降级必须被计划并记录（§6.2、§9.4）
+
+- Finish = 发布完整 immutable checkpoint；Discard = 释放整个 active continuation；
+  **只有 Finish 无法形成合法保留终态时才允许 Discard**。
+- 降级/驱逐是 `ResourcePlan` 的一部分，绑定**确切的 `CheckpointRef` 删除集合**
+  （"同数量但不同 checkpoint 的替换会在任何 catalog mutation 前失败"）——**不允许静默消失**。
+
+### 2.5 多 owner 模型（§4.2、§6.1）
+
+> Private continuation 表示一条可继续演化的会话历史：
+> `PrivateContinuation ├── exact target/token history ├── Main KV address space
+> ├── optional backend KV address space └── one or more immutable checkpoints`
+
+**每个 owner 有自己完整的 KV address space 和若干 checkpoint。** 缓存容量 = 能同时容纳多少个 owner。
+
+### 2.6 两条我们踩过的判据
+
+- **§2.2 owner edge ≠ capability**：active request 的保护是"持续到 terminal settlement 的逻辑 lease"，
+  不是 catalog capability 的镜像。**把保留的上下文当成租约占住槽位**就是违反这条（缺陷 #11）。
+- **§5.1 StateImage 是完整迁移单位**：流式把 State 留在 host 时，StateImage 的语义不能丢。
 
 ---
 
-## 3. 已知缺陷（四次崩溃，一次分类）
+## 3. 流式路径相对基线的四处偏差（战略层面）
 
-| # | 用户可见现象 | 触发 | 根因 |
+| # | 基线 | 流式现状 | 后果 |
 |---|---|---|---|
-| 11 | `KV activation reservation is stale` → serve **进程 abort** | 第二段对话进入 | 保留的上下文按**租约**占住唯一私有槽，新请求要么放不下，要么用已作废的激活 |
-| 12 | `context cache exhausted: an idle Engine found no placement`（429） | 同上，1 个私有槽 | 规划器无法建立计划（`no materialization plan`），引擎在无活跃 lane 时报耗尽 |
-| 13 | `streamed KV frontier is beyond the space's context` → worker crash → `FATAL engine` | 无取消，长会话后继续 | 规划期不校验"空间还装得下吗"，prefill 才抛 |
-| 14 | 同上 | **取消一个请求之后** | 取消 → `deactivate` → 没有端点 → `reset()`，空间归零；目录条目仍在 ⇒ 下一次复用指向已不存在的页 |
+| **D1** | 每个 owner 一个 address space，可并存 N 个 | **整个 Program 一个 `StreamedKVSpace`**，`stream_space_` 单一指针；流式 address 的 `page_count = 0`、entitlement = 0（"claims no pool page at all"） | 缓存只剩"一条世系"；第二个会话一开始，第一个的 KV 被覆盖 |
+| **D2** | checkpoint 有独立 frontier 与 required coverage，彼此共享页 | arena 只有一个 `active_` 计数，页 = token 位置（线性），`enter_request(tokens)` 直接把 `active_` 设小 | 任何更短的请求都会**覆盖**更深的 checkpoint 所需页；不能并存两个 frontier |
+| **D3** | 取消 → salvage / `retain_prefill_progress`，默认保留 | `deactivate`：`retained() ? retain() : reset()` ⇒ 无 endpoint 的取消**清空 arena** | 一份 16 k 上下文被一次取消销毁；下一次规划到它 ⇒ 声明与字节脱节 ⇒ 崩溃（缺陷 #14） |
+| **D4** | 锚点/闭包按 `--progress-anchor-tokens` 发布（启动日志 `anchors N`） | serve 启动日志 `context cache | ... | anchors 0`，且流式不发布 TurnClosure | **同一 prompt 重发也 miss**（实测 `r2 reuse=0` ⇒ 多花 ≈11 s） |
 
-**一句话根因**：**某处声称有 N 个 token 的 KV，空间实际只有 M < N，而"用之前"没有任何一层以空间为准再问一次。**
-
-补充：`destructive_truncate` / `destructive_truncate_inactive` 的流式分支也会把
-`address.committed_frontier` 直接转给 `enter_request`（`kv_store.h:1785/1866`），是同一族的另一个入口。
-
----
-
-## 4. 现状的四条补丁及其问题（必须知道，避免重复）
-
-### 4.1 已合入的补丁
-
-| 位置 | 做什么 |
-|---|---|
-| `resource_manager.h` `drop_continuations_the_head_cannot_use` + `engine_core.h` `drop_unusable_context` | 放置失败且无活跃 lane 时，丢掉"队头不能完整复用"的已发布上下文，然后重做整次放置 |
-| `request_plan.cpp` `inspect_lane` | 复用前沿若 `!stream_can_serve(base)` ⇒ 无候选（走冷） |
-| `kv_store.h` 两处截断 | 按空间实际深度钳位 |
-| `kv_stream_space.h` `stream_can_serve` | 给上面三处提供"空间能不能服务"的查询 |
-
-### 4.2 两条硬约束（踩过的坑）
-
-- **`ResourceManager::inspect` 必须保持只读**。第一版把驱逐放进 `inspect` 里，被
-  `ninfer_resource_manager_test` 的 `retained source protection` 断言抓住（"retained private source edge is stale"）。
-  正确位置是放置循环里、两次检查之间（每请求最多一次）。
-- **一次放置内部重试会留下悬空句柄**：先丢条目再用同一批候选重规划 ⇒ `pressure planning candidate is stale`。
-  必须**重做整次放置**（新的 inspection）。
-
-### 4.3 这些补丁的问题：驱逐会制造"假未命中"
-
-"不能完整复用就丢掉"对缓存是**反向**的：把一次**部分命中**变成**未命中**，并毁掉后续请求本可使用的上下文。
-
-serve 实测（16 k prompt）：`r1 reuse=0`（首次，正常），`r2 reuse=0`（**同一个 prompt**，假未命中 ⇒ 多花 ≈11 s）。
-r4 则表现为"规划到 `reuse=2 base=16147` 但 `space_pages=0`"——空间被 r3 的取消清零，条目却还在。
-
-**所以 §4.1 的补丁只能当护栏，不能当设计。**
+**一句话**：流式把基线的**多 owner 缓存**压成了**单 arena + 线性映射**，于是基线的四条不变式
+（complete continuation、checkpoint 独立 frontier、取消保留、计划式降级）全部无处落地。
+四次崩溃不是四个 bug，是**这四个偏差的必然产物**。
 
 ---
 
-## 5. 修复设计：三条不变量 + 三个机制
+## 4. 缺陷编年（同族，供验收对照）
 
-### 5.1 不变量
+| # | 现象 | 根因（映射到 §3） |
+|---|---|---|
+| 11 | `KV activation reservation is stale` → 进程 abort | D1 + 把保留当租约（违反 §2.6） |
+| 12 | `context cache exhausted`（429） | D1：唯一私有槽被保留占用，规划无解 |
+| 13 | `streamed KV frontier is beyond the space's context` → worker crash（无取消） | D2：规划期不校验空间覆盖 |
+| 14 | 同上（**取消之后**） | D3 + D2：取消清空 arena，目录条目仍声称有页 |
 
-- **I1｜取消不等于作废**：请求被取消/中止时，只要页面仍一致，就**保留**（像正常结束一样冻结并发布），
-  或**在同一时刻**让目录条目失效。**不允许只清一边。**
-- **I2｜命中按最长前缀，发布即替换**：`reuse_base = 最长匹配前缀`（≤ 端点）；新上下文发布进**被替换条目的
-  同一槽位**；不并存、不丢弃。
-- **I3｜声明在使用时校验，且只能变短**：任何前沿在使用那一刻向空间取；空间答"只能给 M"，就按 M 复用
-  （M 仍是合法前缀）；只有 M = 0 才全量重算。
+---
 
-### 5.2 机制
+## 5. 设计目标：让 arena 满足基线契约（不是重新设计缓存）
 
-**F1｜取消不清空（I1）**
+### 5.1 目标不变量（全部来自基线，不新增语义）
 
-- 位置：`KVStore::deactivate` 的流式分支（`if (stream_space_->retained()) retain(); else reset();`），
-  以及 `ProgramImpl` 的 abort/salvage 路径（`transactions/commit.cpp`：`result.salvaged` →
-  `publish_salvaged_continuation`，`finish()` 已有该分支）。
-- 目标：被取消的请求要么**冻结并发布**（可被后续复用），要么**同时**清空条目与空间。优先前者（UX）。
-- 注意：被取消的请求可能有**推测尾部**（未验证的草稿 token），发布前必须截到已提交前沿。
+- **N1｜一个 owner 一份地址空间**：arena 内为每个可缓存 owner 保留 **contiguous region**（每层内一段
+  连续页），owner 的 checkpoint 只引用自己 region 内的页；**没有第二个 owner 能覆盖它**。
+- **N2｜checkpoint 是带 StateImage 的 frontier**，允许任意合法 frontier（endpoint / turn closure /
+  long anchor），**不要求与当前 `active_` 相同**；agent 的 required coverage 必须被自己 region 覆盖。
+- **N3｜取消按基线处理**：salvage（≥1024 tokens 且 MTP tail 可用）否则 `retain_prefill_progress`；
+  `--progress-anchor-tokens` 的锚点机会对流式同样生效。**不再 reset。**
+- **N4｜降级/驱逐是计划步骤**：删除某 owner 的 region 必须作为 `ResourcePlan` 的显式结果记录
+  （沿用基线 §9.4 的 `CheckpointRef` 删除集合），**不允许静默覆盖**。
+- **N5｜声明在使用时以 arena 为准**（护栏）：任何前沿在使用那一刻向 arena 取；不够长则按能服务的长
+  服务；为 0 才冷启动。**永不抛出。**
 
-**F2｜最长前缀命中 + 替换发布（I2）**
+### 5.2 可行性：region 化在现有结构里是局部改动（关键）
 
-- 位置：`request_plan.cpp` 的 `inspect_lane`（把 `reuse_base` 从"端点前沿"改为"匹配长度（≤端点）"），
-  以及 `transactions/capture.cpp` + `resource_manager.h` 的捕获/发布路径。
-- 关键事实：现有"替换"通道只为**长锚点**建立候选
-  （`capture.cpp:87` 由 `sequence.long_anchors` 生成 `private_replacement_candidates`），而流式形状
-  `max_long_anchors_per_continuation = 0` ⇒ 候选永远为空 ⇒ **替换通道对流式不存在**。
-- 因此 F2 的实质：让"**本次请求要替换的那条目录条目**"成为替换候选（复用现有
-  `inspect_capture(..., private_replacement, ...)` 与 `CaptureScenario.publication_slot` 机制，不另造一套）。
-- 收益：把假未命中变成命中（16 k 场景 ≈11 s → ~0.1 s），并**顺带删掉 §4.1 的驱逐**（不再需要"丢"）。
+现状的线性映射是**唯一**把多 owner 挡在外面的东西：
 
-**F3｜使用时刻钳位（I3）**
+- `StreamedKVSpace` 已持有 `layers()`、`pages_per_layer()`、`split_.run_pages`、`window_start(layer)`；
+- arena 是"每层一段 stride、段内连续页"的布局，device window 是段内连续 run（`layer_copy`/`runs_per_layer`）；
+- 因此给 owner 一个 `region_base(layer)`（每层内的页偏移），把 pointer/`window_start` 的算术改成
+  `region_base(layer) + offset` 即可；**run 的连续性在 region 内仍然成立**，注意力/拷贝路径的形状不变。
 
-- 位置：`prefill.cpp` 的 `enter_request(sequence.text_kv_valid)` 调用前，以及 `kv_store.h` 的两处截断。
-- 规则：`served = min(claimed, space_servable)`；`served == 0` 才走冷启动。**永不抛出。**
-- F3 只是护栏：F1+F2 正确时它不应触发（用断言/日志验证触发次数为 0）。
+⇒ **不需要 page table，也不需要复制页**；代价是**容量**：`per_owner_pages = 总页 / N`，
+即 N 个 owner 各能用的上下文长度按 1/N 缩。这是基线的同一本账（每个 private continuation 都占自己的页），
+不是流式引入的退化。
 
-### 5.3 空间生命周期（目标状态）
+### 5.3 容量账（必须由所有者拍板）
 
-```mermaid
-stateDiagram-v2
-    [*] --> Empty
-    Empty --> Prefilling: 请求开始（reuse_base = 最长匹配，通常 0）
-    Prefilling --> Retained: 请求结束或取消 → 冻结 + 发布（F1）
-    Retained --> Reusing: 下一请求最长匹配 m > 0（F2：reuse_base = m）
-    Reusing --> Retained: 结束时替换发布（同一槽位）
-    Retained --> Prefilling: 下一请求匹配 m = 0（同槽位替换，不并存）
-    Retained --> Retained: 取消/中止不改变声明（I1）
+serve 启动实测（27B IQ3_S / rk8v4 / `--max-context 192512` / 16 GB 卡）：
+
+```
+capacity | KV 192,512 tokens, rk8v4, auto | pages 36,567/48,128 | runtime 4.07 GiB | free 51.5 MiB
+context cache | 1 active + 0 cached device states | host 1 states, 0 B KV | private 1 | shared 0 | anchors 0
 ```
 
+- 192 K 上下文 ≈ 4 GiB arena ⇒ **每个 owner ≈ 4 GiB 宿主内存**（N=2 ⇒ 8 GiB，N=3 ⇒ 12 GiB）。
+- 若不接受"每 owner 4 GiB"，替代是把 owner 数降到 1 并**只保证单会话的完整契约**（N3/N4/N5 仍然要做），
+  这属于**明确的范围声明**，不是技术退化。
+
+### 5.4 与基线代码的衔接（复用，不重写）
+
+| 基线机制 | 流式如何满足 |
+|---|---|
+| `ProgramImpl::abort` salvage / `retain_prefill_progress`（§9.5） | 流式 `deactivate` 改走同一条路：保留 arena 的 region，发布 checkpoint；**删除 `reset()` 分支** |
+| `--progress-anchor-tokens`（§9.5） | 让 Frontend 的锚点机会对流式生效（`anchors` 计数应 > 0） |
+| `TurnClosure`（§4.3） | 流式 finish 时按同一规则发布 prompt-末尾闭包（同一 prompt 重发 ⇒ 命中） |
+| `ResourcePlan` 的删除集合（§9.4） | arena region 释放进入同一份计划；`CheckpointRef` 逐项核对 |
+| `inspect` 只读（§2.2） | 不变式保留：驱逐只发生在放置循环里 |
+
 ---
 
-## 6. 验收矩阵（缺一不可）
+## 6. 实施顺序（不可颠倒）
+
+| 步 | 内容 | 出口判据 |
+|---|---|---|
+| 1 | **N3 取消不再清空**：流式 `deactivate` 走 salvage/retain；`reset()` 只在"从未发布且无 checkpoint"时 | C18（取消后继续命中）+ 进程存活 |
+| 2 | **N4 降级计划化**：region 释放进入 `ResourcePlan`；`stream_can_serve` 降级为断言 | 计划审计：无静默覆盖 |
+| 3 | **N2 TurnClosure/锚点**：流式 finish 发布与基线同规则的 checkpoint；`anchors > 0` | C17（同一 prompt 重发命中）+ `anchors` 计数 |
+| 4 | **N1 region 化**：owner 独占 region，多 owner 并存 | A→B→A 两会话都命中；`private N` 与 region 数一致 |
+| 5 | **N5 使用时刻钳位**（护栏，若前面全绿则触发 0 次） | 触发计数 = 0 |
+| 6 | 删除历史补丁里的"丢弃"逻辑；文档收口（verification C17/C18、measurements、handoff） | 全绿 |
+
+**第 4 步是"多会话复用"的唯一入口**；若所有者在 §5.3 选择 N=1，则第 4 步不做，并把该范围写进文档与 `--help`。
+
+---
+
+## 7. 验收矩阵
 
 | 检查 | 判据 |
 |---|---|
-| 逐位等价 | `check --suite equiv` 4/4（8 K/100 K/183 K × resident/streamed），ids 与 logprobs 逐位 |
-| C13 跨请求复用 | `reused == retained_frontier`，且与冷跑逐位 |
-| C14 几何不变 | 两种池形状 ⇒ ids 与 logprobs 逐位相同 |
-| C15 保留即缓存 | 任意下一请求都被接纳（不同前缀/部分前缀/更长/回归） |
-| **C17 假未命中（新增）** | **同一个 prompt 连续两次** ⇒ 第二次 `reused > 0`（现在为 0）；只共享开头的请求 ⇒ `reused == 匹配长度` |
-| **C18 取消不作废（新增）** | 长会话 → 续聊 → **客户端断开** → 再续聊：后续请求 `reused > 0`、进程存活、无 `worker crash` |
-| serve 端到端 | `A → B → A`（两会话）与 `A → A2`（同会话）全 200；日志 `worker crash`/`terminate`/`FATAL engine` = 0 |
-| 性能不退化 | 251 K `round_ms_median` ≤ 41.4 ms +1%、`upload_bytes` 不显著变化（证明不是靠少搬变快） |
-| 冲突检查 | 触发 `[stream] request starts: reuse=… space_pages=…` 中 `space_pages < base` 的次数为 0（F3 未触发） |
+| 逐位等价 | `check --suite equiv` 4/4，ids 与 logprobs 逐位 |
+| C13 跨请求复用 | `reused == retained_frontier`，与冷跑逐位 |
+| C14 几何不变 | 两种池形状 ids/logprobs 逐位相同 |
+| C15 保留即缓存 | 任意下一请求都被接纳 |
+| **C17 假未命中（新）** | 同一 prompt 连续两次 ⇒ 第二次 `reused > 0`；`anchors > 0` |
+| **C18 取消不作废（新）** | 长会话 → 续聊 → 客户端断开 → 再续聊：`reused > 0`、进程存活 |
+| serve 端到端 | `A→B→A`、`A→A2` 全 200；`worker crash`/`terminate`/`FATAL engine` = 0 |
+| 性能 | 251 K `round_ms_median` ≤ 41.4 ms +1%；`upload_bytes` 不显著变化 |
+| 冲突检查 | `[stream] request starts` 中 `space_pages < base` 的次数 = 0 |
 
-诊断开关：`NINFER_STREAM_DEBUG=1`（每次请求的 `reuse/base/valid/space_pages`）、
-`NINFER_ADMISSION_DEBUG=1`（放置被哪道闸门挡住）、`NINFER_STREAM_VERIFY=1`（环→表→attention 字节 oracle）。
-
----
-
-## 7. 实施顺序与回退
-
-| 步 | 内容 | 出口判据 | 回退 |
-|---|---|---|---|
-| 1 | **F1** 取消不再清空（保留或同生共死） | C18 + serve 取消序列绿 | 单提交可 revert |
-| 2 | **F2** 最长前缀命中 + 替换发布 | C17 + equiv + C13/C14/C15 绿，251 K 不退化 | 单提交可 revert；`--no-prefix-reuse` 是逃生口 |
-| 3 | 删除 §4.1 的"丢弃"逻辑，保留 `stream_can_serve` 作为断言 | 同上全绿；`[admission] dropping…` 不再出现 | 单提交 |
-| 4 | **F3** 钳位（若第 3 步后仍需） | 触发次数 0 | 单提交 |
-| 5 | 文档收口（verification C17/C18、measurements、handoff） | 链接与数字一致 | — |
-
-**顺序不可颠倒**：F1 之前做 F2，会在"取消清空"的空窗里继续产生 stale 声明。
+诊断开关：`NINFER_STREAM_DEBUG=1`、`NINFER_ADMISSION_DEBUG=1`、`NINFER_STREAM_VERIFY=1`。
 
 ---
 
-## 8. 明确不做（防止走偏）
+## 8. 明确不做
 
-- **不重写、不硬分叉**：难点是簿记一致性，不是架构；重写会把这些接缝再造一遍。
-- **不把"冷启动重算"当主要修复**：它只用于 `served == 0`。把它当默认，等于删掉缓存（§1.1 的代价）。
-- **不在只读路径（`ResourceManager::inspect`）里改状态**；驱逐/替换必须发生在放置循环里。
-- **不在一次放置内部重试**（会留悬空句柄）；要么重做整次放置，要么在捕获路径里替换。
-- **不并存多条流式 continuation**：流式空间只有一个活世系；并存只产生歧义，不产生能力。
+- **不重写、不硬分叉**：难点是簿记一致性；基线的机制已经对，缺的是流式承载满足它。
+- **不做"任意最长前缀复用"**：违反 §2.1（GDN 不可任意回退）。复用点必须是带 StateImage 的 checkpoint。
+- **不把冷启动当修复**：只用于 `space_pages == 0`。
+- **不在只读路径改状态**，**不在一次放置内重试**，**不并存多条同 arena 世系**（region 化之前）。
 
 ---
 
 ## 9. 未决问题（需要所有者决定）
 
-1. **是否允许多条私有 continuation**（多会话同时留住上下文）：这是 host RAM + 地址空间的容量问题，
-   与语义无关。现状 = 1。
-2. **被取消请求的上下文是否发布**（F1 的两种处理）：发布 = 续聊命中；不发布 = 更保守。本文推荐发布。
-3. **`--no-prefix-reuse` 是否保留为产品开关**：作为逃生口建议保留。
+1. **N1 的 N**：允许多少 owner 并存（每个 ≈ 4 GiB 宿主，见 §5.3）。建议 2。
+2. **被取消请求是否发布 checkpoint**（基线是"能就发布"）：建议沿用基线。
+3. **`--no-prefix-reuse` 保留为逃生口**：建议保留。

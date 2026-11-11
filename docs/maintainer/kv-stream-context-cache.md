@@ -1463,3 +1463,25 @@ base 去截断一个 `committed_frontier == 0` 的新地址；要么 (b) demote 
 **下一步（唯一未验证的假设）**：`state_restored` 分支填充的目标镜像内容与源镜像不一致
 （分段 `copy_from_host_segments` 的段序/布局，或恢复了部分段）。验证方式：在该分支后立刻把
 目标镜像拷回宿主，与源镜像逐字节比较（`memcmp`），不一致则打印第一个不同的偏移与段号。
+
+### 20.20 状态已逐字节核对：不是镜像问题
+
+```
+[stream] anchor restore: base=900 valid=900 fork_required=1 checkpoint=4@900 role=2 residency=2
+[stream] restored state matches host: 1        ← 目标设备镜像与宿主源镜像 memcmp 相同
+[stream] window upload: region=0 active=15 start=0 count=15
+[reuse] second A reused 900 tokens
+[reuse] first difference at 0: got 220 cold 248046
+```
+
+⇒ 已排除：锚点镜像内容、KV 窗口内容（15 页全部回迁）、region 归属、身份戳。
+第一个 token 就不同 ⇒ 差值来自**镜像与 KV 之外**的某个上下文量。下一批候选（按可能性排序）：
+
+1. 复用请求的 **positions / rope** 是否从 0 开始（而不是从 base 起）；
+2. `sequence.ledger` / `prefix_digests` 在 `resize(base)` 后的内容；
+3. 生成首步的 **采样输入**（hidden）是否被前一次会话的 `tail_hidden` 污染；
+4. 流式的 `content_epoch` / 表项发布是否让首轮读到旧槽（窗口已回迁，但**环**在 active < resident 时不参与，
+   所以这一项只在 active > resident 时成立）。
+
+排查方式：在 decode 的第一步打印 `positions[0..3]`、`ledger.size()`、`tail_hidden_valid`，
+并在两臂各打印一次，一次运行即可定案。

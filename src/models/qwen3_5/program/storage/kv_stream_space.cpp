@@ -593,36 +593,6 @@ void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
         if (owner != 0 && region_states_[index].owner == owner) { region = index; break; }
     }
     if (region == regions_) {
-        // A request that enters above zero is continuing the context a catalogue entry published,
-        // and those bytes are in the stretch that reaches furthest - a fresh one would truncate the
-        // frontier the request is about to ask for. Its owner changes to this request under the same
-        // stamp rule: the previous owner's claim stops being servable, the bytes stay where they are.
-        std::uint32_t deepest = regions_;
-        if (pages != 0) {
-            for (std::uint32_t index = 0; index < regions_; ++index) {
-                if (region_states_[index].depth < pages) { continue; }
-                if (deepest == regions_ ||
-                    region_states_[index].depth > region_states_[deepest].depth) {
-                    deepest = index;
-                }
-            }
-        }
-        if (deepest != regions_) {
-            region = deepest;
-            if (region != current_region_) { current_region_ = region; }
-            RegionState& admitted = region_states_[region];
-            admitted.owner        = owner;
-            admitted.used         = ++request_serial_;
-            active_               = admitted.depth;
-            owner_                = owner;
-            retained_frontier_    = 0;
-            // The device window holds the bytes of whoever used it last - the window's slots are
-            // pool-relative, not stretch-relative - so this context's window has to be brought back
-            // from its own pages before attention reads it.
-            window_dirty_         = admitted.depth != 0;
-            clear_round_bookkeeping();
-            return;
-        }
         std::uint32_t oldest = 0;
         for (std::uint32_t index = 0; index < regions_; ++index) {
             if (region_states_[index].owner == 0) { oldest = index; break; }
@@ -636,6 +606,10 @@ void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
         current_region_ = region;
     }
     RegionState& held = region_states_[region];
+    // Whoever used the device window last may be another context: its slots are pool-relative, so
+    // this context's newest pages have to be brought back from its own stretch before attention
+    // reads them.
+    if (owner != owner_ && held.depth != 0) { window_dirty_ = true; }
     if (pages < held.depth) { held.depth = pages; }
     if (pages < active_) { window_dirty_ = active_ != 0; }
     active_            = held.depth;

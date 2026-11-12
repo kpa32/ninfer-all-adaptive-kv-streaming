@@ -54,7 +54,7 @@ public:
 
     // Runs one layer's streamed pages take at the current context, and the pages a run covers.
     [[nodiscard]] std::uint32_t runs_per_layer() const noexcept {
-        return kv_stream_runs_per_layer(active_, split_);
+        return kv_stream_runs_per_layer(depth(), split_);
     }    [[nodiscard]] std::uint32_t run_pages() const noexcept { return split_.run_pages; }
     // Runs the ring holds, which is how far ahead of the attending layer a copy may run.
     [[nodiscard]] std::uint32_t ring_runs() const noexcept { return ring_runs_; }
@@ -69,12 +69,12 @@ public:
     // The narrowest window any streaming layer keeps: a round is described by its largest streamed
     // extent, so the reported numbers use the layer that streams most.
     [[nodiscard]] std::uint32_t window_start() const noexcept {
-        return kv_stream_window_start(active_, split_, 0);
+        return kv_stream_window_start(depth(), split_, 0);
     }
 
     // The same for one layer, whose window may be wider when a round concentrates its streams.
     [[nodiscard]] std::uint32_t window_start(std::uint32_t layer) const noexcept {
-        return kv_stream_window_start(active_, split_, layer);
+        return kv_stream_window_start(depth(), split_, layer);
     }
 
     // Makes the current context's device window hold what the host authority holds. The window of a

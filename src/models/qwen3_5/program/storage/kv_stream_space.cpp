@@ -81,6 +81,12 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report, std::uint32_t
             std::to_string(pages_per_layer_ - split_.min_resident()));
     }
     host_layout_ = plan_host_kv_page_layout(cache.page_pool().geometry());
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        std::fprintf(stderr, "[stream] layout: page_stride=%zu planes=%zu layers=%u pages_per_layer=%u
+",
+                     host_layout_.page_stride, host_layout_.planes.size(), layers_,
+                     pages_per_layer_);
+    }
     page_bytes_  = host_layout_.page_stride;
     arena_ = std::make_unique<HostKVArena>(page_bytes_ * pages_per_layer_ * layers_,
                                            std::span<const HostKVPageLayout>(&host_layout_, 1));

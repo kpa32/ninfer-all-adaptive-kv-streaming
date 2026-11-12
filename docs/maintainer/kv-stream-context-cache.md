@@ -1562,3 +1562,46 @@ A 冷跑  decode: state_source=0 state_destination=0 kv_row=0 logits=40347402,�
 `active_pages() == region_states_[current_region_].depth` 成为**唯一真源**；
 `advance()` 只写 region 的 depth；`upload_window`/`flush_window`/`window_start` 全部从它派生。
 触点约 12 处（`kv_stream_space.cpp` 内），改完再跑 A→B→A。
+
+---
+
+## 21. 攻前提：单窗口换不上两个上下文（按 ub-mode 记录）
+
+### 21.1 前提与失衡计数
+
+**前提（一句话）**：*一个设备窗口可以在多个上下文之间换收换放，从而支持多 owner。*
+
+**失衡计数**：两次修法（`window_dirty_` 延迟标志；`window_source_/switch_target_` 单条记录）死在同一道门——
+换上下文后回来的会话首 token 与冷跑不同。持有"窗口装的是谁"这一事实的角色有 5 个：
+进入（prefill）、逐块 `advance`、decode 读取、发布（demote）、截断（trim 重入）。
+只有"进入"知道意图，其余四者读写同一状态且都能改它 ⇒ **该事实没有单一写入者**。
+
+**移除分配**：不是继续修交换，而是让"多 owner + 单窗口"**不可表达**。
+
+### 21.2 动作与结果
+
+- 删除换收换放机制（`flush_window`/`switch_window`/`window_source_`/`switch_target_`），空间回到
+  `a0134d82` 的单窗口行为（`active_` + `window_dirty_` + `upload_window`）；
+- `--kv-stream` 在启动期拒绝 `max_private_continuations > 1`：
+  "--kv-stream keeps one device window: set --max-private-continuations 1"；
+- 验收：`nvfer_qwen3_5_kv_stream_reuse_real_test` + `..._eviction_real_test` **2/2 通过**（150 s + 92 s）。
+
+### 21.3 多 owner 的正确形态（下一单元，不是补丁）
+
+**每个 region 自己的窗口与环**：设备池按 region 切分，`plan_kv_stream_split(budget / regions)` 各算一次，
+`slot_of_page(layer, page)` 用**本 region 的 split**；块表按 region 分别发布。
+这样任何时刻都不需要"换"，也就不存在 flush/load、`window_source_`、`window_dirty_` 这些状态。
+
+代价（先算清再动手）：
+- 每个 region 的环至少要 `ring_runs ≥ 1`（`run_pages=128` ⇒ 128 页/区），R=2 时窗口各少 128 页/层；
+- `--kv-capacity auto` 的池必然够，但**每 region 的窗口变小**，251 K 的每轮字节会上升；验收要量。
+
+### 21.4 本轮动作日志（ub-mode: Keep a Log）
+
+| # | 动作 | 原因 |
+|---|---|---|
+| 1 | 回滚到 `a0134d82` 的空间实现 | 移除"窗口换上下文"这条错误分配 |
+| 2 | 新增私有 continuation 上限守卫 | 让非法形状不可表达 |
+| 3 | 测试回到 `private=1` | 只跑被证明的配置 |
+| 4 | 复用/驱逐两用例复跑 | 证明回滚没有破坏既有能力 |
+| 5 | 记录 21.1–21.3 | 前提、计数、下一单元设计与代价 |

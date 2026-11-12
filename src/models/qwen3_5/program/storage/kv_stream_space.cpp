@@ -667,6 +667,36 @@ void StreamedKVSpace::upload_window(std::uint32_t layer, RankStreams streams) {
                      "\n",
                      current_region_, depth(), start, count, resident);
     }
+    // The byte question a switch raises: does the slot now hold the record it was loaded from? The
+    // staged copy is ordered after the upload, so this compares what attention will read.
+    if (std::getenv("NINFER_STREAM_VERIFY") != nullptr && verify_budget_ > 0) {
+        for (std::uint32_t page = start; page < depth() && verify_budget_ > 0; ++page) {
+            --verify_budget_;
+            if (!verify_arena_) {
+                verify_arena_ = std::make_unique<HostKVArena>(
+                    page_bytes_, std::span<const HostKVPageLayout>(&host_layout_, 1));
+                verify_host_ = verify_arena_->allocate(host_layout_, 1);
+                if (!verify_host_) { throw std::logic_error("the verify staging arena is too small"); }
+            }
+            cache_->page_pool().copy_to_host_pages(
+                kv_stream_window_slot(layer, page, split_), 1,
+                verify_arena_->writable_view(*verify_host_), RankStreams());
+            CUDA_CHECK(cudaDeviceSynchronize());
+            const auto* got  = verify_arena_->view(*verify_host_).data();
+            const auto* want = region_pages(layer).subview(page, 1).data();
+            ++verify_checks_;
+            if (std::memcmp(got, want, page_bytes_) != 0) {
+                ++verify_mismatches_;
+                if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+                    std::fprintf(stderr,
+                                 "[stream] window mismatch: layer=%u page=%u slot=%d region=%u "
+                                 "\n",
+                                 layer, page, kv_stream_window_slot(layer, page, split_),
+                                 current_region_);
+                }
+            }
+        }
+    }
 }
 
 void StreamedKVSpace::upload_window(RankStreams streams) {

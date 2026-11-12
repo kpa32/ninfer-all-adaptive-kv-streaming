@@ -1617,3 +1617,23 @@ A 冷跑  decode: state_source=0 state_destination=0 kv_row=0 logits=40347402,�
 **正确的域建模**（下一单元）：保持 `mapped_pages` 语义不变，新增独立访问器
 `covered_tokens(handle)` / `covered_pages(handle)`：流式返回 arena 深度，驻留返回 `committed_frontier`。
 会话导出/导入用它，而不是改写 `mapped_pages`。已被 `git revert`（`ce78f131`）。
+
+### 21.6 会话单元的第一条事实：没有公开的 Engine 会话 API
+
+`save_continuation` / `restore_continuation` 只存在于 `Program`（`program.h`），**不在** `include/ninfer/engine.h`。
+会话的唯一入口是 serve 的 `POST /slots/{id}?action=save|restore|erase`，而它今天对 `--kv-stream` **直接拒绝**
+（`--kv-stream keeps its context in the streamed arena: --slot-save-path is not available`）。
+
+⇒ 因此该单元的失败测试**已经是现成的**：`tools/bench/kv_stream/parity.py` 的 **P5**
+（save → erase → restore → 续聊，要求 ids 与不中断逐 token 相同），今天会以"拒绝"这一明确原因失败。
+
+**下一单元的执行顺序（ub-mode: 先失败测试，再最小改动）**：
+
+1. 保留 P5 作为判据（它已能跑，只是红在拒绝上）；
+2. 去掉 serve 的拒绝，改为真正的校验（`--kv-stream` + 槽路径应被接受）；
+3. `session_snapshot` 写侧：新增 `covered_tokens(handle)`（独立访问器，**不动** `mapped_pages`），
+   流式分支按 `region_pages(layer)[0, pages)` 拷出，布局仍用 `plan_host_kv_page_layout`；
+4. 读侧：把快照写回 arena 的对应 region，并把 depth 设为快照前沿；
+5. 跑 P5，要求 save→erase→restore→续聊逐 token 相同。
+
+第 3–4 步是这条链上唯一的新代码，其余是接线；每一步之后都要跑 P5 与两个 fast 用例。

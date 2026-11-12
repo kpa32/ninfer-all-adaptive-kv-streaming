@@ -533,6 +533,14 @@ SessionSnapshot ProgramImpl::save_continuation(const ContinuationHandle& continu
     const std::uint32_t text_pages     = kv_pages_for_frontier(text_committed);
     if (text_pages == 0 || text_pages > text_kv_addresses->mapped_pages(text_address) ||
         sequence.execution_frontier > text_committed) {
+        if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+            std::fprintf(stderr,
+                         "[stream] save: text_pages=%u mapped=%u committed=%u stride=%zu layers=%u\n",
+                         text_pages, text_kv_addresses->mapped_pages(text_address), text_committed,
+                         text_layout.page_stride, text_stream_space != nullptr
+                                                         ? text_stream_space->layers()
+                                                         : 0U);
+        }
         throw std::logic_error("retained session Text KV coverage is inconsistent");
     }
     std::uint32_t backend_committed = 0;

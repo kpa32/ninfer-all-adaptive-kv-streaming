@@ -1851,11 +1851,6 @@ ServeOptions parse_serve_options(int argc, char** argv) {
         if (options.devices.size() > 1) {
             throw std::invalid_argument("--kv-stream runs on one device");
         }
-        if (!options.slot_save_path.empty()) {
-            throw std::invalid_argument(
-                "--kv-stream keeps its context in the streamed arena: --slot-save-path is not "
-                "available");
-        }
         if (!options.context_cache.disk_kv_path.empty()) {
             throw std::invalid_argument(
                 "--kv-stream keeps its context in the streamed arena: --disk-kv-path is not "

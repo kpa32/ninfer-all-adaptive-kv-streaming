@@ -82,8 +82,8 @@ StreamedKVSpace::StreamedKVSpace(PagedKVCache& cache, bool report, std::uint32_t
     }
     host_layout_ = plan_host_kv_page_layout(cache.page_pool().geometry());
     if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
-        std::fprintf(stderr, "[stream] layout: page_stride=%zu planes=%zu layers=%u pages_per_layer=%u
-",
+        std::fprintf(stderr,
+                     "[stream] layout: page_stride=%zu planes=%zu layers=%u pages_per_layer=%u\n",
                      host_layout_.page_stride, host_layout_.planes.size(), layers_,
                      pages_per_layer_);
     }

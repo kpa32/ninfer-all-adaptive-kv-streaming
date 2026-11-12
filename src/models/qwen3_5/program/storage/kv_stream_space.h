@@ -406,16 +406,24 @@ private:
     // second copy could disagree with the stretch it belongs to - which is exactly what a flush into
     // the wrong records looked like.
     [[nodiscard]] std::uint32_t depth() const noexcept { return region_states_[current_region_].depth; }
-    // Set when the pages in hand no longer describe the device window - an entry that took a region
-    // from another owner - and cleared by the upload that republishes it.
-    bool window_dirty_ = false;
-    // The stretch whose newest pages were on the device when another context took the window over:
-    // those pages reach the host only here, so a switch that skipped them would lose the outgoing
-    // context's tail the moment the incoming one wrote the same slots.
-    std::uint32_t flush_region_ = kNoRegion;
-    std::uint32_t flush_depth_  = 0;
+
+    // Which context the device window currently holds. One fact, one place: the window is a cache of
+    // the newest pages of exactly this stretch at exactly this depth, and every copy - the flush that
+    // preserves an outgoing context and the load that brings an incoming one back - is derived from
+    // it. Two flags for the same thing are what made a switch flush one context and load another.
+    struct WindowSource {
+        std::uint32_t region = kNoRegion;
+        std::uint32_t depth  = 0;
+    };
+    WindowSource window_source_;
+    // The stretch the request in hand wants in the window, recorded when it enters and acted on by
+    // the first call that has streams to order the copies with.
+    WindowSource switch_target_;
     static constexpr std::uint32_t kNoRegion = std::numeric_limits<std::uint32_t>::max();
-    void flush_window(RankStreams streams);
+    // Moves `[window_start, depth)` of `source` into its own records, then the target's back into the
+    // window, and records what the window holds now.
+    void switch_window(RankStreams streams);
+    void flush_window(std::uint32_t region, std::uint32_t depth, RankStreams streams);
     // The continuation whose ledger these bytes hold. Reused continuation slots never repeat a
     // stamp, so a claim on pages another request rewrote can never be served by accident.
     std::uint64_t owner_ = 0;

@@ -610,9 +610,12 @@ void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
     // this context's newest pages have to be brought back from its own stretch before attention
     // reads them - and the context that used them last has to put its own copies back first, or the
     // incoming write is the only thing left of them.
-    if (owner != owner_ && active_ != 0 && current_region_ < regions_) {
+    // With one stretch there is nothing to preserve: the incoming context takes the same records and
+    // the outgoing one is displaced by construction, so flushing would only copy bytes back for the
+    // request that is about to overwrite them.
+    if (regions_ > 1 && owner != owner_ && active_ != 0 && current_region_ < regions_) {
         flush_region_ = current_region_;
-        flush_depth_  = active_;
+        flush_depth_  = region_states_[current_region_].depth;
     }
     if (owner != owner_ && held.depth != 0) { window_dirty_ = true; }
     if (pages < held.depth) { held.depth = pages; }

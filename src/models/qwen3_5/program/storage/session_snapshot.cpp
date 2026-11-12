@@ -584,6 +584,14 @@ SessionSnapshot ProgramImpl::save_continuation(const ContinuationHandle& continu
     session.text_committed_frontier    = text_committed;
     session.backend_committed_frontier = backend_committed;
     session.text_pages                 = text_pages;
+    if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
+        std::fprintf(stderr,
+                     "[stream] session shapes: text_pages=%u stride=%zu text_payload=%zu "
+                     "state_bytes=%zu images=%zu\n",
+                     text_pages, config.text_page_stride,
+                     config.text_page_stride * static_cast<std::size_t>(text_pages),
+                     config.state_image_bytes, unique_states.size());
+    }
     session.backend_pages              = backend_pages;
     session.rebuild_work               = sequence.rebuild_work;
     session.rebuild_tail_begin         = sequence.rebuild_tail_begin;

@@ -1722,3 +1722,30 @@ printf("%zu %zu %zu\n", text_layout.page_stride, text_stream_space->host_pages(0
 
 ⇒ **下一步不是继续写导出，而是读 `restore_continuation` 的载荷消费**（`session_snapshot.cpp:247` 之后），
 用它的读法反推写法的层结构；在此之前不动导出代码（本轮已两次因形状猜错而回退）。
+
+### 21.11 读侧给出的形状，与仍差的一环
+
+读侧的消费方式（`session_snapshot.cpp:1031-1045`）：
+
+```cpp
+destinations = { addresses.physical_page(*address, page) for page in [0, page_count) };
+pool.copy_from_host(payload, layout, destinations, streams);
+```
+
+- 载荷是 `page_count` 条 `layout.page_stride` 记录，逐条写进该地址的**物理页**；
+- 实测 `layout.page_stride = 104448`（rk8v4）与 M1 的**每层页字节**一致，`planes=4` 是该层 K/V/scale；
+- 因此"一条记录 = 一层的页"在读侧同样成立。
+
+⇒ 若地址的物理页是"一层的页"，会话就只覆盖一层；若物理页是"页组（含全部层）"，`page_stride` 就不该是
+一层字节。**二者必有一错，判定点在 `DeviceKVPagePool`**：`physical_page(handle)` 返回的到底是
+"一层的页"还是"含 16 层的页组"，以及 `copy_from_host` 是否在内部循环层。
+
+**这是会话单元的阻塞项**，下一步只做一件事：读 `DeviceKVPagePool::copy_from_host` 与
+`physical_page` 的字节含义（必要时加一行打印 `pool.geometry().planes.size()` 与单页字节数），
+在那之前不写导出/导入代码——本轮已因形状猜错回退两次。
+
+### 21.12 当前树的验证（本轮末）
+
+- `ninfer_qwen3_5_kv_stream_reuse_real_test`：**Passed**（126.5 s）
+- `ninfer_qwen3_5_kv_stream_eviction_real_test`：**Passed**（76 s）
+- 本轮产品代码改动：仅新增两处调试打印（布局形状、保存覆盖数字）；serve 放行槽目录（上一轮）。

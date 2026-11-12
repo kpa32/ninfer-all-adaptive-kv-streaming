@@ -1542,3 +1542,23 @@ A 冷跑  decode: state_source=0 state_destination=0 kv_row=0 logits=40347402,�
 下一枪（两件事一起做）：
 - 在 decode 首步前 `cudaStreamSynchronize(device.stream)`，排除上传/解码的时序竞争；
 - 打印 `committed_frontier` 与页 14 的 `committed_columns`（两臂对比）。
+
+### 20.24 窗口回写已实现，但 region 记账自相矛盾（下一步：单一真源）
+
+新增 `flush_window`：换上下文前把**出方**窗口 `[window_start, depth)` 回写到它自己的 region
+（窗口是缓存，页只有跌出窗口才落宿主；否则新上下文一写就把唯一副本覆盖了）。这条是**必要的**，
+实测也确实触发：
+
+```
+[stream] window flush: region=0 depth=15
+[stream] window flush: region=0 depth=4     ← 同一 region 深度先 15 后 4
+[stream] window flush: region=1 depth=15    ← region 1 本该只有 4 页
+```
+
+⇒ `active_` 与 `region_states_[current_region_].depth` **两份真源**在互相打架，导致 flush 用错深度、
+把 A 的 15 页覆盖成 B 的 4 页。答案因此仍未对上（首 token 从 220 变成 357，方向变了但不对）。
+
+**下一步（明确的重构，不再打补丁）**：删掉 `active_`，让
+`active_pages() == region_states_[current_region_].depth` 成为**唯一真源**；
+`advance()` 只写 region 的 depth；`upload_window`/`flush_window`/`window_start` 全部从它派生。
+触点约 12 处（`kv_stream_space.cpp` 内），改完再跑 A→B→A。

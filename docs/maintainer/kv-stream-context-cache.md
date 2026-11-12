@@ -1680,3 +1680,25 @@ for (page : [0, text_pages))
 - 验收仍是 P5（save→erase→restore→续聊逐 token 相同）。
 
 这一步是"小步但结构正确"的典型：先把**数据形状**写对（页主序 + 平面偏移），再写循环。
+
+### 21.9 一个必须先用测量回答的问题（不再靠读代码猜）
+
+快照的文本载荷是 `text_page_stride * text_pages`，而 `copy_address_pages` 按 `logical_page(address, p)`
+逐页走。要写流式导出，必须先确定**一条页记录覆盖一层还是全部层**。代码里有两种迹象：
+
+- `startup.cpp:348-362` 的 DFlash 几何把每层平面**追加**进同一个 `KVPageGeometry` ⇒ 池的一页记录含全部层；
+- 但 M1 的实测账（`rk8v4` 页字节 104448、262144 上下文 ≈ 6.38 GiB = 16 × 4096 × 104448）说明
+  **104448 是一层的页**，流式空间的 `host_pages(layer)` 也按层切片。
+
+⇒ 两者不可能同时成立，必须以一次**测量**定案（而不是继续读）：
+
+```
+printf("%zu %zu %zu\n", text_layout.page_stride, text_stream_space->host_pages(0).page_count(),
+       text_stream_space->layers());
+```
+
+- 若 `page_stride == 104448`（一层）⇒ 快照必然是 **layer-major 拼接**（每层一段 `pages × stride`），
+  流式导出就是按层连续拷，我先前那版整段 memcpy 其实方向对、只是偏移算错；
+- 若 `page_stride ≈ 16 × 104448` ⇒ 页记录含全部层，导出必须 page × plane 拼装。
+
+下一轮第一件事：加这三行打印并跑一次（≈1 分钟），按结果写导出/导入循环。

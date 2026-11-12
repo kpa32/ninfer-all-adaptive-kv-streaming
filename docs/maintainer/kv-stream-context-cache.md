@@ -1605,3 +1605,15 @@ A 冷跑  decode: state_source=0 state_destination=0 kv_row=0 logits=40347402,�
 | 3 | 测试回到 `private=1` | 只跑被证明的配置 |
 | 4 | 复用/驱逐两用例复跑 | 证明回滚没有破坏既有能力 |
 | 5 | 记录 21.1–21.3 | 前提、计数、下一单元设计与代价 |
+
+### 21.5 一次被回滚的尝试（记录，避免重犯）
+
+把 `mapped_pages` 改成"返回 arena 深度"⇒ 两个用例同时失败（`kv_stream_reuse`、`kv_stream_eviction`）。
+
+**根因**：`mapped_pages` 回答的是"这份地址空间**拥有**多少逻辑页"（流式为 0，因为页归 arena），
+而我想让它回答"上下文**覆盖**到多深"。这是**两个不同的问题**，共用一个访问器 ⇒ 所有既有调用方
+（`logical_page` 遍历、checkpoint 覆盖检查、快照写入）立即读到不存在的页。
+
+**正确的域建模**（下一单元）：保持 `mapped_pages` 语义不变，新增独立访问器
+`covered_tokens(handle)` / `covered_pages(handle)`：流式返回 arena 深度，驻留返回 `committed_frontier`。
+会话导出/导入用它，而不是改写 `mapped_pages`。已被 `git revert`（`ce78f131`）。

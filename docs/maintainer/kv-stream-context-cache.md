@@ -1637,3 +1637,21 @@ A 冷跑  decode: state_source=0 state_destination=0 kv_row=0 logits=40347402,�
 5. 跑 P5，要求 save→erase→restore→续聊逐 token 相同。
 
 第 3–4 步是这条链上唯一的新代码，其余是接线；每一步之后都要跑 P5 与两个 fast 用例。
+
+### 21.7 会话单元：红在预期的地方了
+
+去掉 serve 的拒绝后，`parity.py --only P5` 逐步收敛到真正的原因（每一步都是先修"测试发错了请求"）：
+
+| 现象 | 原因 | 处置 |
+|---|---|---|
+| `invalid_slot: slot 1 is outside this server's 1 slots` | 槽号零基，harness 用了 1 | 改用 `/slots/0` |
+| `invalid_filename` | 槽动作要求 `filename` | 请求体带 `{"filename": "parity-session.ninfer"}` |
+| **`retained session Text KV coverage is inconsistent`** | `session_snapshot` 用 `mapped_pages`（流式为 0）判覆盖 | **这就是本单元要修的** |
+
+⇒ TDD 到达"见它按预期失败"。下一处改动明确：
+
+1. 新增 `KVAddressSpaceStore::covered_tokens(handle)`（流式 = arena 深度；驻留 = `committed_frontier`）；
+2. `session_snapshot` 写侧：覆盖判据改用 `covered_tokens`，流式分支按 `region_pages(layer)[0, pages)`
+   拷出，布局仍用 `plan_host_kv_page_layout`；
+3. 读侧：写回 arena 的该 region，并把 depth 设为快照前沿；
+4. 再跑 P5，要求 save→erase→restore→续聊逐 token 相同。

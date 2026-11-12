@@ -1767,3 +1767,20 @@ pool.copy_from_host(payload, layout, destinations, streams);
 - 文件 ≈ **38 MB** ⇒ 载荷含全部层，`text_pages` 的语义是"跨层页数"，流式导出按 page 记录逐层填即可。
 
 在拿到文件大小之前，会话单元**不动代码**（本轮已因形状猜错回退两次，按纪律不再猜第三次）。
+
+### 21.14 优先级纠正：先做多会话，会话文件降级
+
+**为什么之前不是它**：多会话是这条线最早的目标，也确实做了最久——两次都卡在"单窗口换上下文"这条前提上，
+按 ub-mode 的攻前提把该形状显式拒绝后，我把它当成"需要重新设计的大件"放到后面，转去做看起来更小的会话单元。
+**这是判断错误**：用户的 serve 参数里没有 `--slot-save-path`，会话文件根本不会被触发；真正会被触发的是
+"第二个会话要不要保留"。优先级应跟使用面走。
+
+**新的先后**：
+1. **多会话（每 region 各自的窗口与环）**——用户实际会碰到；
+2. 会话文件——只有加 `--slot-save-path` 才需要。
+
+**第一片（下一步就做）**：把空间里的单份 `split_` 变成 `region_splits_`（每 region 一份），
+`split()` 返回当前 region 的那份；region r 的设备槽基址 = `r * (pool_pages / regions_)`。
+R=1 时直接沿用 `cache.stream_split()`，行为逐字节不变；R>1 时各 region 用
+`plan_kv_stream_split(pool_pages / R, pages_per_layer, layers, runs, ratio)` 规划。
+**这样就不存在"换窗口"这件事**——每个 region 的窗口永远是自己的，flush/load/window_source 一概不需要。

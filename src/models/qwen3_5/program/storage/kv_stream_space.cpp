@@ -319,7 +319,7 @@ std::uint32_t StreamedKVSpace::upload(std::uint32_t layer, cudaStream_t copy) {
     if (layer >= layers_) { throw std::out_of_range("Streamed KV layer is out of range"); }
     if (copy == nullptr) { throw std::invalid_argument("A streamed KV upload needs a copy stream"); }
     const std::uint32_t streamed = window_start(layer);
-    const std::uint32_t runs     = kv_stream_runs_of_layer(active_, split_, layer);
+    const std::uint32_t runs     = kv_stream_runs_of_layer(depth(), split_, layer);
     layer_first_run_[layer]      = run_cursor_;
     layer_runs_[layer]           = runs;
     if (runs == 0) {
@@ -416,7 +416,7 @@ void StreamedKVSpace::verify_streamed_page(std::uint32_t layer, std::uint32_t st
             char holder[64] = "none";
             bool named      = false;
             for (std::uint32_t other_layer = 0; other_layer < layers_ && !named; ++other_layer) {
-                for (std::uint32_t other_page = 0; other_page < active_; ++other_page) {
+                for (std::uint32_t other_page = 0; other_page < depth(); ++other_page) {
                     if (std::memcmp(got, region_pages(other_layer).subview(other_page, 1).data(),
                                     page_bytes_) != 0) {
                         continue;
@@ -430,7 +430,7 @@ void StreamedKVSpace::verify_streamed_page(std::uint32_t layer, std::uint32_t st
             std::fprintf(stderr,
                          "[verify] MISMATCH layer=%u page=%u slot=%u active=%u streamed=%u "
                          "first_byte=%zu holds=%s\n",
-                         layer, page, slot, active_, streamed, first_diff, holder);
+                         layer, page, slot, depth(), streamed, first_diff, holder);
         } else {
             std::fprintf(stderr, "[verify] ok layer=%u page=%u slot=%u streamed=%u\n", layer, page,
                          slot, streamed);
@@ -533,7 +533,7 @@ void StreamedKVSpace::verify_after_attention(std::uint32_t layer) {
         std::fprintf(stderr, "[verify-after] MISMATCH layer=%u page=%u slot=%u active=%u streamed=%u "
                      "first_byte=%zu last_byte=%zu differs=%zu/%zu first_run=%u runs=%u ring=%u "
                      "holds=%s%u\n",
-                     layer, page, slot, active_, streamed, first_diff, last_diff, differs, page_bytes_,
+                     layer, page, slot, depth(), streamed, first_diff, last_diff, differs, page_bytes_,
                      layer_first_run_[layer], layer_runs_[layer], ring_runs_,
                      found_layer < 0 ? "nothing" : "host(layer,page)=",
                      found_layer < 0 ? 0U : (static_cast<unsigned>(found_layer) << 16) | found_page);
@@ -599,7 +599,7 @@ void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
             if (region_states_[index].used < region_states_[oldest].used) { oldest = index; }
         }
         region = oldest;
-        window_dirty_ = active_ != 0 && region_states_[region].depth != 0;
+        window_dirty_ = depth() != 0 && region_states_[region].depth != 0;
         region_states_[region].depth = 0;
     }
     if (region != current_region_) {
@@ -613,14 +613,14 @@ void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
     // With one stretch there is nothing to preserve: the incoming context takes the same records and
     // the outgoing one is displaced by construction, so flushing would only copy bytes back for the
     // request that is about to overwrite them.
-    if (regions_ > 1 && owner != owner_ && active_ != 0 && current_region_ < regions_) {
+    if (regions_ > 1 && owner != owner_ && depth() != 0 && current_region_ < regions_) {
         flush_region_ = current_region_;
         flush_depth_  = region_states_[current_region_].depth;
     }
     if (owner != owner_ && held.depth != 0) { window_dirty_ = true; }
-    if (pages < held.depth) { held.depth = pages; }
-    if (pages < active_) { window_dirty_ = active_ != 0; }
-    active_            = held.depth;
+    const bool rewound = pages < held.depth;
+    if (rewound) { held.depth = pages; }
+    if (rewound) { window_dirty_ = true; }
     held.owner         = owner;
     held.used          = ++request_serial_;
     owner_             = owner;
@@ -639,9 +639,9 @@ bool StreamedKVSpace::can_serve(std::uint64_t owner, std::uint32_t tokens) const
 
 void StreamedKVSpace::upload_window(std::uint32_t layer, RankStreams streams) {
     const std::uint32_t resident = split_.resident_of(layer);
-    if (resident == 0 || active_ == 0) { return; }
+    if (resident == 0 || depth() == 0) { return; }
     const std::uint32_t start = window_start(layer);
-    const std::uint32_t count = active_ - start;
+    const std::uint32_t count = depth() - start;
     if (count == 0) { return; }
     // The window's slots are `layer_offset + page % resident`, so a run of pages is contiguous until
     // it wraps; a context shorter than the window is one copy from the window's first slot.
@@ -658,14 +658,14 @@ void StreamedKVSpace::upload_window(std::uint32_t layer, RankStreams streams) {
             static_cast<std::int32_t>(offset), count - head, streams);
         add_upload(layer, static_cast<std::uint64_t>(count - head) * page_bytes_);
     }
-    for (std::uint32_t page = start; page < active_; ++page) {
+    for (std::uint32_t page = start; page < depth(); ++page) {
         publish_slot(layer, page, kv_stream_window_slot(layer, page, split_), streams);
     }
     if (std::getenv("NINFER_STREAM_DEBUG") != nullptr && layer == 0) {
         std::fprintf(stderr,
                      "[stream] window upload: region=%u active=%u start=%u count=%u resident=%u "
                      "\n",
-                     current_region_, active_, start, count, resident);
+                     current_region_, depth(), start, count, resident);
     }
 }
 
@@ -678,7 +678,7 @@ void StreamedKVSpace::upload_window(RankStreams streams) {
     window_dirty_ = false;
 }
 void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
-    if (active_pages < active_) {
+    if (active_pages < depth()) {
         throw std::invalid_argument("A streamed KV frontier only grows; reset before rewinding");
     }
     // A context whose pages the device window does not hold brings them back first: this is the one
@@ -697,7 +697,7 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
         throw std::logic_error(
             "An all-resident streamed KV split cannot grow past the window it was planned with");
     }
-    for (std::uint32_t page = active_; page < active_pages; ++page) {
+    for (std::uint32_t page = depth(); page < active_pages; ++page) {
         // The page appears in its layer's window, where this round's append writes it.
         for (std::uint32_t layer = 0; layer < layers_; ++layer) {
             publish_slot(layer, page, kv_stream_window_slot(layer, page, split_), streams);
@@ -718,7 +718,6 @@ void StreamedKVSpace::advance(std::uint32_t active_pages, RankStreams streams) {
     for (std::uint32_t layer = 0; layer < layers_; ++layer) {
         CUDA_CHECK(cudaEventRecord(dropped_[layer], streams[0]));
     }
-    active_ = active_pages;
     region_states_[current_region_].depth = active_pages;
 }
 StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
@@ -749,7 +748,7 @@ StreamedKVSpace::TransferStats StreamedKVSpace::transfer_stats() {
     // The shape a round ran in: every measurement is only comparable inside one, and the report is
     // the only place a campaign can learn which one produced it.
     out.layer_resident      = split_.layer_resident;
-    out.active_pages        = active_;
+    out.active_pages        = depth();
     // Whether a finished request's context still lives here, and at which token frontier: the next
     // request either continues it or starts from an empty space.
     out.retained          = owner_ != 0 && retained_frontier_ != 0;

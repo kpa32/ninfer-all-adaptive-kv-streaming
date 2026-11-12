@@ -64,7 +64,7 @@ public:
     [[nodiscard]] double last_window_seconds() const noexcept { return window_seconds_; }
 
     // Pages the tables describe, and where the resident window currently starts.
-    [[nodiscard]] std::uint32_t active_pages() const noexcept { return active_; }
+    [[nodiscard]] std::uint32_t active_pages() const noexcept { return depth(); }
 
     // The narrowest window any streaming layer keeps: a round is described by its largest streamed
     // extent, so the reported numbers use the layer that streams most.
@@ -402,7 +402,10 @@ private:
     // The streamed pages one round moved, recorded when the round started: the frontier resets with
     // the request, so the live value is not what a finished request moved.
     std::uint32_t round_streamed_pages_ = 0;
-    std::uint32_t active_ = 0;
+    // The depth of the context in hand: the stretch it occupies is the only record of it, so a
+    // second copy could disagree with the stretch it belongs to - which is exactly what a flush into
+    // the wrong records looked like.
+    [[nodiscard]] std::uint32_t depth() const noexcept { return region_states_[current_region_].depth; }
     // Set when the pages in hand no longer describe the device window - an entry that took a region
     // from another owner - and cleared by the upload that republishes it.
     bool window_dirty_ = false;

@@ -625,8 +625,7 @@ void StreamedKVSpace::enter_request(std::uint64_t owner, std::uint32_t tokens) {
     if (std::getenv("NINFER_STREAM_DEBUG") != nullptr) {
         std::fprintf(stderr,
                      "[stream] enter: owner=%llu prev_owner=%llu region=%u depth=%u pages=%u "
-                     "dirty=%d
-",
+                     "dirty=%d\n",
                      static_cast<unsigned long long>(owner),
                      static_cast<unsigned long long>(owner_), region, held.depth, pages,
                      window_dirty_ ? 1 : 0);

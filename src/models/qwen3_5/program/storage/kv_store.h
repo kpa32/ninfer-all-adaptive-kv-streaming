@@ -1979,7 +1979,15 @@ public:
     }
 
     [[nodiscard]] std::uint32_t mapped_pages(KVAddressSpaceHandle handle) const {
-        return require(handle).page_count;
+        const Address& address = require(handle);
+        if (stream_space_ != nullptr) {
+            // A streamed address owns no logical page, but it does describe a context of a known
+            // depth: the arena holds the authority for every page below it. Answering that depth is
+            // what lets the layers above ask how far this context reaches without a special case -
+            // and zero was a lie that made a covered session look inconsistent.
+            return stream_space_->active_pages();
+        }
+        return address.page_count;
     }
 
     [[nodiscard]] std::uint32_t entitlement(KVAddressSpaceHandle handle) const {

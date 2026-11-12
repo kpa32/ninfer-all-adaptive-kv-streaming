@@ -1655,3 +1655,28 @@ A 冷跑  decode: state_source=0 state_destination=0 kv_row=0 logits=40347402,�
    拷出，布局仍用 `plan_host_kv_page_layout`；
 3. 读侧：写回 arena 的该 region，并把 depth 设为快照前沿；
 4. 再跑 P5，要求 save→erase→restore→续聊逐 token 相同。
+
+### 21.8 导出侧的结构事实：快照是**页主序**，不能按层整段拷
+
+读 `session_snapshot` 的写侧后确认：
+
+- 快照页载荷是 `page * text_page_stride` 一页一条记录，而一页记录里包含**全部层**的 K/V/scale 平面
+  （`plan_host_kv_page_layout` 的 planes 覆盖所有层）；
+- 因此流式导出**不能**按 `region_pages(layer)` 整段 memcpy（我试过一版，是错的，已回退）；
+  必须对每个 page、每层，按 `layout.planes[]` 的平面偏移把该层该页的字节拷进页记录。
+
+正确形状（下一段代码）：
+
+```cpp
+for (page : [0, text_pages))
+  for (layer : layers)
+    for (plane : layout.planes_of(layer))
+      memcpy(page_record + plane.offset, region_pages(layer).subview(page,1) + plane.local_offset,
+             plane.bytes);
+```
+
+- 覆盖判据：`text_pages <= text_stream_space->active_pages()`（而不是 `mapped_pages`）；
+- 读侧对称：把页记录拆回各层 region，并把该 region 的 depth 设为快照前沿；
+- 验收仍是 P5（save→erase→restore→续聊逐 token 相同）。
+
+这一步是"小步但结构正确"的典型：先把**数据形状**写对（页主序 + 平面偏移），再写循环。

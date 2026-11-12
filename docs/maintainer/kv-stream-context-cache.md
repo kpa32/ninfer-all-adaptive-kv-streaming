@@ -1749,3 +1749,21 @@ pool.copy_from_host(payload, layout, destinations, streams);
 - `ninfer_qwen3_5_kv_stream_reuse_real_test`：**Passed**（126.5 s）
 - `ninfer_qwen3_5_kv_stream_eviction_real_test`：**Passed**（76 s）
 - 本轮产品代码改动：仅新增两处调试打印（布局形状、保存覆盖数字）；serve 放行槽目录（上一轮）。
+
+### 21.13 池一侧的读法，与一个一分钟能定的实验
+
+`DeviceKVPagePool::copy_from_host`（`paged_kv_cache.cpp:967-990`）要求 `host.geometry == geometry()`，
+并按 `planes_.size()` 循环平面；`copy_host_run` 用 `host.page_stride` 步进。实测该几何的
+`page_stride = 104448`、`planes = 4` ⇒ **池的一页就是一层的一页**。
+
+于是出现一个硬矛盾：一个 1447 token 的上下文，`text_pages = 23`、载荷 = 23 × 104448 ≈ **2.4 MB**，
+而它的真实 KV 总量 ≈ 1447 × 1632 B/token × 16 层 ≈ **37.8 MB**。
+
+**一分钟定案的实验**（不依赖再读代码）：用**驻留模式**（不带 `--kv-stream`）跑一次
+`POST /slots/0?action=save`，然后 `ls -l` 那个文件：
+
+- 文件 ≈ **2.4 MB** ⇒ 会话载荷只有一层，驻留模式的会话恢复本身不完整（那是一个独立的、更严重的缺陷，
+  要先报告而不是继续做流式导出）；
+- 文件 ≈ **38 MB** ⇒ 载荷含全部层，`text_pages` 的语义是"跨层页数"，流式导出按 page 记录逐层填即可。
+
+在拿到文件大小之前，会话单元**不动代码**（本轮已因形状猜错回退两次，按纪律不再猜第三次）。

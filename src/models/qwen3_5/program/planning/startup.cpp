@@ -1403,6 +1403,14 @@ void validate_target_options(const execution::Parameters& parameters, DeviceCont
             throw std::invalid_argument(
                 kv_stream_rejection_message(KVStreamRejection::RetainedContextNoHostSlot));
         }
+        // The streamed shape keeps one device window, and a window holds one context's newest pages.
+        // Two retained continuations would have to take turns in it, which is a state machine the
+        // space does not have: a context that came back would read whatever the other left. Refusing
+        // the shape keeps that illegal state unwritable instead of answering quietly wrong.
+        if (cache.max_private_continuations.value_or(1) > 1) {
+            throw std::invalid_argument(
+                "--kv-stream keeps one device window: set --max-private-continuations 1");
+        }
         // A retained continuation's state image lives on the host shelf, beside the streamed
         // arena's own authority. A device state slot buys a round-trip saving the streamed run
         // cannot use, and a third device image beside the window rotates the lane's read/write

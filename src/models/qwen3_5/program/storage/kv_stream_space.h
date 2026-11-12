@@ -54,7 +54,7 @@ public:
 
     // Runs one layer's streamed pages take at the current context, and the pages a run covers.
     [[nodiscard]] std::uint32_t runs_per_layer() const noexcept {
-        return kv_stream_runs_per_layer(depth(), split_);
+        return kv_stream_runs_per_layer(active_, split_);
     }    [[nodiscard]] std::uint32_t run_pages() const noexcept { return split_.run_pages; }
     // Runs the ring holds, which is how far ahead of the attending layer a copy may run.
     [[nodiscard]] std::uint32_t ring_runs() const noexcept { return ring_runs_; }
@@ -64,17 +64,17 @@ public:
     [[nodiscard]] double last_window_seconds() const noexcept { return window_seconds_; }
 
     // Pages the tables describe, and where the resident window currently starts.
-    [[nodiscard]] std::uint32_t active_pages() const noexcept { return depth(); }
+    [[nodiscard]] std::uint32_t active_pages() const noexcept { return active_; }
 
     // The narrowest window any streaming layer keeps: a round is described by its largest streamed
     // extent, so the reported numbers use the layer that streams most.
     [[nodiscard]] std::uint32_t window_start() const noexcept {
-        return kv_stream_window_start(depth(), split_, 0);
+        return kv_stream_window_start(active_, split_, 0);
     }
 
     // The same for one layer, whose window may be wider when a round concentrates its streams.
     [[nodiscard]] std::uint32_t window_start(std::uint32_t layer) const noexcept {
-        return kv_stream_window_start(depth(), split_, layer);
+        return kv_stream_window_start(active_, split_, layer);
     }
 
     // Makes the current context's device window hold what the host authority holds. The window of a
@@ -92,7 +92,7 @@ public:
     [[nodiscard]] std::uint32_t max_streamed_pages(const KVStreamSplit& of) const noexcept {
         std::uint32_t most = 0;
         for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-            const std::uint32_t streamed = kv_stream_window_start(depth(), of, layer);
+            const std::uint32_t streamed = kv_stream_window_start(active_, of, layer);
             if (streamed > most) { most = streamed; }
         }
         return most;
@@ -110,9 +110,6 @@ public:
     // region - today's shape - the base is zero and every offset is what it always was.
     [[nodiscard]] HostKVAllocationView region_pages(std::uint32_t layer) noexcept;
     [[nodiscard]] HostKVAllocationConstView region_pages(std::uint32_t layer) const noexcept;
-    // The same records for an explicitly chosen stretch, which is what flushing an outgoing
-    // context needs: its window is still on the device while the space already points elsewhere.
-    [[nodiscard]] HostKVAllocationView region_pages_of(std::uint32_t layer, std::uint32_t region) noexcept;
     [[nodiscard]] std::uint32_t regions() const noexcept { return regions_; }
     // Pages one owner may use in a layer.
     [[nodiscard]] std::uint32_t region_page_count() const noexcept { return region_pages_per_layer_; }
@@ -144,7 +141,7 @@ public:
     // Forgets the context: the frontier returns to zero and the next request republishes each
     // entry as its pages appear. Nothing is copied, because those pages are written again.
     void reset() noexcept {
-        region_states_[current_region_].depth = 0;
+        active_ = 0;
         clear_round_bookkeeping();
     }
 
@@ -402,28 +399,10 @@ private:
     // The streamed pages one round moved, recorded when the round started: the frontier resets with
     // the request, so the live value is not what a finished request moved.
     std::uint32_t round_streamed_pages_ = 0;
-    // The depth of the context in hand: the stretch it occupies is the only record of it, so a
-    // second copy could disagree with the stretch it belongs to - which is exactly what a flush into
-    // the wrong records looked like.
-    [[nodiscard]] std::uint32_t depth() const noexcept { return region_states_[current_region_].depth; }
-
-    // Which context the device window currently holds. One fact, one place: the window is a cache of
-    // the newest pages of exactly this stretch at exactly this depth, and every copy - the flush that
-    // preserves an outgoing context and the load that brings an incoming one back - is derived from
-    // it. Two flags for the same thing are what made a switch flush one context and load another.
-    struct WindowSource {
-        std::uint32_t region = kNoRegion;
-        std::uint32_t depth  = 0;
-    };
-    WindowSource window_source_;
-    // The stretch the request in hand wants in the window, recorded when it enters and acted on by
-    // the first call that has streams to order the copies with.
-    WindowSource switch_target_;
-    static constexpr std::uint32_t kNoRegion = std::numeric_limits<std::uint32_t>::max();
-    // Moves `[window_start, depth)` of `source` into its own records, then the target's back into the
-    // window, and records what the window holds now.
-    void switch_window(RankStreams streams);
-    void flush_window(std::uint32_t region, std::uint32_t depth, RankStreams streams);
+    std::uint32_t active_ = 0;
+    // Set when the pages in hand no longer describe the device window - an entry that took a region
+    // from another owner - and cleared by the upload that republishes it.
+    bool window_dirty_ = false;
     // The continuation whose ledger these bytes hold. Reused continuation slots never repeat a
     // stamp, so a claim on pages another request rewrote can never be served by accident.
     std::uint64_t owner_ = 0;

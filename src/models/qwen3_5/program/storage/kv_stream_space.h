@@ -92,7 +92,7 @@ public:
     [[nodiscard]] std::uint32_t max_streamed_pages(const KVStreamSplit& of) const noexcept {
         std::uint32_t most = 0;
         for (std::uint32_t layer = 0; layer < layers_; ++layer) {
-            const std::uint32_t streamed = kv_stream_window_start(active_, of, layer);
+            const std::uint32_t streamed = kv_stream_window_start(depth(), of, layer);
             if (streamed > most) { most = streamed; }
         }
         return most;
@@ -144,7 +144,7 @@ public:
     // Forgets the context: the frontier returns to zero and the next request republishes each
     // entry as its pages appear. Nothing is copied, because those pages are written again.
     void reset() noexcept {
-        active_ = 0;
+        region_states_[current_region_].depth = 0;
         clear_round_bookkeeping();
     }
 

@@ -201,9 +201,11 @@ def check_two_conversations(server: Server, first: str, second: str) -> Result:
 def check_slot(server: Server, prompt: str) -> Result:
     """The disk slot round trip: save, erase, restore, and continue the restored session."""
     code, _ = server.ask(prompt)
-    save, save_text = server.post("/slots/0?action=save", None, 600)
-    erase, _ = server.post("/slots/0?action=erase", None, 600)
-    restore, restore_text = server.post("/slots/0?action=restore", None, 600)
+    save, save_text = server.post("/slots/0?action=save",
+                                    {"filename": "parity-session.ninfer"}, 600)
+    erase, _ = server.post("/slots/0?action=erase", {"filename": "parity-session.ninfer"}, 600)
+    restore, restore_text = server.post("/slots/0?action=restore",
+                                       {"filename": "parity-session.ninfer"}, 600)
     after, _ = server.ask(prompt)
     ok = min(code, after) == 200 and save == 200 and restore == 200
     detail = f"ask={code} save={save} restore={restore} after={after}"

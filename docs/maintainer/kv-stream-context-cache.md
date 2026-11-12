@@ -1702,3 +1702,23 @@ printf("%zu %zu %zu\n", text_layout.page_stride, text_stream_space->host_pages(0
 - 若 `page_stride ≈ 16 × 104448` ⇒ 页记录含全部层，导出必须 page × plane 拼装。
 
 下一轮第一件事：加这三行打印并跑一次（≈1 分钟），按结果写导出/导入循环。
+
+### 21.10 测量结果与一个仍未解的矛盾（阻塞会话单元）
+
+两次实测：
+
+```
+[stream] layout: page_stride=71680  planes=4 layers=16 pages_per_layer=4096   (rk4v4)
+[stream] save:   text_pages=23 mapped=0 committed=1447 stride=104448 layers=16 (rk8v4)
+```
+
+- **页记录 = 一层的页**（71680 / 104448 与 M1 的每层页字节一致，`planes=4` 是该层的 K/V/scale）；
+- 快照载荷 = `text_page_stride * text_pages` = 23 条一层页记录，**按此读法只覆盖一层**。
+
+这与"驻留模式的会话保存/恢复是可用功能"相矛盾。两种可能，必须由**读侧**判定（它才是载荷的消费者）：
+
+1. 读侧对每层各调一次、偏移按层推进（写侧的 `copy_address_pages` 我可能只看到了文本平面的一部分）；
+2. 或 `logical_page(address, p)` 的 p 其实是**跨层**编号，`text_pages` 只是逻辑前沿换算的一半。
+
+⇒ **下一步不是继续写导出，而是读 `restore_continuation` 的载荷消费**（`session_snapshot.cpp:247` 之后），
+用它的读法反推写法的层结构；在此之前不动导出代码（本轮已两次因形状猜错而回退）。
